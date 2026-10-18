@@ -449,17 +449,41 @@ iot_ap_info_t *IOT_WifiScan(uint8_t iface_num, uint8_t *maxDevice, uint8_t timeo
         return NULL;
     }
 
+    uint16_t unique_count = 0;
     for (int i = 0; i < ap_count; i++)
     {
-        Str_SafeCopy(scanned_aps[i].ssid, (const char *) ap_records[i].ssid, sizeof(scanned_aps[i].ssid));
-        memcpy(scanned_aps[i].bssid, ap_records[i].bssid, sizeof(scanned_aps[i].bssid));
-        scanned_aps[i].rssi = ap_records[i].rssi;
-        scanned_aps[i].primary = ap_records[i].primary;
-        scanned_aps[i].authmode = ap_records[i].authmode;
+        iot_ap_info_t candidate = {0};
+        Str_SafeCopy(candidate.ssid, (const char *) ap_records[i].ssid, sizeof(candidate.ssid));
+        memcpy(candidate.bssid, ap_records[i].bssid, sizeof(candidate.bssid));
+        candidate.rssi = ap_records[i].rssi;
+        candidate.primary = ap_records[i].primary;
+        candidate.authmode = ap_records[i].authmode;
+
+        uint16_t duplicate_index = unique_count;
+        for (uint16_t j = 0; j < unique_count; j++)
+        {
+            if (memcmp(scanned_aps[j].ssid, candidate.ssid, sizeof(candidate.ssid)) == 0)
+            {
+                duplicate_index = j;
+                break;
+            }
+        }
+
+        if (duplicate_index < unique_count)
+        {
+            if (candidate.rssi > scanned_aps[duplicate_index].rssi)
+            {
+                scanned_aps[duplicate_index] = candidate;
+            }
+        }
+        else
+        {
+            scanned_aps[unique_count++] = candidate;
+        }
     }
 
     SAFE_FREE(ap_records);
-    *maxDevice = ap_count; // Update maxDevice with the actual number of scanned APs
+    *maxDevice = (uint8_t) unique_count; 
     return scanned_aps;
 }
 

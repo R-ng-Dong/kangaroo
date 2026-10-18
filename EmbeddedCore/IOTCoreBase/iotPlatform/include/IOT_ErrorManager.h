@@ -1,9 +1,5 @@
 #pragma once
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef int iot_err_t;
 
 #define IOT_OK 0        // No error
@@ -59,8 +55,3 @@ const char *iot_err_to_name(iot_err_t code);
             exit(err_rc_);                                                                                             \
         }                                                                                                              \
     } while (0)
-
-    
-#ifdef __cplusplus
-}
-#endif

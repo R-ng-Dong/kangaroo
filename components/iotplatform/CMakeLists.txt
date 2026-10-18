@@ -12,7 +12,7 @@ if(CONFIG_IOT_ETHERNET_ENABLED)
 endif()
 
 idf_component_register(SRCS ${SRCS}
-                       INCLUDE_DIRS "${SDK_PATH}/iotPlatform/include" "${SDK_PATH}/implplatform/esp32/dao"
+                       INCLUDE_DIRS "${SDK_PATH}/iotPlatform/include" "${SDK_PATH}/implplatform/esp32/dao" "${SDK_PATH}/reference/dao"
                        REQUIRES ${REQUIRES})
 
 # ==========================================================================

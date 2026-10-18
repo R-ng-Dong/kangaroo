@@ -2,6 +2,9 @@
 # ESP32-C3 (single-core RISC-V, BLE 5.0) specific settings
 #
 
+# Target - so a clean configure picks esp32c3 without `idf.py set-target`
+CONFIG_IDF_TARGET="esp32c3"
+
 # Flash size for esp32c3
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"

@@ -1,10 +1,5 @@
 #pragma once
 
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <inttypes.h>
 #include <stddef.h>
 #include "IOT_ErrorManager.h"
@@ -512,7 +507,3 @@ typedef void (*IOT_CoreConfigDumpCb_t)(const char *name, const void *data, uint1
  * @return IOT_OK, or IOT_ERR_INVALID_ARG when @p cb is NULL.
  */
 iot_err_t IOT_CoreConfigDumpSafe(IOT_CoreConfigDumpCb_t cb, void *user);
-
-#ifdef __cplusplus
-}
-#endif

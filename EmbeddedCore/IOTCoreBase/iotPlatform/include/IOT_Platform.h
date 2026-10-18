@@ -1,8 +1,4 @@
 #pragma once
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "IOT_ErrorManager.h"
 
 iot_err_t IOT_InitPlatform(void);
@@ -29,7 +25,3 @@ iot_err_t IOT_InitPlatform(void);
 iot_err_t IOT_InitPlatformLean(void);
 
 iot_err_t IOT_DeinitPlatform(void);
-
-#ifdef __cplusplus
-}
-#endif
