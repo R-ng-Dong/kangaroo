@@ -66,11 +66,16 @@ esp_err_t AdcOneshotRead(AdcChannel channel, UI16 *raw_data)
 
 esp_err_t AdcOneshotDeinit(void)
 {
+    if (adc1_handle == NULL) {
+        return ESP_OK;
+    }
+
     esp_err_t err = adc_oneshot_del_unit(adc1_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to deinitialize ADC1");
         return err;
     }
+    adc1_handle = NULL;
     return ESP_OK;
 }
 

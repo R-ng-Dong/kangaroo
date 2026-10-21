@@ -9,7 +9,9 @@
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "IOT_AppManager.h"
 #include "led_manager.h"
+#include "device_element_manager.h"
 
+#include "tds_task.h"
 
 static const char *TAG = "CORE_EVT";
 
@@ -136,11 +138,39 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
             break;
         }
         
-        // Build full state with 2 elements for the report
-        elemStateAttr_t elmAttr = {.attrId = 0x0001, .attrSize = 2, .attrValue = setData->devSetInfo.attrValue};
-        devStateElemState_t elems = {.elemId = 0x0001, .elemType = 0x0001, .numOfAttr = 1, .attrList = &elmAttr};
+        // Build full state with all elements for the report
 
-        devStateElemsInfo_t fullState = {.numOfElem = 1, .elemList = &elems};
+        elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
+        devStateElemState_t elements[MAX_NUM_ELEMENT];
+
+        UI8 element_count = DeviceElementGetCount();
+        for (UI8 i = 0; i < element_count; ++i)
+        {
+            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            UI8 attribute_count = 0;
+            for (UI8 j = 0; j < element->attribute_count; ++j)
+            {
+                const DeviceElementAttributeInfo *attribute = &element->attributes[j];
+                if (!attribute->has_value)
+                {
+                    continue;
+                }
+
+                attributes[i][attribute_count++] = (elemStateAttr_t){
+                    .attrId = attribute->id,
+                    .attrSize = attribute->value_length,
+                    .attrValue = (UI8 *)attribute->value,
+                };
+            }
+
+            elements[i] = (devStateElemState_t){
+                .elemId = element->id,
+                .elemType = element->id,
+                .numOfAttr = attribute_count,
+                .attrList = attributes[i],
+            };
+        }
+        devStateElemsInfo_t fullState = (devStateElemsInfo_t){.numOfElem = element_count, .elemList = elements};
 
         IOT_CoreStateChangeDeviceData_t devData = {
             .eid = targetEid,
@@ -169,19 +199,60 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
 
         IOT_DaoDeviceFreeIdentityInfo(&info);
 
-        // uint16_t newValue = devSetInfo.attrValue[0] << 8 | devSetInfo.attrValue[1];
-        // A cloud SET is a local change to this device's attributes. If any of
-        // the changed elements is in a sync-on-off group (subSmartType 71),
-        // propagate the new value to our peers so they mirror it.
-        // for (int i = 0; i < devSetInfo.numOfElems; i++)
-        // {
-        //     app_sync_broadcast_local(devSetInfo.elemList[i].elemId, newValue);
-        // }
         break;
     }
     case IOT_EVENT_TYPE_STATE_GET:
     {
         IOT_LOGW(TAG, "STATE event: GET_STATE");
+        IOT_EventStateGetRequest_t *getData = &(stateEvent->data.getRequest);
+        
+        elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
+        devStateElemState_t elements[MAX_NUM_ELEMENT];
+
+        UI8 element_count = DeviceElementGetCount();
+        for (UI8 i = 0; i < element_count; ++i)
+        {
+            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            UI8 attribute_count = 0;
+            for (UI8 j = 0; j < element->attribute_count; ++j)
+            {
+                const DeviceElementAttributeInfo *attribute = &element->attributes[j];
+                if (!attribute->has_value)
+                {
+                    continue;
+                }
+
+                attributes[i][attribute_count++] = (elemStateAttr_t){
+                    .attrId = attribute->id,
+                    .attrSize = attribute->value_length,
+                    .attrValue = (UI8 *)attribute->value,
+                };
+            }
+
+            elements[i] = (devStateElemState_t){
+                .elemId = element->id,
+                .elemType = element->id,
+                .numOfAttr = attribute_count,
+                .attrList = attributes[i],
+            };
+        }
+        devStateElemsInfo_t fullState = (devStateElemsInfo_t){.numOfElem = element_count, .elemList = elements};
+        IOT_CoreStateResponse_t response = {
+            .eid = getData->eid,
+            .fullState = &fullState,
+            .ctx = getData->ctx,
+            .unixTime = getData->unixTime,
+        };
+
+        iot_err = IOT_CoreRequestReportState(&response);
+        if (iot_err != IOT_OK)
+        {
+            IOT_LOGE(TAG, "Failed to send state response");
+        }
+        else
+        {
+            IOT_LOGI(TAG, "State response sent successfully");
+        }
         break;
     }
     default:
@@ -639,6 +710,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     {
         IOT_LOGI(TAG, "DEVICE event: IDENTIFICATION — blink LED to identify device");
         // TODO: Blink indicator LED or make device identifiable
+        TdsTaskStop();
 
         break;
     }
@@ -646,6 +718,9 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     {
         IOT_LOGI(TAG, "DEVICE event: PROVISION_COMPLETED — device is cloud-connected");
         // TODO: Initialize device state, set default values
+        RAL_DeinitBle();
+        // TdsTaskStart();
+        TdsTaskContinue();
         break;
     }
     case DEV_EVENT_NEW_DEVICE_JOINED:
@@ -875,6 +950,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGI(TAG, "DEVICE event: CLOUD_CONNECTED");
         // TODO: Sync device state to cloud if needed
         g_cloud_is_connected = 1;
+        LedManagerSetNormal();
 
         // app_cond_resync_all();
         // esp_event_post(EVENT_BASE_COMMON, EVENT_CLOUD_CONNECTED, NULL, 0, pdMS_TO_TICKS(10));
@@ -883,6 +959,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     case DEV_EVENT_CLOUD_DISCONNECTED:
     {
         g_cloud_is_connected = 0;
+        LedManagerSetError();
         IOT_LOGW(TAG, "DEVICE event: CLOUD_DISCONNECTED");
         break;
     }
@@ -949,8 +1026,10 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
     // Mute the change-WiFi BLE fallback BEFORE tearing the stack down: if WiFi
     // drops mid-download, the fallback would otherwise try to advertise on a
     // stack that no longer exists.
-    IOT_CoreChangeWifiSuspendBle();
-    IOT_CoreBleDeinit();
+
+    RAL_DeinitBle();
+    // IOT_CoreChangeWifiSuspendBle();
+    // IOT_CoreBleDeinit();
 
     iot_err_t err = IOT_AppManagerStartUpdateProcess(ota->url, ota->cert, ota->certLen,
                                                      ota->authToken, ota->authTokenLen,
@@ -962,7 +1041,8 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
         else LedManagerSetNetworkWaiting();
         // Nothing was downloaded and no reboot is coming: re-arm the fallback,
         // then drop the request so the cloud is answered rather than left waiting.
-        IOT_CoreChangeWifiResumeBle();
+
+        // IOT_CoreChangeWifiResumeBle();
         IOT_CoreOtaClearPending();
     }
     return err;
@@ -1160,3 +1240,14 @@ static void CloudUpdateState(uint16_t elemId, uint16_t attrId, uint8_t *attrValu
     }
 }
 
+void RAL_DeinitBle(void)
+{
+    static UI8 is_deinit = 0;
+    if(!is_deinit)
+    {
+        is_deinit = 1;
+        IOT_CoreChangeWifiSuspendBle();
+        IOT_CoreBleDeinit();
+    }
+
+}

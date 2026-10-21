@@ -80,11 +80,19 @@ void WaterProfileInit(void);
 void WaterProfileRegisterUartCallback(void);
 
 UI32 WaterProfileGetFilterRuntimeSeconds(FilterTimeIndex filter_index);
+UI16 WaterProfileGetHotTankTemperatureRaw(void);
+UI16 WaterProfileGetColdTankTemperatureRaw(void);
+UI8 WaterProfileGetHotTargetTemperature(void);
+UI8 WaterProfileGetColdTargetTemperature(void);
 UI8 WaterProfileGetStatus(WaterPurifyStatusType type);
 UI8 WaterProfileGetSetting(void);
+UI32 WaterProfileGetFrameType1Sequence(void);
+UI32 WaterProfileGetFrameTypeASequence(void);
 UI32 WaterProfileGetDeviceId(void);
 UI8 WaterProfileGetInputStatus(WaterPurifyInputStatus input_type, UI8 index);
 SI8 WaterProfileGetHotTankTemperature(void);
 SI8 WaterProfileGetColdTankTemperature(void);
+UI16 WaterProfileGetVersionFirmware(void);
+_bool HasMessageTypeA(void);
 
 #endif

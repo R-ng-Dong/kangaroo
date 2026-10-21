@@ -14,11 +14,21 @@ typedef enum {
     TDS_SENSOR_UNKNOWN = 0xFF
 } TdsSensorId;
 
-esp_err_t TdsInit(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel adc_channel, TdsSensorId sensor_id);
+typedef struct
+{
+    gpio_num_t pulse1_pin;
+    gpio_num_t pulse2_pin;
+    AdcChannel adc_channel;
+    TdsSensorId sensor_id;
+}TdsPinConfig;
+
+esp_err_t TdsInit(TdsPinConfig config[2]);
 esp_err_t TdsDeinit(TdsSensorId sensor_id);
 UI16 TdsGetValue(TdsSensorId sensor_id);
 esp_err_t TdsConfigure(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel adc_channel, TdsSensorId sensor_id);
 esp_err_t TdsStartPulses(TdsSensorId sensor_id);
 esp_err_t TdsStopPulses(TdsSensorId sensor_id);
+void TdsTaskDeinit(void);
+esp_err_t TdsTaskResume(void);
 
 #endif

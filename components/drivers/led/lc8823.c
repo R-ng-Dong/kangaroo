@@ -184,7 +184,7 @@ esp_err_t LC8823UpdateFrameBuffer(UI8 idx, LedData *data){
 esp_err_t LC8823SetState(LedHandle led, UI8 state){
     if(led == NULL) return ESP_FAIL;
     LedObject *led_obj = (LedObject *)led;
-    if(led_obj->state == state) return ESP_ERR_INVALID_ARG;
+    // if(led_obj->state == state) return ESP_ERR_INVALID_ARG;
     led_obj->state = state;
     return LC8823UpdateFrameBuffer(led_obj->index, (state) ? &led_obj->value.ON : &led_obj->value.OFF);
 }

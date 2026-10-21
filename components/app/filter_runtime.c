@@ -65,10 +65,14 @@ bool FilterRuntimeLoadFromFlash(void)
     esp_err_t err = nvs_open(FILTER_RUNTIME_NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK)
     {
+        for (UI8 i = 0; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
+        {
+            s_snapshot.valid[i] = true;
+        }
         return false;
     }
 
-    for (UI32 i = 0; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
+    for (UI8 i = 0; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
     {
         uint32_t value = 0;
         err = nvs_get_u32(handle, s_nvs_keys[i], &value);
@@ -82,7 +86,7 @@ bool FilterRuntimeLoadFromFlash(void)
         {
             s_local_runtime_total_s[i] = 0U;
             s_snapshot.seconds[i] = 0U;
-            s_snapshot.valid[i] = false;
+            s_snapshot.valid[i] = true;
         }
     }
 

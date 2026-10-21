@@ -18,8 +18,8 @@
 #define TDS_DEFAULT_SAMPLES   16U
 #define TDS_ADC_BUFFER_SIZE   256U
 
-#define ADC_SAMPLE_COUNT    128
-#define ADC_TRIM_EDGES      24  
+#define ADC_SAMPLE_COUNT    16
+#define ADC_TRIM_EDGES      2  
 
 #define POLARITY_PERIOD_MS   500
 #define SETTLING_TIME_MS     100
@@ -39,6 +39,30 @@
 
 static const char *TAG = "TDS";
 
+#define CAL_N 40
+
+static const float CAL_R[CAL_N] = {
+    1418.8f, 2049.5f, 2096.6f, 2126.4f, 2186.6f,
+    2323.8f, 2414.4f, 2728.8f, 2926.8f, 3084.4f,
+    3301.8f, 3571.3f, 4196.2f, 4352.4f, 4512.1f,
+    4712.6f, 4856.6f, 5720.0f, 5880.4f, 6470.4f,
+    6977.3f, 7239.5f, 7593.9f, 7803.3f, 8219.5f,
+    8694.2f, 8911.3f, 9698.9f, 9883.7f, 10197.5f,
+    11045.6f, 12295.5f, 13487.0f, 16053.9f, 18601.1f,
+    22924.2f, 31202.2f, 43012.6f, 68751.6f, 129344.8f
+};
+
+static const float CAL_TDS[CAL_N] = {
+    955.0f, 516.0f, 501.0f, 489.0f, 468.0f,
+    427.0f, 402.0f, 350.0f, 320.0f, 298.0f,
+    281.0f, 252.0f, 220.0f, 201.0f, 190.0f,
+    186.0f, 178.0f, 153.0f, 149.0f, 121.0f,
+    115.0f, 111.0f, 109.0f, 104.0f, 100.0f,
+    95.0f, 93.0f, 89.0f, 85.0f, 82.0f,
+    77.0f, 72.0f, 67.0f, 59.0f, 53.0f,
+    45.0f, 37.0f, 29.0f, 23.5f, 14.0f
+};
+
 typedef struct {
     gpio_num_t pulse1_pin;
     gpio_num_t pulse2_pin;
@@ -47,14 +71,16 @@ typedef struct {
     UI8 fan_out_active;
     rmt_channel_handle_t rmt_channel;
     rmt_encoder_handle_t rmt_encoder;
-    UI16 pos_value; // positive excitation
-    UI16 neg_value; // negative excitation
+    // UI16 pos_value; // positive excitation
+    // UI16 neg_value; // negative excitation
     UI16 tds_value; // TDS value in ppm
 } TdsConfig;
 
 static TdsConfig s_tds_configs[TDS_MAX_SENSOR_COUNT];
 static size_t s_tds_count = 0; //must be less than or equal to TDS_MAX_SENSOR_COUNT
-
+static TdsPinConfig s_tds_saved_config[TDS_MAX_SENSOR_COUNT];
+static bool s_tds_has_saved_config;
+TaskHandle_t xTask_tds = NULL;
 // ============================================================
 // RMT SYMBOL DATA
 //
@@ -90,7 +116,7 @@ static TdsConfig *TdsGetConfig(TdsSensorId sensor_id)
 {
     if((TDS_SENSOR_0 != sensor_id && TDS_SENSOR_1 != sensor_id) || 0 == s_tds_count)
         return NULL;
-    for (size_t i = 0; i < s_tds_count; i++) {
+    for (size_t i = 0; i < TDS_MAX_SENSOR_COUNT; i++) {
         if (s_tds_configs[i].sensor_id == sensor_id) {
             return &s_tds_configs[i];
         }
@@ -193,6 +219,10 @@ static esp_err_t TdsStopInternal(TdsSensorId sensor_id)
     }
 
     TdsDetachFanOut(sensor_id);
+
+    gpio_set_direction(temp->pulse1_pin, GPIO_MODE_OUTPUT);
+    gpio_set_direction(temp->pulse2_pin, GPIO_MODE_OUTPUT);
+
     gpio_set_level(temp->pulse1_pin, 0);
     gpio_set_level(temp->pulse2_pin, 0);
 
@@ -250,6 +280,7 @@ esp_err_t TdsConfigure(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel 
     temp->fan_out_active = 0;
     temp->rmt_channel = NULL;
     temp->rmt_encoder = NULL;
+    temp->tds_value = 0U;
 
     s_tds_count++;
 
@@ -281,7 +312,7 @@ esp_err_t TdsStartPulses(TdsSensorId sensor_id)
         return err;
     }
 
-    ESP_LOGI(TAG, "TDS pulse started for sensor %zu", sensor_id);
+    // ESP_LOGI(TAG, "TDS pulse started for sensor %zu", sensor_id);
     return ESP_OK;
 }
 
@@ -358,7 +389,7 @@ float AdcToResistance(float adc_positive, float adc_negative)
     const float MIN_COUNTS   = 0.5f;  // electrically at a rail
     const float OPEN_FLOOR   = 4.0f;  // coupling/zero floor
 
-    printf("calc \n");
+    // printf("calc \n");
     if (adc_positive >= 4090.0f && adc_negative <= OPEN_FLOOR)
     {
         // Negative phase reads ~0 and positive phase is at the top rail.
@@ -367,14 +398,14 @@ float AdcToResistance(float adc_positive, float adc_negative)
         // 3.3V × R1/(R1+R_sensor), so R_sensor -> INFINITY gives ADC- -> 0.
         // Zero on ADC- therefore means OPEN (very high resistance), not short!
         resistance = 1.0e9f;
-        printf(" sensor OPEN (or TDS below ~1 ppm)\n");
+        // printf(" sensor OPEN (or TDS below ~1 ppm)\n");
     }
     else if (adc_negative >= 4090.0f && adc_positive <= OPEN_FLOOR)
     {
         // Symmetric case: ADC- at the top rail and ADC+ ~0 means
         // R_sensor -> 0, i.e. SHORTED.
         resistance = 0.1f;
-        printf(" sensor SHORTED\n");
+        // printf(" sensor SHORTED\n");
     }
     else if (adc_negative > MIN_COUNTS)
     {
@@ -382,11 +413,11 @@ float AdcToResistance(float adc_positive, float adc_negative)
         // ADC = 4095 × R1/(R1+R_sensor)
         // R_sensor = R1 × (4095/ADC − 1)
         resistance = R_REF_OHM * (ADC_MAX / adc_negative - 1.0f);
-        printf(" using ADC- = %f\n", adc_negative);
-        if (adc_negative < 15.0f)
-            printf("  [range] ADC- < 15 counts: below ~2-4 ppm - sub-count reading, verify low end against reference\n");
-        else if (adc_negative >= 4000.0f)
-            printf("  [range] ADC- >= 4000 counts: near short / extremely high TDS\n");
+        // printf(" using ADC- = %f\n", adc_negative);
+        // if (adc_negative < 15.0f)
+        //     printf("  [range] ADC- < 15 counts: below ~2-4 ppm - sub-count reading, verify low end against reference\n");
+        // else if (adc_negative >= 4000.0f)
+        //     printf("  [range] ADC- >= 4000 counts: near short / extremely high TDS\n");
     }
     else if (adc_positive > MIN_COUNTS && adc_positive < 4090.0f)
     {
@@ -400,7 +431,7 @@ float AdcToResistance(float adc_positive, float adc_negative)
     {
         // Neither phase usable (floating pin / stopped excitation).
         resistance = 1.0e9f;
-        printf(" sensor OPEN (no valid pair)\n");
+        // printf(" sensor OPEN (no valid pair)\n");
     }
 
     return resistance;    
@@ -435,6 +466,46 @@ float EcToTDS(float ec)
     return ec * TDS_FACTOR;
 }
 
+bool cal_clipped = false;
+static float table_tds(float resistance)
+{
+    float tds;
+    int i;
+
+    if (resistance < CAL_R[0]) {
+        tds = CAL_TDS[0]
+            + (CAL_R[0] - resistance)
+            * (CAL_TDS[0] - CAL_TDS[1])
+            / (CAL_R[1] - CAL_R[0]);
+
+        cal_clipped = true;
+    }
+    else if (resistance > CAL_R[CAL_N - 1]) {
+        tds = CAL_TDS[CAL_N - 1]
+            + (resistance - CAL_R[CAL_N - 1])
+            * (CAL_TDS[CAL_N - 1] - CAL_TDS[CAL_N - 2])
+            / (CAL_R[CAL_N - 1] - CAL_R[CAL_N - 2]);
+
+        cal_clipped = true;
+    }
+    else {
+        cal_clipped = false;
+        i = 0;
+
+        while (i < CAL_N - 2 && resistance > CAL_R[i + 1]) {
+            i++;
+        }
+
+        float f = (resistance - CAL_R[i])
+                / (CAL_R[i + 1] - CAL_R[i]);
+
+        tds = CAL_TDS[i]
+            + f * (CAL_TDS[i + 1] - CAL_TDS[i]);
+    }
+
+    return tds < 0.0f ? 0.0f : tds;
+}
+
 //============================================================
 esp_err_t TdsDeinit(TdsSensorId sensor_id)
 {
@@ -452,90 +523,148 @@ esp_err_t TdsDeinit(TdsSensorId sensor_id)
 
 static void TdsTask(void * param)
 {
-    TdsConfig *config = (TdsConfig *)param;
-    if (NULL == config) {
+    TdsConfig *sensor_1 = TdsGetConfig(TDS_SENSOR_0);
+    if(NULL == sensor_1)
+    {
         vTaskDelete(NULL);
         return; 
     }
-    TdsSensorId sensor_id = config->sensor_id;
-    if (TDS_SENSOR_0 != sensor_id && TDS_SENSOR_1 != sensor_id) {
+    TdsConfig *sensor_2 = TdsGetConfig(TDS_SENSOR_1);
+    if(NULL == sensor_2)
+    {
         vTaskDelete(NULL);
         return; 
     }
-    if (ESP_OK != TdsStartPulses(sensor_id)) {
-        vTaskDelete(NULL);
-        return; 
-    }
-    TickType_t next_wakeup = xTaskGetTickCount();
-    TickType_t pulse_reset_start = next_wakeup;
-    UI8 excitation_phase = 1; //  1 for positive, 0 for negative
-    UI8 update_count = 0;
+    UI16 pos_value1 = 0; UI16 neg_value1 = 0;
+    UI16 pos_value2 = 0; UI16 neg_value2 = 0;
+
+    TdsStartPulses(TDS_SENSOR_0);
+    TdsStartPulses(TDS_SENSOR_1);
+    ESP_LOGW(TAG, "===>>> TdsTask created sucessfully");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
     while (1) {
-        vTaskDelayUntil(&next_wakeup, pdMS_TO_TICKS(SETTLING_TIME_MS));
+        TdsStopPulses(TDS_SENSOR_0);
+        TdsStopPulses(TDS_SENSOR_1);
 
-        // if ((xTaskGetTickCount() - pulse_reset_start) >= pdMS_TO_TICKS(TDS_PULSE_RESET_MS)) {
-        //     ESP_LOGI(TAG, "Resetting TDS pulse for sensor %u after 1 minute", sensor_id);
-        //     TdsStopPulses(sensor_id);
-        //     vTaskDelay(pdMS_TO_TICKS(50));
-        //     if (ESP_OK != TdsStartPulses(sensor_id)) {
-        //         ESP_LOGE(TAG, "Failed to restart TDS pulse for sensor %u", sensor_id);
-        //         vTaskDelay(pdMS_TO_TICKS(1000));
-        //         continue;
-        //     }
-        //     excitation_phase = 1;
-        //     next_wakeup = xTaskGetTickCount();
-        //     pulse_reset_start = next_wakeup;
-        //     continue;
-        // }
+        gpio_set_level(sensor_1->pulse1_pin, 1);
+        gpio_set_level(sensor_1->pulse2_pin, 0);
+        esp_rom_delay_us(100);
+        TdsReadAverageRaw(TDS_SENSOR_0, &pos_value1);
 
-        if(1 == excitation_phase)
-        {
-            TdsReadAverageRaw(sensor_id, &config->pos_value);
-        } else {
-            TdsReadAverageRaw(sensor_id, &config->neg_value);
-        }
-        // printf("ADC %s : %d\n", (1 == excitation_phase) ? "+" : "-", (1 == excitation_phase) ? config->pos_value : config->neg_value);
-        excitation_phase = !excitation_phase;
-        update_count++;
-        if(update_count == 2)
-        {
-            update_count = 0;
-            //calibration and calculation
-            float resistance = AdcToResistance((float)config->pos_value, (float)config->neg_value); // R_water
-            // float resistance = AdcToResistance(config->neg_value); // R_water
-            float cell_constant = (TDS_SENSOR_0 == sensor_id) ? CELL_CONSTANT_1 : CELL_CONSTANT_2;
-            float ec = ResistanceToEC(resistance + R_OFFSET_1, cell_constant);
-            float compensated_ec = TemperatureCompensateEC(ec, WATER_TEMP_C);
-            float tds = EcToTDS(compensated_ec);
-            config->tds_value = (UI16)(tds*100);
-            printf("TDS %s : %.2f ppm\n", (TDS_SENSOR_0 == sensor_id) ? "1" : "2", tds);
-        }
+        gpio_set_level(sensor_1->pulse1_pin, 0);
+        gpio_set_level(sensor_1->pulse2_pin, 1);
+        esp_rom_delay_us(100);
+        TdsReadAverageRaw(TDS_SENSOR_0, &neg_value1);
 
-        TickType_t now = xTaskGetTickCount();
+        gpio_set_level(sensor_1->pulse1_pin, 0);
+        gpio_set_level(sensor_1->pulse2_pin, 0);
 
-        TickType_t phase_end = next_wakeup + pdMS_TO_TICKS(POLARITY_PERIOD_MS -SETTLING_TIME_MS);        
+        gpio_set_level(sensor_2->pulse1_pin, 1);
+        gpio_set_level(sensor_2->pulse2_pin, 0);
+        esp_rom_delay_us(100);
+        TdsReadAverageRaw(TDS_SENSOR_1, &pos_value2);
 
-        if (now < phase_end)
-        {
-            vTaskDelayUntil(&next_wakeup, pdMS_TO_TICKS(POLARITY_PERIOD_MS -SETTLING_TIME_MS));
-        }
+        gpio_set_level(sensor_2->pulse1_pin, 0);
+        gpio_set_level(sensor_2->pulse2_pin, 1);
+        esp_rom_delay_us(100);
+        TdsReadAverageRaw(TDS_SENSOR_1, &neg_value2);
+
+        TdsStartPulses(TDS_SENSOR_0);
+        TdsStartPulses(TDS_SENSOR_1);
+
+        float resistance1 = AdcToResistance(pos_value1, neg_value1); // R_water
+        float tds1 = table_tds(resistance1); sensor_1->tds_value = (UI16)tds1;
+        float resistance2 = AdcToResistance(pos_value2, neg_value2); // R_water
+        float tds2 = table_tds(resistance2); sensor_2->tds_value = (UI16)tds2;
+
+        // printf("[probe 1] ADC+: %d, ADC-: %d, tds: %.2f ppm\n", (UI16)pos_value1, (UI16)neg_value1, tds1);
+        // printf("[probe 2] ADC+: %d, ADC-: %d, tds: %.2f ppm\n", (UI16)pos_value2, (UI16)neg_value2, tds2);
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
-
-esp_err_t TdsInit(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel adc_channel, TdsSensorId sensor_id)
+void TdsTaskDeinit(void)
 {
-    esp_err_t err = TdsConfigure(pulse1_pin, pulse2_pin, adc_channel, sensor_id);
+    if (xTask_tds != NULL)
+    {
+        if (xTask_tds == xTaskGetCurrentTaskHandle())
+        {
+            ESP_LOGE(TAG, "TdsTaskDeinit cannot be called from the TDS task");
+            return;
+        }
+        vTaskSuspend(xTask_tds);
+        vTaskDelete(xTask_tds);
+        xTask_tds = NULL;
+    }
+
+    if (TdsGetConfig(TDS_SENSOR_0) != NULL)
+    {
+        TdsDeinit(TDS_SENSOR_0);
+    }
+    if (TdsGetConfig(TDS_SENSOR_1) != NULL)
+    {
+        TdsDeinit(TDS_SENSOR_1);
+    }
+
+    esp_err_t err = AdcOneshotDeinit();
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to deinitialize ADC: %s", esp_err_to_name(err));
+    }
+}
+
+esp_err_t TdsTaskResume(void)
+{
+    if (xTask_tds != NULL)
+    {
+        return ESP_OK;
+    }
+    if (!s_tds_has_saved_config)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    TdsPinConfig config[TDS_MAX_SENSOR_COUNT];
+    memcpy(config, s_tds_saved_config, sizeof(config));
+    return TdsInit(config);
+}
+
+esp_err_t TdsInit(TdsPinConfig config[2])
+{
+    if (config == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xTask_tds != NULL || s_tds_count != 0U)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if(config[0].sensor_id == config[1].sensor_id
+        || TDS_SENSOR_UNKNOWN == config[0].sensor_id
+        || TDS_SENSOR_UNKNOWN == config[1].sensor_id)
+        return ESP_ERR_INVALID_ARG;
+
+    memcpy(s_tds_saved_config, config, sizeof(s_tds_saved_config));
+    s_tds_has_saved_config = true;
+
+    esp_err_t err = TdsConfigure(config[0].pulse1_pin, config[0].pulse2_pin, config[0].adc_channel, config[0].sensor_id);
     if (err != ESP_OK) {
+        TdsTaskDeinit();
         return err;
     }
-    TdsConfig *config = TdsGetConfig(sensor_id);
-    if (NULL == config) return ESP_ERR_INVALID_ARG;
+    err = TdsConfigure(config[1].pulse1_pin, config[1].pulse2_pin, config[1].adc_channel, config[1].sensor_id);
+    if (err != ESP_OK) {
+        TdsTaskDeinit();
+        return err;
+    }
 
-    BaseType_t ret = xTaskCreate(TdsTask, "TdsTask", 2048 * 2, (void *)config, configMAX_PRIORITIES - 3, NULL);
+    BaseType_t ret = xTaskCreate(TdsTask, "TdsTask", 2048 * 2, NULL, configMAX_PRIORITIES - 3, &xTask_tds);
     if (pdPASS != ret)
     {
         ESP_LOGE(TAG, "Failed to create TDS task");
+        xTask_tds = NULL;
+        TdsTaskDeinit();
         return ESP_FAIL;
     }    
     return ESP_OK;

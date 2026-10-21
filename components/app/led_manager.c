@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 
 static LedHandle s_led = NULL;
+static _bool s_warning = D_FALSE;
 typedef enum 
 { 
     LED_PATTERN_CONNECTED, 
@@ -49,6 +50,7 @@ static esp_err_t LedManagerSetPattern(LedPattern pattern)
 
 esp_err_t LedManagerInit(void)
 {
+    s_warning = D_FALSE;
     s_led = LC8823Create(0, 0);    
     if(s_led == NULL) return ESP_FAIL;
     LC8823Config config = {
@@ -74,6 +76,8 @@ esp_err_t LedManagerInit(void)
 esp_err_t LedManagerSetError(void)
 {
     if(!s_led) return ESP_FAIL;
+    if(s_warning) return ESP_OK;
+    s_warning = D_TRUE;
     // s_pattern_active = false;
     LC8823LoadValue(s_led, LED_ON, DIM_ON, 0xFF, 0x00, 0x00); 
     LC8823LoadValue(s_led, LED_OFF, DIM_OFF, 0xFF, 0x00, 0x00);
@@ -85,6 +89,8 @@ esp_err_t LedManagerSetError(void)
 esp_err_t LedManagerSetNormal(void)
 {
     if(!s_led) return ESP_FAIL;
+    if(!s_warning) return ESP_OK;
+    s_warning = D_FALSE;
     // s_pattern_active = false;
     LC8823LoadValue(s_led, LED_ON, DIM_ON, 0x00, 0xFF, 0x00); 
     LC8823LoadValue(s_led, LED_OFF, DIM_OFF, 0x00, 0xFF, 0x00);

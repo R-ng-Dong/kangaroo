@@ -7,12 +7,23 @@
 #define WATER_PURIFIER_TYPE_STANDARD   0
 #define WATER_PURIFIER_TYPE_HOT_COLD   1
 
-#define DEVICE_TYPE WATER_PURIFIER_TYPE_STANDARD
+#define DEVICE_TYPE WATER_PURIFIER_TYPE_HOT_COLD
+
+#define HOT_TANK_POWER_W       450 // W/h
+#define COLD_TANK_POWER_W       84 // W/h
+#define MCU_IOT_POWER_W          1 // W/h
+#define PUMP_VALVE_POWER_W      26 // W/h
+#define ELECTROLYSIS_POWER_W    38 // W/h
+
+#define SECONDS_PER_HOUR      3600 // 1 hour = 60x60 s
+#define MINUTES_PER_DAY       1440
 
 #define D_TRUE true
 #define D_FALSE false
 
 #define UNUSED(x) ((void)(x))
+
+typedef int INT;
 
 typedef uint8_t   UI8;
 typedef uint16_t  UI16;

@@ -7,7 +7,7 @@
 
 
 void SystemRuntimeInit(void);
-bool SystemRuntimeReconfig(UI32 time_s);
+bool SystemRuntimeReconfig(UI32 time_s, UI32 now_ms);
 
 bool SystemRuntimeUpdate(UI32 now_ms);
 UI32 SystemRuntimeGetSeconds(UI32 now_ms);

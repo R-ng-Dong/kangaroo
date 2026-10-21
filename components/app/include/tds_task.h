@@ -4,5 +4,7 @@
 #include "common.h"
 
 void TdsTaskStart(void);
+void TdsTaskStop(void);
+void TdsTaskContinue(void);
 
 #endif

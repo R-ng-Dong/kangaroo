@@ -9,6 +9,7 @@
 #include "warning_manager.h"
 #include "nvs.h"
 #include "esp_err.h"
+#include "pin_config.h"
 
 #define FILTER_LIFETIME_NVS_NAMESPACE "filter_config"
 
@@ -39,10 +40,28 @@ static const char *s_filter_pid_nvs_keys[FILTER_RUNTIME_FILTER_COUNT] = {
     "f1_pid", "f2_pid", "f3_pid", "ro_pid", "post_pid"
 };
 
+static const UI8 s_default_filter_pids[FILTER_RUNTIME_FILTER_COUNT][FILTER_PID_SIZE] = {
+    {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
+     0x08U, 0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0DU, 0x0EU, 0x0FU},
+
+    {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
+     0x08U, 0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0DU, 0x0EU, 0x0FU},
+
+    {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
+     0x08U, 0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0DU, 0x0EU, 0x0FU},
+
+    {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
+     0x08U, 0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0DU, 0x0EU, 0x0FU},
+     
+    {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
+     0x08U, 0x09U, 0x0AU, 0x0BU, 0x0CU, 0x0DU, 0x0EU, 0x0FU}
+};
+
 static UI32 s_filter_lifetime_seconds[FILTER_RUNTIME_FILTER_COUNT];
 
 static void FilterManagerLoadLifetimes(void)
 {
+    printf("Load life time\n");
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
@@ -60,6 +79,7 @@ static void FilterManagerLoadLifetimes(void)
         if ((err == ESP_OK) && (seconds > 0U))
         {
             s_filter_lifetime_seconds[i] = seconds;
+            printf("[Filter idx %d]: %lu\n", i, s_filter_lifetime_seconds[i]);
         }
         else
         {
@@ -71,6 +91,40 @@ static void FilterManagerLoadLifetimes(void)
         }
     }
  
+    if (defaults_added)
+    {
+        nvs_commit(handle);
+    }
+    nvs_close(handle);
+}
+
+static void FilterManagerLoadDefaultPids(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+    {
+        return;
+    }
+
+    _bool defaults_added = false;
+    for (UI8 i = 0U; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
+    {
+        size_t pid_size = 0U;
+        err = nvs_get_blob(handle, s_filter_pid_nvs_keys[i], NULL, &pid_size);
+        if ((err == ESP_OK) && (pid_size == FILTER_PID_SIZE))
+        {
+            continue;
+        }
+
+        err = nvs_set_blob(handle, s_filter_pid_nvs_keys[i],
+                           s_default_filter_pids[i], FILTER_PID_SIZE);
+        if (err == ESP_OK)
+        {
+            defaults_added = true;
+        }
+    }
+
     if (defaults_added)
     {
         nvs_commit(handle);
@@ -105,6 +159,9 @@ _bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds
     }
 
     s_filter_lifetime_seconds[filter_index] = seconds;
+    printf("[filter_index : %d]: life time seconds: %lu\n", (UI8)filter_index, seconds);
+    FilterManagerSetRuntime(filter_index, 0); //reset
+    printf("config filter idx %d done\n", (UI8)filter_index);
     return true;
 }
 
@@ -232,6 +289,8 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
         percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
+        if(percent_values[idx] >= 99) percent_values[idx] = 100;
+        // printf("percent[%d]: %d-%d \n", idx, filter_lifetime_by_pump, filter_lifetime_by_system);
     }
 }
 
@@ -247,10 +306,12 @@ __attribute__((weak)) void FilterManagerReportToCloud(const UI8 *percent_values,
 void FilterManagerInit(void)
 {
     FilterManagerLoadLifetimes();
+    FilterManagerLoadDefaultPids();
+
 #if DEVICE_TYPE == WATER_PURIFIER_TYPE_STANDARD
     FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_LOCAL);
     FilterRuntimeInit();
-    PumpInit(GPIO_NUM_1, PUMP_ACTIVE_LOW);
+    PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
 
 #elif DEVICE_TYPE == WATER_PURIFIER_TYPE_HOT_COLD
     FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_UART);
@@ -323,9 +384,10 @@ _bool FilterManagerShouldReport(UI32 now_ms)
     return (now_ms - s_last_report_ms) >= FILTER_MANAGER_REPORT_INTERVAL_MS;
 }
 
-void FilterManagerCheckWarning(UI32 now_ms)
+void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent)
 {
-    UI8 remaining_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
+    if(!remaining_percent) return;
+
     FilterRuntimeSnapshot_t snapshot = {0};
     static const WarningId warning_70[FILTER_RUNTIME_FILTER_COUNT] = {
         WARNING_ID_ER00056_FILTER1_LIFE_70, WARNING_ID_ER00057_FILTER2_LIFE_70,
@@ -342,7 +404,6 @@ void FilterManagerCheckWarning(UI32 now_ms)
     {
         return;
     }
-    FilterManagerGetLifetimePercent(now_ms, remaining_percent);
 
     /* LIFE_70/90 mean 70%/90% of the estimated lifetime has been used. */
     for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
@@ -369,10 +430,11 @@ void FilterManagerTick(UI32 now_ms)
     FilterRuntimeRefreshFromUart();
 #endif
 
-    FilterManagerCheckWarning(now_ms);
-
     UI8 remaining_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
     FilterManagerGetLifetimePercent(now_ms, remaining_percent);
+
+    FilterManagerCheckWarning(now_ms, remaining_percent);
+
 
     // Report immediately when any filter's remaining life drops by at least 5 points.
     _bool has_significant_decrease = FilterManagerHasSignificantDecrease(remaining_percent);
@@ -383,6 +445,7 @@ void FilterManagerTick(UI32 now_ms)
             if ((s_last_reported_percent[idx] >= remaining_percent[idx]) &&
                 ((s_last_reported_percent[idx] - remaining_percent[idx]) >= FILTER_MANAGER_REPORT_DECREASE_PERCENT))
             {
+                printf("filter %d report by trigger\n", idx);
                 FilterManagerReportCurrentPercent(remaining_percent,
                                                  FILTER_MANAGER_REPORT_ONE_FILTER, (FilterTimeIndex)idx);
             }
@@ -391,7 +454,9 @@ void FilterManagerTick(UI32 now_ms)
     // Keep periodic feedback as a fallback.
     else if (FilterManagerShouldReport(now_ms))
     {
+        printf("filter report by timeout\n");
         FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
+        s_last_report_ms = now_ms;
     }
     return ;
 }

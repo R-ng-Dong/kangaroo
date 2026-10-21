@@ -34,7 +34,7 @@ static esp_err_t CheckHeader(const KgrDataFormat *data_rec)
 {
     if (KGR_FRAME_HEADER == data_rec->header)
     {
-        ESP_LOGI(TAG, "check header done");
+        // ESP_LOGI(TAG, "check header done");
         return ESP_OK;
     }
     return ESP_FAIL;
@@ -47,7 +47,7 @@ static esp_err_t CheckSum(const UI8 *buff, UI8 data_length)
     UI8 check_sum_temp = buff[data_length + 1];
     if (crc8_cal(&buff[0], data_length + 1) == check_sum_temp)
     {
-        ESP_LOGI(TAG, "Checksum is valid");
+        // ESP_LOGI(TAG, "Checksum is valid");
         return ESP_OK;
     }
     ESP_LOGE(TAG, "Checksum failed");
@@ -102,7 +102,7 @@ static void KGR_HandleData(const KgrDataFormat *frame)
     if (HANDLE_DATA != s_state || NULL == frame)
         return;
 
-    ESP_LOGW(TAG, "frame_type: %02x", frame->type);
+    // ESP_LOGW(TAG, "frame_type: %02x", frame->type);
 
     if (NULL != s_event_handler)
     {
@@ -199,7 +199,7 @@ esp_err_t SetTDSValue(UI16 TDS_inlet, UI16 TDS_ro)
 
 esp_err_t EnableCommand(UI8 enabled)
 {
-    if(enabled) enabled = 0x01;
+    if (enabled) enabled = 0x01;
     KgrFrameTypeA frame_typeA = {0};
     frame_typeA.command = 0x00;
     frame_typeA.data.enable.value = enabled;
@@ -228,7 +228,7 @@ esp_err_t SetLedControl(UI8 led_idx, UI8 control_value)
     return KGR_BuildFrame(KGR_DATA_TYPE_A, (UI8 *)(&frame_typeA), sizeof(frame_typeA));
 }
 
-esp_err_t SetDeviceId(UI32 dev_id) // MSB first
+esp_err_t SetDeviceId(UI32 dev_id)
 {
     UI8 dev_id_arr[4];
     KgrFrameTypeA frame_typeA = {0};
@@ -240,3 +240,4 @@ esp_err_t SetDeviceId(UI32 dev_id) // MSB first
     frame_typeA.data.id_set.device_id_set = *(UI32 *)dev_id_arr;
     return KGR_BuildFrame(KGR_DATA_TYPE_A, (UI8 *)(&frame_typeA), sizeof(frame_typeA));
 }
+
