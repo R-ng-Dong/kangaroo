@@ -12,9 +12,12 @@
 
 _bool WaterControllerResetSystem(void);
 _bool WaterControllerSetFilterRuntimeMinutes(FilterTimeIndex filter_index, UI16 time_m);
+_bool WaterControllerInit(void);
+_bool WaterControllerTest(void);
 _bool WaterControllerSetFeatureHot(UI8 enabled, UI8 temperature);
 _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature);
 _bool WaterControllerSetFeatureEnergySaving(UI8 enabled);
+_bool WaterControllerStartROFlushing(UI16 time_s);
 _bool WaterControllerSetTDSValue(UI16 tds_inlet, UI16 tds_ro);
 _bool WaterControllerEnableCommandTest(UI8 enabled);
 _bool WaterControllerSetOutputControl(UI8 output_idx, UI8 control_value);

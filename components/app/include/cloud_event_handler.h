@@ -8,6 +8,7 @@ typedef void (*CloudUpdateStateCallback)(UI16 elemId, UI16 attrId, UI8 *attrValu
 
 extern uint8_t g_cloud_is_connected;
 
+void RAL_DeinitBle(void);
 iot_err_t DeviceRegisterEvent(void);
 void RootDeviceFactoryReset(void);
 void CloudRegisterUpdateStateCallback(CloudUpdateStateCallback cb); 

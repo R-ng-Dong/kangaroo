@@ -75,8 +75,10 @@ typedef struct __attribute__((packed))
     UI32 total_pump_running_time; // 4.19
     UI32 total_hot_running_time;  // 4.20
     UI32 total_cold_running_time; // 4.21
-
-    UI8  reserved[3];           // 4.22
+    UI8 hot_target_temperature; //4.22
+    UI8 cold_target_temperature; //4.23
+    
+    UI8  reserved[1];           // 4.24
 } KgrFrameType1;
 
 typedef struct __attribute__((packed))
@@ -191,11 +193,11 @@ esp_err_t SetFeatureEnable(WaterPurifyFeature feature, UI8 enabled, UI8 value);
 esp_err_t SetTimeFilter(WaterPurifyFilter filter, UI16 time);
 
 esp_err_t SetTDSValue(UI16 TDS_inlet, UI16 TDS_ro);
-
-//FCT test
 esp_err_t EnableCommand(UI8 enabled);
 esp_err_t SetOutputControl(UI8 output_idx, UI8 control_value);
 esp_err_t SetLedControl(UI8 led_idx, UI8 control_value);
-esp_err_t SetDeviceId(UI32 dev_id) ;
+esp_err_t SetDeviceId(UI32 dev_id);
+
+//FCT test
 
 #endif /*UART_PROTOCOL_H*/

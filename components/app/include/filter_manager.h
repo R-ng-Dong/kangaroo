@@ -31,7 +31,7 @@ typedef enum
 
 void FilterManagerInit(void);
 void FilterManagerTick(UI32 now_ms);
-void FilterManagerCheckWarning(UI32 now_ms);
+void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent);
 UI32 FilterManagerGetWaterConsumption(void);
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds);
 _bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds);

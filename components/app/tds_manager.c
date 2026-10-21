@@ -95,8 +95,7 @@ void TdsManagerHandleSample(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
     // }
 
     AppContextSetTdsState(inlet_ppm, ro_ppm, now_ms);
-    TdsManagerCheckWarnings(inlet_ppm, ro_ppm);
-    
+
     if (!has_previous)
     {
         AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
@@ -116,7 +115,7 @@ void TdsManagerHandleSample(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
 
 UI8 TdsManagerGetEfficiency(UI16 inlet_ppm, UI16 ro_ppm)
 {
-    if(inlet_ppm)
+    if(!inlet_ppm || 0 == inlet_ppm)
     {
         return 0;
     }

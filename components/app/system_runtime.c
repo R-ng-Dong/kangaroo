@@ -72,11 +72,11 @@ void SystemRuntimeInit(void)
     SystemRuntimeLoadFromFlash();
 }
 
-bool SystemRuntimeReconfig(UI32 time_s)
+bool SystemRuntimeReconfig(UI32 time_s, UI32 now_ms)
 {
 
     s_device_runtime_total_s = time_s;
-    // s_device_active_start_ms = 0U;
+    s_device_active_start_ms = now_ms;
     return SystemRuntimeSaveToFlash();
 }
 
@@ -91,5 +91,5 @@ bool SystemRuntimeUpdate(UI32 now_ms)
 
 UI32 SystemRuntimeGetSeconds(UI32 now_ms)
 {
-    return s_device_runtime_total_s;//SystemRuntimeCurrentSeconds(now_ms);
+    return SystemRuntimeCurrentSeconds(now_ms); //s_device_runtime_total_s
 }

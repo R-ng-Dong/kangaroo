@@ -8,13 +8,18 @@ static DeviceElementAttributeInfo s_element_1_attributes[] = {
     ATTRIBUTE(45568, "filter_lifetime", 24),
     ATTRIBUTE(45569, "water_flow", 4),
     ATTRIBUTE(1, "on_off", 2),
-    ATTRIBUTE(63232, "error_code", 4),
+    ATTRIBUTE(46096, "error_code", 4),
+    ATTRIBUTE(ATTR_STATUS, "status_manager", 4),
+    ATTRIBUTE(ATTR_FIRMWARE_VERSION, "firmware_version", 2), 
 };
 
 static DeviceElementAttributeInfo s_element_2_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
     ATTRIBUTE(160, "tds_input", 2),
+    ATTRIBUTE(ATTR_ENERGY_SAVING_SCHEDULE, "saving_schedule", 6),
+    ATTRIBUTE(ATTR_ENERGY, "energy", 8),
+    ATTRIBUTE(ATTR_RO_FLUSHING, "ro_flushing", 2),
 };
 
 static DeviceElementAttributeInfo s_element_3_attributes[] = {
