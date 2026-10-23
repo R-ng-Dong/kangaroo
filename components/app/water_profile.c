@@ -18,6 +18,8 @@ static UI32 s_electrolysis_completed_seconds;
 static UI16 s_last_ply_time;
 static UI8 s_last_ply_status;
 static _bool s_has_ply_sample;
+
+static _bool s_has_mess_type1 = D_FALSE;
 static _bool s_has_mess_typeA = D_FALSE;
 static volatile UI32 s_frame_type_1_sequence;
 static volatile UI32 s_frame_type_A_sequence;
@@ -162,6 +164,11 @@ _bool HasMessageTypeA(void)
     return s_has_mess_typeA;
 }
 
+_bool HasMessageType1(void)
+{
+    return s_has_mess_type1;
+}
+    
 UI16 WaterProfileGetVersionFirmware(void)
 {
     return s_frame_type_A.fw_build_ver[0] << 8 | s_frame_type_A.fw_build_ver[1];
@@ -173,6 +180,7 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
     {
         return;
     }
+    s_has_mess_type1 = D_TRUE;
 
     memcpy(&s_frame_type_1, data, sizeof(s_frame_type_1));
     s_frame_type_1_sequence++;

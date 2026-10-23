@@ -30,9 +30,10 @@ typedef enum
 } FilterManagerReportMode;
 
 void FilterManagerInit(void);
-void FilterManagerTick(UI32 now_ms);
+void FilterManagerSetModel(WaterPurifierType model);
+void FilterManagerTick(UI32 now_ms, WaterPurifierType model);
 void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent);
-UI32 FilterManagerGetWaterConsumption(void);
+UI32 FilterManagerGetWaterConsumption(WaterPurifierType model);
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds);
 _bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds);
 _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *seconds_out);

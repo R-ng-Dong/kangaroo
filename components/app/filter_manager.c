@@ -289,8 +289,7 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
         percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
-        if(percent_values[idx] >= 99) percent_values[idx] = 100;
-        // printf("percent[%d]: %d-%d \n", idx, filter_lifetime_by_pump, filter_lifetime_by_system);
+        if(percent_values[idx] >= 99) percent_values[idx] = 100;  
     }
 }
 
@@ -308,21 +307,26 @@ void FilterManagerInit(void)
     FilterManagerLoadLifetimes();
     FilterManagerLoadDefaultPids();
 
-#if DEVICE_TYPE == WATER_PURIFIER_TYPE_STANDARD
-    FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_LOCAL);
-    FilterRuntimeInit();
-    PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
-
-#elif DEVICE_TYPE == WATER_PURIFIER_TYPE_HOT_COLD
-    FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_UART);
-#endif
-
     s_last_report_ms = 0U;
     for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
     {
         s_last_reported_percent[idx] = 0U;
     }
 }
+
+void FilterManagerSetModel(WaterPurifierType model)
+{
+    if(WATER_PURIFIER_TYPE_STANDARD == model)
+    {
+        FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_LOCAL);
+        PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
+    }
+    else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        FilterRuntimeSetModel(FILTER_RUNTIME_MODEL_UART);
+    }
+}
+
 
 static _bool FilterManagerHasSignificantDecrease(const UI8 *percent_values)
 {
@@ -418,24 +422,27 @@ void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent)
     }
 }
 
-void FilterManagerTick(UI32 now_ms)
+void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
 {
-#if DEVICE_TYPE == WATER_PURIFIER_TYPE_STANDARD
-    _bool updated = FilterManagerUpdateFromPump(now_ms);
-    if (!updated)
+    if(WATER_PURIFIER_TYPE_STANDARD == model)
     {
-        return ;
+        _bool updated = FilterManagerUpdateFromPump(now_ms);
+        if (!updated)
+        {
+            return ;
+        }
     }
-#elif DEVICE_TYPE == WATER_PURIFIER_TYPE_HOT_COLD
-    FilterRuntimeRefreshFromUart();
-#endif
+    else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        FilterRuntimeRefreshFromUart();
+    }
 
-    UI8 remaining_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
+    static UI8 remaining_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
     FilterManagerGetLifetimePercent(now_ms, remaining_percent);
 
     FilterManagerCheckWarning(now_ms, remaining_percent);
 
-
+    printf("remaining: %d %d %d %d %d\n", remaining_percent[0], remaining_percent[1], remaining_percent[2], remaining_percent[3], remaining_percent[4]);
     // Report immediately when any filter's remaining life drops by at least 5 points.
     _bool has_significant_decrease = FilterManagerHasSignificantDecrease(remaining_percent);
     if (has_significant_decrease)
@@ -461,18 +468,22 @@ void FilterManagerTick(UI32 now_ms)
     return ;
 }
 
-UI32 FilterManagerGetWaterConsumption(void)
+UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
 {
     UI32 pump_active_total_seconds = 0;
-#if DEVICE_TYPE == WATER_PURIFIER_TYPE_STANDARD
-    pump_active_total_seconds = PumpGetActiveTotalSeconds();
-#elif DEVICE_TYPE == WATER_PURIFIER_TYPE_HOT_COLD
-    if(WaterRuntimeHasValue())
+    if(WATER_PURIFIER_TYPE_STANDARD == model)
     {
-        DeviceRuntimeSnapshot_t snapshot = WaterRuntimeGetSnapshot();
-        pump_active_total_seconds = snapshot.total_pump_runtime;
+        //PumpUpdateRuntime()
+        pump_active_total_seconds = PumpGetActiveTotalSeconds();
     }
-#endif
+    else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        if(WaterRuntimeHasValue())
+        {
+            DeviceRuntimeSnapshot_t snapshot = WaterRuntimeGetSnapshot();
+            pump_active_total_seconds = snapshot.total_pump_runtime;
+        }
+    }
     // UI32 pump_active_total_hours = pump_active_total_seconds/3600;
 
     return (pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY) / (3600 * 100);

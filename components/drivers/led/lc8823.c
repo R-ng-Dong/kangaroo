@@ -95,7 +95,7 @@ static void LC8823SpiInit(gpio_num_t clk_pin, gpio_num_t data_pin, uint32_t freq
         .mode = 0,         
         .spics_io_num = -1,   
         .queue_size = 2,
-        .pre_cb = NULL,      // Không cần callback trước khi truyền
+        .pre_cb = NULL,      
         .flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_NO_DUMMY,
     };
 
