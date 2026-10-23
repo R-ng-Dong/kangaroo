@@ -27,20 +27,6 @@ void app_main(void)
         return;
     }
 
-    // Step 2: Initialize core with your model ID
-#if STAGING_ENVIRONMENT
-    static const char *MODEL_ID = "00000101C0040001";
-#endif
-
-#if PRODUCT_ENVIRONMENT
-    static const char *MODEL_ID = "00000101C0040003";
-#endif
-    err = IOT_CoreInit(MODEL_ID);
-    if (err != IOT_OK)
-    {
-        IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
-        return;
-    }
     // Step 3: Register event callbacks
     err = DeviceRegisterEvent();
     if (err != IOT_OK)
@@ -48,10 +34,36 @@ void app_main(void)
         IOT_LOGE("MAIN", "Failed to register event callback");
     }
 
-    IOT_LOGI(TAG, "============= Version %s =============\n", CONFIG_APP_PROJECT_VER);
-
 #endif
 
-    AppInit();
+    esp_err_t esp_err = AppCommonInit();
+    if(esp_err != ESP_OK)
+    {
+        IOT_LOGE("MAIN", "Failed to init AppCommon");
+    }
+
+    WaterPurifierType model = AppCheckModel();
+    if(WATER_PURIFIER_TYPE_STANDARD == model)
+    {
+        static const char *MODEL_ID = "00000101C0040003";
+        err = IOT_CoreInit(MODEL_ID);
+    }else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        static const char *MODEL_ID = "00000101C0040003";
+        err = IOT_CoreInit(MODEL_ID);
+    }
+    if (err != IOT_OK)
+    {
+        IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
+        return;
+    }
+
+    esp_err = AppInit(model);
+    if(esp_err != ESP_OK)
+    {
+        IOT_LOGE("MAIN", "Failed to init AppInit");
+    }
+
+    IOT_LOGI(TAG, "============= Version %s =============\n", CONFIG_APP_PROJECT_VER);
     return;
 }

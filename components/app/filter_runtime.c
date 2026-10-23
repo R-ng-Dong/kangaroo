@@ -96,16 +96,11 @@ bool FilterRuntimeLoadFromFlash(void)
 
 void FilterRuntimeInit(void)
 {
-    memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(s_local_runtime_total_s, 0, sizeof(s_local_runtime_total_s));
     memset(s_local_runtime_start_ms, 0, sizeof(s_local_runtime_start_ms));
     memset(s_local_runtime_running, 0, sizeof(s_local_runtime_running));
     s_last_pump_active = false;
-
-    if (s_runtime_model == FILTER_RUNTIME_MODEL_LOCAL)
-    {
-        FilterRuntimeLoadFromFlash();
-    }
+    FilterRuntimeLoadFromFlash();
 }
 
 void FilterRuntimeSetModel(FilterRuntimeModel_t model)
@@ -116,10 +111,11 @@ void FilterRuntimeSetModel(FilterRuntimeModel_t model)
     }
 
     s_runtime_model = model;
+    memset(&s_snapshot, 0, sizeof(s_snapshot));
 
     if (s_runtime_model == FILTER_RUNTIME_MODEL_LOCAL)
     {
-        FilterRuntimeLoadFromFlash();
+        FilterRuntimeInit();
     }
 }
 

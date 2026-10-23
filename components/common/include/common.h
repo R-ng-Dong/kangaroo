@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define WATER_PURIFIER_TYPE_STANDARD   0
-#define WATER_PURIFIER_TYPE_HOT_COLD   1
-
-#define DEVICE_TYPE WATER_PURIFIER_TYPE_HOT_COLD
 
 #define HOT_TANK_POWER_W       450 // W/h
 #define COLD_TANK_POWER_W       84 // W/h
@@ -36,6 +32,12 @@ typedef int32_t   SI32;
 typedef int64_t   SI64;
 
 typedef bool _bool;
+
+typedef enum
+{
+    WATER_PURIFIER_TYPE_STANDARD = 0,
+    WATER_PURIFIER_TYPE_HOT_COLD,
+}WaterPurifierType;
 
 typedef enum {
     SYS_STATE_BOOT = 0,

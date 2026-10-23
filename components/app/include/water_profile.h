@@ -94,5 +94,6 @@ SI8 WaterProfileGetHotTankTemperature(void);
 SI8 WaterProfileGetColdTankTemperature(void);
 UI16 WaterProfileGetVersionFirmware(void);
 _bool HasMessageTypeA(void);
+_bool HasMessageType1(void);
 
 #endif

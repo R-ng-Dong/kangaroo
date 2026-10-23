@@ -17,7 +17,11 @@
 #define TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_COUNT  (TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_MS/APP_INTERVAL_MS)
 #define TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS_COUNT  (TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS/APP_INTERVAL_MS)
 
-esp_err_t AppInit(void);
+esp_err_t AppCommonInit(void);
+esp_err_t AppInit(WaterPurifierType model);
+WaterPurifierType AppCheckModel(void);
+WaterPurifierType AppGetModel(void);
+void AppSetModel(WaterPurifierType model);
 void AppRspToCloud(UI8 elem_id, UI16 attr_id);
 void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm);
 
