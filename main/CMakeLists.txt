@@ -1,8 +1,8 @@
 set(ROOT_DIR ${CMAKE_SOURCE_DIR}) # chỉ gán biến, không hiểu j về path, không xử lý được các lệnh: ./, ../
 get_filename_component(ROOT_DIR ${ROOT_DIR} REALPATH) # xử lý đường dẫn, ROOT_DIR = CMAKE_SOURCE_DIR = .../FW_SDK
 
-# GLOB: ko quét thư mục con GLOB_RECURSE: quét cả thư mục con
-file(GLOB_RECURSE SRCS "main.c" "${ROOT_DIR}/main/*.c")
+# Keep sources explicit so a newly added factory module is compiled on the next build.
+set(SRCS "main.c" "factory_test_udp.c" "factory_test_ble.c")
 
 # Collect all include directories
 file(GLOB_RECURSE ALL_HEADERS "${ROOT_DIR}/main/*.h") 

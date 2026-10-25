@@ -96,4 +96,11 @@ UI16 WaterProfileGetVersionFirmware(void);
 _bool HasMessageTypeA(void);
 _bool HasMessageType1(void);
 
+/** Read counters from the latest MLN UART frame type 1. */
+UI32 WaterProfileGetSystemRunSeconds(void);
+UI32 WaterProfileGetSystemTimeSeconds(void);
+/** Read ADC values reported by MLN UART frame type A, not the local TDS ADC. */
+UI16 WaterProfileGetAdcRaw1(void);
+UI16 WaterProfileGetAdcRaw2(void);
+
 #endif

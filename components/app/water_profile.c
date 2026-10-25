@@ -139,7 +139,8 @@ UI32 WaterProfileGetDeviceId(void)
 
 UI8 WaterProfileGetInputStatus(WaterPurifyInputStatus input_type, UI8 index)
 {
-    if (KGR_MAX_INDEX <= index)
+    /* MLN input indices are one-based and include index 8. */
+    if (0U == index || KGR_MAX_INDEX < index)
     {
         return 0U;
     }
@@ -167,6 +168,26 @@ _bool HasMessageTypeA(void)
 _bool HasMessageType1(void)
 {
     return s_has_mess_type1;
+}
+
+UI32 WaterProfileGetSystemRunSeconds(void)
+{
+    return s_frame_type_1.system_run;
+}
+
+UI32 WaterProfileGetSystemTimeSeconds(void)
+{
+    return s_frame_type_1.system_time;
+}
+
+UI16 WaterProfileGetAdcRaw1(void)
+{
+    return s_frame_type_A.adc_raw_value_1;
+}
+
+UI16 WaterProfileGetAdcRaw2(void)
+{
+    return s_frame_type_A.adc_raw_value_2;
 }
     
 UI16 WaterProfileGetVersionFirmware(void)

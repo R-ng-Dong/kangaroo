@@ -53,14 +53,23 @@ esp_err_t AdcOneshotInit(AdcChannel channel, AdcAtten atten, AdcBitwith bitwith)
 
 esp_err_t AdcOneshotRead(AdcChannel channel, UI16 *raw_data)
 {
-    if (raw_data == NULL) {
+    if (NULL == raw_data) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err = adc_oneshot_read(adc1_handle, (adc_channel_t)channel, (int *)raw_data);
+    if (NULL == adc1_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* ESP-IDF writes an int; passing the caller's UI16 buffer would overwrite memory. */
+    int raw_value = 0;
+    esp_err_t err = adc_oneshot_read(adc1_handle, (adc_channel_t)channel, &raw_value);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read ADC1 channel");
         return err;
     }
+    if (0 > raw_value || UINT16_MAX < raw_value) {
+        return ESP_FAIL;
+    }
+    *raw_data = (UI16)raw_value;
     return ESP_OK;
 }
 

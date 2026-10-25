@@ -37,17 +37,18 @@ void app_main(void)
 #endif
 
     esp_err_t esp_err = AppCommonInit();
-    if(esp_err != ESP_OK)
+    if (esp_err != ESP_OK)
     {
         IOT_LOGE("MAIN", "Failed to init AppCommon");
     }
 
     WaterPurifierType model = AppCheckModel();
-    if(WATER_PURIFIER_TYPE_STANDARD == model)
+    if (WATER_PURIFIER_TYPE_STANDARD == model)
     {
         static const char *MODEL_ID = "00000101C0040003";
         err = IOT_CoreInit(MODEL_ID);
-    }else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    }
+    else if (WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
         static const char *MODEL_ID = "00000101C0040003";
         err = IOT_CoreInit(MODEL_ID);
@@ -59,9 +60,15 @@ void app_main(void)
     }
 
     esp_err = AppInit(model);
-    if(esp_err != ESP_OK)
+    if (esp_err != ESP_OK)
     {
         IOT_LOGE("MAIN", "Failed to init AppInit");
+    }
+
+    //
+    if (!IOT_CoreIsProvisioned())
+    {
+        // RPA init
     }
 
     IOT_LOGI(TAG, "============= Version %s =============\n", CONFIG_APP_PROJECT_VER);
