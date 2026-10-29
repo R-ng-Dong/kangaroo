@@ -24,10 +24,13 @@
 #include "tds_task.h"
 #include "water_controller.h"
 #include "water_profile.h"
+#include "uart_driver.h"
 
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
 #define BLE_SCAN_MS 3000
+#define UART_TEST_BUFFER_SIZE 1024
+#define UART_TEST_CHUNK_SIZE 256
 /* Use the same TDS wiring as production; each request samples one pulse polarity. */
 #define FACTORY_ADC_SETTLE_US 100U
 #define FACTORY_TDS_0_PULSE_1 GPIO_NUM_0
@@ -41,6 +44,7 @@ static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
 static volatile UI32 s_ble_count;
 static volatile int s_ble_best_rssi;
+static TaskHandle_t s_uart_test_task;
 /* ADC and pulse pins are configured once, on the first factory ADC request. */
 static UI8 s_adc_ready;
 
@@ -163,6 +167,62 @@ static void TestAdc(cJSON *data) {
     SetResult(data, 1U, NULL);
 }
 
+static void TestUartTask(void *arg) {
+    (void)arg;
+    UI8 bytes[UART_TEST_CHUNK_SIZE];
+    for (;;) {
+        int received = uart_read_bytes(UART_NUM_1, bytes, sizeof(bytes), portMAX_DELAY);
+        if (received < 0) {
+            ESP_LOGE(s_tag, "Factory UART read failed");
+            break;
+        }
+        int offset = 0;
+        while (offset < received) {
+            int written = uart_write_bytes(UART_NUM_1, bytes + offset, received - offset);
+            if (written <= 0) {
+                ESP_LOGE(s_tag, "Factory UART echo failed");
+                break;
+            }
+            offset += written;
+        }
+    }
+    s_uart_test_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static esp_err_t TestUartInit(void) {
+    if (NULL != s_uart_test_task)
+        return ESP_OK;
+
+    /* Factory test owns UART1: stop the normal receiver before installing a raw port. */
+    esp_err_t err = ESP_OK;
+    if (uart_is_driver_installed(UART_NUM_1)) {
+        err = UartDeinit(UART_NUM_1);
+        if (ESP_OK != err)
+            return err;
+    }
+
+    const uart_config_t config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    err = uart_driver_install(UART_NUM_1, UART_TEST_BUFFER_SIZE, UART_TEST_BUFFER_SIZE, 0, NULL, 0);
+    if (ESP_OK != err)
+        return err;
+    err = uart_param_config(UART_NUM_1, &config);
+    if (ESP_OK == err)
+        err = uart_set_pin(UART_NUM_1, PIN_UART_TX, PIN_UART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (ESP_OK == err && pdPASS != xTaskCreate(TestUartTask, "factory_uart", 2048, NULL, 5, &s_uart_test_task))
+        err = ESP_ERR_NO_MEM;
+    if (ESP_OK != err)
+        uart_driver_delete(UART_NUM_1);
+    return err;
+}
+
 static void BleScanCallback(void *arg, IOT_BleMgmtEventStatusType_t event, void *event_data) {
     (void)arg;
     if (BLE_MGMT_EVENT_STATUS_TYPE_SCAN_RESULT == event && NULL != event_data) {
@@ -257,18 +317,20 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
         /* PumpInit applies the board's active-low polarity to this live GPIO reading. */
         cJSON_AddBoolToObject(data, "pump_active", D_TRUE == PumpIsActive());
         SetResult(data, 1U, NULL);
-    } else if (0 == strcmp(method, "output")) {
-        UI32 index, state;
-        if (!ReadUnsigned(params, "index", 7, &index) ||
-            !ReadUnsigned(params, "state", 1, &state)) {
-            SetResult(data, 0U, "invalid_argument");
-            return;
-        }
-        cJSON_AddNumberToObject(data, "index", index);
-        cJSON_AddNumberToObject(data, "state", state);
-        SetResult(data, D_TRUE == WaterControllerSetOutputControl((UI8)index, (UI8)state),
-                  "uart_send_failed");
-    } else if (0 == strcmp(method, "lc8823")) {
+    }
+    // else if (0 == strcmp(method, "output")) {
+    //     UI32 index, state;
+    //     if (!ReadUnsigned(params, "index", 7, &index) ||
+    //         !ReadUnsigned(params, "state", 1, &state)) {
+    //         SetResult(data, 0U, "invalid_argument");
+    //         return;
+    //     }
+    //     cJSON_AddNumberToObject(data, "index", index);
+    //     cJSON_AddNumberToObject(data, "state", state);
+    //     SetResult(data, D_TRUE == WaterControllerSetOutputControl((UI8)index, (UI8)state),
+    //               "uart_send_failed");
+    // }
+    else if (0 == strcmp(method, "lc8823")) {
         UI32 rgb;
         if (!ReadUnsigned(params, "rgb", 0xFFFFFF, &rgb)) {
             SetResult(data, 0U, "invalid_argument");
@@ -332,7 +394,7 @@ static void HandleUartTestCommand(const char *method, const cJSON *params, cJSON
         SetResult(data, D_TRUE == WaterControllerSetDeviceId(device_id), "uart_send_failed");
     } else if (0 == strcmp(method, "getAll")) {
         /* The response combines fields from MLN UART frames 1 and A. */
-        if (D_TRUE != HasMessageType1() || D_TRUE != HasMessageTypeA()) {
+        if (NULL != s_uart_test_task || D_TRUE != HasMessageType1() || D_TRUE != HasMessageTypeA()) {
             SetResult(data, 0U, "no_uart_data");
             return;
         }
@@ -460,8 +522,10 @@ esp_err_t FactoryTestUdpStart(void) {
     if (NULL != s_task) {
         return ESP_OK;
     }
-    /* Factory mode skips normal app setup; initialize UART state and pump polarity here. */
-    WaterProfileInit();
+    /* Factory UART runs independently of UDP and echoes bytes on the same port. */
+    esp_err_t err = TestUartInit();
+    if (ESP_OK != err)
+        return err;
     PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
     if (pdPASS != xTaskCreate(FactoryTestUdpTask, "factory_test_udp", 4096, NULL, 5, &s_task)) {
         return ESP_ERR_NO_MEM;

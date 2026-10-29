@@ -12,6 +12,8 @@ static const char *TAG = "UART";
 
 static QueueHandle_t s_uart_queue = NULL;
 
+TaskHandle_t xTask_uart_handle = NULL;
+
 static esp_err_t ConfigureUart(const UartConfig uart_config)
 {
     esp_err_t esp_err = ESP_OK;
@@ -148,12 +150,28 @@ esp_err_t UartInit(const UartConfig *uart_config)
     if(NULL == uart_config) return ESP_ERR_INVALID_ARG;
     if (ConfigureUart(*uart_config) == ESP_OK)
     {
-        BaseType_t ret = xTaskCreate(UartTask, "UartTask", 2048, (void *)uart_config, configMAX_PRIORITIES - 3, NULL);
+        BaseType_t ret = xTaskCreate(UartTask, "UartTask", 2048, (void *)uart_config, configMAX_PRIORITIES - 3, &xTask_uart_handle);
         if (pdPASS != ret)
         {
             ESP_LOGE(TAG, "Failed to create UART task");
             return ESP_FAIL;
         }
+        return ESP_OK;
     }
     return ESP_FAIL;
+}
+
+esp_err_t UartDeinit(uart_port_t port_num)
+{
+    if (xTask_uart_handle)
+    {
+        vTaskDelete(xTask_uart_handle);
+        xTask_uart_handle = NULL;
+    }
+    if (s_uart_queue)
+    {
+        vQueueDelete(s_uart_queue);
+        s_uart_queue = NULL;
+    }
+    return uart_driver_delete(port_num);
 }

@@ -137,6 +137,8 @@ Quét mất khoảng 3 giây. `devices` đếm bản tin quảng bá, không ph�
 
 `getAll` lấy dữ liệu MLN qua các API trong `water_profile.h`; điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây là giá trị bo UART gửi về, khác với `raw1`/`raw2` ADC cục bộ của method `adc`. Chưa nhận đủ khung UART loại 1 và A: `no_uart_data`.
 
+Khi UART1 đã chuyển sang luồng test echo, bộ phân tích khung MLN của luồng chính không chạy; `getAll` trả `no_uart_data` để tránh dùng dữ liệu cũ.
+
 ## Phản hồi lỗi
 
 ```json
@@ -146,5 +148,20 @@ Quét mất khoảng 3 giây. `devices` đếm bản tin quảng bá, không ph�
 ```
 
 Các lỗi khác: `wifi_not_connected`, `ble_unavailable`, `ble_callback_failed`, `ble_scan_failed`, `ble_scan_stop_failed`, `adc_init_failed`, `adc_read_failed`, `uart_send_failed`, `led_failed`. Các ví dụ chưa được kiểm thử trên thiết bị thật.
+
+### 1. ADC
+
+- Tắt hàm TDS: TdsTaskStop()
+- Init GPIO cho 2 chân pull và cho logic ngược
+- Init 2 ADC: AdcOneshotInit
+- Đọc ADC: AdcOneshotRead
+
+### 2. UART
+
+- Khi bắt đầu luồng test, `TestUartInit()` hủy UART1 của luồng chính, cấu hình lại UART1 và chạy task nhận riêng cho test. Luồng UART chính không xử lý dữ liệu test.
+- Tool PC gửi byte trực tiếp vào UART1 của thiết bị (115200 baud, 8N1). Mỗi byte nhận được được gửi lại qua UART1 theo đúng thứ tự; dữ liệu có thể được chia thành nhiều lần ghi nếu đến theo nhiều đợt.
+- Echo UART là dữ liệu nhị phân nguyên gốc, không đóng gói JSON và không đi qua UDP. Nối TX của tool với RX của thiết bị, RX của tool với TX của thiết bị và nối chung GND.
+
+### 3. RGB
 
 ## Timeline: 05/11
