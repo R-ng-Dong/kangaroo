@@ -33,7 +33,7 @@ typedef struct IOT_CacheEntry
 
 typedef struct
 {
-    char namespace[IOT_CACHE_MAX_NAMESPACE_LEN];
+    char nsName[IOT_CACHE_MAX_NAMESPACE_LEN];
     IOT_CacheConfig_t config;
     IOT_CacheEntry_t *entries;        // Array of entries
     IOT_CacheEntry_t *hash_table[16]; // Simple hash table for fast lookup
@@ -71,11 +71,11 @@ static uint8_t hash_key(const char *key)
     return hash & 0x0F; // 16 buckets
 }
 
-static IOT_CacheNamespace_t *find_namespace(const char *namespace)
+static IOT_CacheNamespace_t *find_namespace(const char *nsName)
 {
     for (int i = 0; i < IOT_CACHE_MAX_NAMESPACES; i++)
     {
-        if (s_cache_ctx.namespaces[i].registered && strcmp(s_cache_ctx.namespaces[i].namespace, namespace) == 0)
+        if (s_cache_ctx.namespaces[i].registered && strcmp(s_cache_ctx.namespaces[i].nsName, nsName) == 0)
         {
             return &s_cache_ctx.namespaces[i];
         }
@@ -191,10 +191,10 @@ static iot_err_t flush_entry(IOT_CacheNamespace_t *ns, IOT_CacheEntry_t *entry)
         return IOT_OK;
     }
 
-    esp_err_t err = DAO_SetData(ns->namespace, entry->key, entry->type, entry->data, entry->data_len);
+    esp_err_t err = DAO_SetData(ns->nsName, entry->key, entry->type, entry->data, entry->data_len);
     if (err != ESP_OK)
     {
-        IOT_LOGE(TAG, "Failed to flush entry %s/%s: %s", ns->namespace, entry->key, esp_err_to_name(err));
+        IOT_LOGE(TAG, "Failed to flush entry %s/%s: %s", ns->nsName, entry->key, esp_err_to_name(err));
         return IOT_ERR_FAIL;
     }
 
@@ -241,7 +241,7 @@ static iot_err_t evict_lru(IOT_CacheNamespace_t *ns)
     ns->stats.evictions++;
     s_cache_ctx.global_stats.evictions++;
 
-    IOT_LOGD(TAG, "Evicted entry from %s, count=%d", ns->namespace, ns->entry_count);
+    IOT_LOGD(TAG, "Evicted entry from %s, count=%d", ns->nsName, ns->entry_count);
 
     return IOT_OK;
 }
@@ -336,7 +336,9 @@ static iot_err_t copy_data(void **dest, uint16_t *dest_len, IOT_DaoType type, vo
  * sized for the job.
  * ------------------------------------------------------------------------- */
 
-#define CACHE_FLUSH_TASK_STACK 4096
+#include "../task_stacks.h"
+/* Sized against a measured peak; see task_stacks.h before changing. */
+#define CACHE_FLUSH_TASK_STACK IOT_STACK_CACHE_FLUSH
 #define CACHE_FLUSH_TASK_PRIO  4
 
 static IOT_OsalTaskHandle_t s_flush_task = NULL;
@@ -352,7 +354,7 @@ static void cache_flush_pending(void)
         if (ns->registered && ns->flush_pending)
         {
             ns->flush_pending = false;
-            IOT_CacheFlush(ns->namespace);
+            IOT_CacheFlush(ns->nsName);
         }
     }
 }
@@ -479,7 +481,7 @@ iot_err_t IOT_CacheDeinit(void)
     {
         if (s_cache_ctx.namespaces[i].registered)
         {
-            IOT_CacheUnregisterNamespace(s_cache_ctx.namespaces[i].namespace);
+            IOT_CacheUnregisterNamespace(s_cache_ctx.namespaces[i].nsName);
         }
     }
 
@@ -503,12 +505,12 @@ iot_err_t IOT_CacheRegisterNamespace(const IOT_CacheConfig_t *config)
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!config || !config->namespace || config->maxEntries == 0)
+    if (!config || !config->nsName || config->maxEntries == 0)
     {
         return IOT_ERR_INVALID_ARG;
     }
 
-    if (strlen(config->namespace) >= IOT_CACHE_MAX_NAMESPACE_LEN)
+    if (strlen(config->nsName) >= IOT_CACHE_MAX_NAMESPACE_LEN)
     {
         IOT_LOGE(TAG, "Namespace name too long");
         return IOT_ERR_INVALID_ARG;
@@ -517,10 +519,10 @@ iot_err_t IOT_CacheRegisterNamespace(const IOT_CacheConfig_t *config)
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
     // Check if already registered
-    if (find_namespace(config->namespace))
+    if (find_namespace(config->nsName))
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
-        IOT_LOGW(TAG, "Namespace %s already registered", config->namespace);
+        IOT_LOGW(TAG, "Namespace %s already registered", config->nsName);
         return IOT_OK;
     }
 
@@ -538,16 +540,16 @@ iot_err_t IOT_CacheRegisterNamespace(const IOT_CacheConfig_t *config)
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
-        IOT_LOGE(TAG, "No free namespace slots");
+        IOT_LOGE(TAG, "No free nsName slots");
         return IOT_ERR_NO_MEM;
     }
 
     // Initialize namespace
     memset(ns, 0, sizeof(IOT_CacheNamespace_t));
-    strncpy(ns->namespace, config->namespace, IOT_CACHE_MAX_NAMESPACE_LEN - 1);
-    ns->namespace[IOT_CACHE_MAX_NAMESPACE_LEN - 1] = '\0';
+    strncpy(ns->nsName, config->nsName, IOT_CACHE_MAX_NAMESPACE_LEN - 1);
+    ns->nsName[IOT_CACHE_MAX_NAMESPACE_LEN - 1] = '\0';
     memcpy(&ns->config, config, sizeof(IOT_CacheConfig_t));
-    ns->config.namespace = ns->namespace; // Point to our copy
+    ns->config.nsName = ns->nsName; // Point to our copy
 
     // Allocate entries
     ns->entries = Mem_SafeCalloc(config->maxEntries, sizeof(IOT_CacheEntry_t), TAG, "cache entries");
@@ -565,7 +567,7 @@ iot_err_t IOT_CacheRegisterNamespace(const IOT_CacheConfig_t *config)
          * raise a flag nobody drains. */
         if (!cache_flush_worker_ensure())
         {
-            IOT_LOGE(TAG, "No flush worker — auto-flush disabled for %s", config->namespace);
+            IOT_LOGE(TAG, "No flush worker — auto-flush disabled for %s", config->nsName);
         }
 
         ns->flush_timer = IOT_OsalTimerCreate("cache_flush",
@@ -585,24 +587,24 @@ iot_err_t IOT_CacheRegisterNamespace(const IOT_CacheConfig_t *config)
     IOT_OsalMutexUnlock(s_cache_ctx.mutex);
 
     IOT_LOGI(TAG,
-             "Registered namespace: %s (max=%d, policy=%s)",
-             config->namespace,
+             "Registered nsName: %s (max=%d, policy=%s)",
+             config->nsName,
              config->maxEntries,
              config->policy == IOT_CACHE_WRITE_THROUGH ? "write-through" : "write-back");
 
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheUnregisterNamespace(const char *namespace)
+iot_err_t IOT_CacheUnregisterNamespace(const char *nsName)
 {
-    if (!s_cache_ctx.initialized || !namespace)
+    if (!s_cache_ctx.initialized || !nsName)
     {
         return IOT_ERR_INVALID_ARG;
     }
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
@@ -634,19 +636,19 @@ iot_err_t IOT_CacheUnregisterNamespace(const char *namespace)
 
     IOT_OsalMutexUnlock(s_cache_ctx.mutex);
 
-    IOT_LOGI(TAG, "Unregistered namespace: %s", namespace);
+    IOT_LOGI(TAG, "Unregistered nsName: %s", nsName);
 
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type, void **outData, uint16_t *outLen)
+iot_err_t IOT_CacheGet(const char *nsName, const char *key, IOT_DaoType type, void **outData, uint16_t *outLen)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace || !key || !outData)
+    if (!nsName || !key || !outData)
     {
         return IOT_ERR_INVALID_ARG;
     }
@@ -658,13 +660,13 @@ iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type,
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
 
     // If namespace not registered, go directly to DAO
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
-        esp_err_t err = DAO_GetData(namespace, key, type, outData, outLen);
+        esp_err_t err = DAO_GetData(nsName, key, type, outData, outLen);
         return (err == ESP_OK) ? IOT_OK : (err == ESP_ERR_NVS_NOT_FOUND) ? IOT_ERR_NOT_FOUND : IOT_ERR_FAIL;
     }
 
@@ -694,7 +696,7 @@ iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type,
 
     void *data = NULL;
     uint16_t len = 0;
-    esp_err_t err = DAO_GetData(namespace, key, type, &data, &len);
+    esp_err_t err = DAO_GetData(nsName, key, type, &data, &len);
 
     if (err == ESP_ERR_NVS_NOT_FOUND)
     {
@@ -708,7 +710,7 @@ iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type,
     // Add to cache
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    ns = find_namespace(namespace); // Re-find after unlock
+    ns = find_namespace(nsName); // Re-find after unlock
     if (ns)
     {
         entry = allocate_entry(ns);
@@ -746,14 +748,14 @@ iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type,
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheSet(const char *namespace, const char *key, IOT_DaoType type, void *data, uint16_t len)
+iot_err_t IOT_CacheSet(const char *nsName, const char *key, IOT_DaoType type, void *data, uint16_t len)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace || !key || !data)
+    if (!nsName || !key || !data)
     {
         return IOT_ERR_INVALID_ARG;
     }
@@ -766,13 +768,13 @@ iot_err_t IOT_CacheSet(const char *namespace, const char *key, IOT_DaoType type,
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
 
     // If namespace not registered, go directly to DAO
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
-        esp_err_t err = DAO_SetData(namespace, key, type, data, len);
+        esp_err_t err = DAO_SetData(nsName, key, type, data, len);
         return (err == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
     }
 
@@ -824,10 +826,10 @@ iot_err_t IOT_CacheSet(const char *namespace, const char *key, IOT_DaoType type,
         // Write immediately
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
 
-        esp_err_t dao_err = DAO_SetData(namespace, key, type, data, len);
+        esp_err_t dao_err = DAO_SetData(nsName, key, type, data, len);
         if (dao_err != ESP_OK)
         {
-            IOT_LOGE(TAG, "Write-through failed for %s/%s", namespace, key);
+            IOT_LOGE(TAG, "Write-through failed for %s/%s", nsName, key);
             return IOT_ERR_FAIL;
         }
         entry->dirty = false;
@@ -846,21 +848,21 @@ iot_err_t IOT_CacheSet(const char *namespace, const char *key, IOT_DaoType type,
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheDelete(const char *namespace, const char *key)
+iot_err_t IOT_CacheDelete(const char *nsName, const char *key)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace || !key)
+    if (!nsName || !key)
     {
         return IOT_ERR_INVALID_ARG;
     }
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
 
     if (ns)
     {
@@ -887,26 +889,26 @@ iot_err_t IOT_CacheDelete(const char *namespace, const char *key)
     IOT_OsalMutexUnlock(s_cache_ctx.mutex);
 
     // Delete from NVS
-    esp_err_t err = DAO_RemoveDataByKey(namespace, key);
+    esp_err_t err = DAO_RemoveDataByKey(nsName, key);
 
     return (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) ? IOT_OK : IOT_ERR_FAIL;
 }
 
-iot_err_t IOT_CacheExists(const char *namespace, const char *key, bool *exists)
+iot_err_t IOT_CacheExists(const char *nsName, const char *key, bool *exists)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace || !key || !exists)
+    if (!nsName || !key || !exists)
     {
         return IOT_ERR_INVALID_ARG;
     }
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
 
     if (ns)
     {
@@ -922,12 +924,12 @@ iot_err_t IOT_CacheExists(const char *namespace, const char *key, bool *exists)
     IOT_OsalMutexUnlock(s_cache_ctx.mutex);
 
     // Check NVS
-    esp_err_t err = DAO_CheckDataExistByKey(namespace, key, exists);
+    esp_err_t err = DAO_CheckDataExistByKey(nsName, key, exists);
 
     return (err == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
 }
 
-iot_err_t IOT_CacheFlush(const char *namespace)
+iot_err_t IOT_CacheFlush(const char *nsName)
 {
     if (!s_cache_ctx.initialized)
     {
@@ -947,7 +949,7 @@ iot_err_t IOT_CacheFlush(const char *namespace)
             continue;
         }
 
-        if (namespace && strcmp(ns->namespace, namespace) != 0)
+        if (nsName && strcmp(ns->nsName, nsName) != 0)
         {
             continue;
         }
@@ -964,7 +966,7 @@ iot_err_t IOT_CacheFlush(const char *namespace)
             }
         }
 
-        if (namespace)
+        if (nsName)
         {
             break; // Only flush specified namespace
         }
@@ -975,21 +977,21 @@ iot_err_t IOT_CacheFlush(const char *namespace)
     return result;
 }
 
-iot_err_t IOT_CacheInvalidate(const char *namespace, const char *key)
+iot_err_t IOT_CacheInvalidate(const char *nsName, const char *key)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace)
+    if (!nsName)
     {
         return IOT_ERR_INVALID_ARG;
     }
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
@@ -1051,14 +1053,14 @@ iot_err_t IOT_CacheInvalidate(const char *namespace, const char *key)
     return IOT_OK;
 }
 
-iot_err_t IOT_CachePreload(const char *namespace)
+iot_err_t IOT_CachePreload(const char *nsName)
 {
     if (!s_cache_ctx.initialized)
     {
         return IOT_ERR_INVALID_STATE;
     }
 
-    if (!namespace)
+    if (!nsName)
     {
         return IOT_ERR_INVALID_ARG;
     }
@@ -1069,22 +1071,22 @@ iot_err_t IOT_CachePreload(const char *namespace)
     void **dataList = NULL;
     uint16_t *dataSizes = NULL;
 
-    esp_err_t err = DAO_GetNamespaceData(namespace, &keyList, &keyCount, &dataList, &dataSizes);
+    esp_err_t err = DAO_GetNamespaceData(nsName, &keyList, &keyCount, &dataList, &dataSizes);
 
     if (err == ESP_ERR_NVS_NOT_FOUND)
     {
-        IOT_LOGI(TAG, "Namespace %s is empty, nothing to preload", namespace);
+        IOT_LOGI(TAG, "Namespace %s is empty, nothing to preload", nsName);
         return IOT_OK;
     }
     else if (err != ESP_OK)
     {
-        IOT_LOGE(TAG, "Failed to get namespace data for preload: %s", namespace);
+        IOT_LOGE(TAG, "Failed to get nsName data for preload: %s", nsName);
         return IOT_ERR_FAIL;
     }
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    IOT_CacheNamespace_t *ns = find_namespace(namespace);
+    IOT_CacheNamespace_t *ns = find_namespace(nsName);
     if (!ns)
     {
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
@@ -1099,7 +1101,7 @@ iot_err_t IOT_CachePreload(const char *namespace)
         SAFE_FREE(dataList);
         SAFE_FREE(dataSizes);
 
-        IOT_LOGW(TAG, "Namespace %s not registered for caching", namespace);
+        IOT_LOGW(TAG, "Namespace %s not registered for caching", nsName);
         return IOT_ERR_NOT_FOUND;
     }
 
@@ -1157,7 +1159,7 @@ iot_err_t IOT_CachePreload(const char *namespace)
     SAFE_FREE(dataList);
     SAFE_FREE(dataSizes);
 
-    IOT_LOGI(TAG, "Preloaded %d entries for namespace %s", loaded, namespace);
+    IOT_LOGI(TAG, "Preloaded %d entries for nsName %s", loaded, nsName);
 
     return IOT_OK;
 }
@@ -1213,7 +1215,7 @@ iot_err_t IOT_CacheClear(bool flush_first)
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheGetStats(const char *namespace, IOT_CacheStats_t *stats)
+iot_err_t IOT_CacheGetStats(const char *nsName, IOT_CacheStats_t *stats)
 {
     if (!s_cache_ctx.initialized || !stats)
     {
@@ -1222,7 +1224,7 @@ iot_err_t IOT_CacheGetStats(const char *namespace, IOT_CacheStats_t *stats)
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    if (!namespace)
+    if (!nsName)
     {
         memcpy(stats, &s_cache_ctx.global_stats, sizeof(IOT_CacheStats_t));
 
@@ -1240,8 +1242,8 @@ iot_err_t IOT_CacheGetStats(const char *namespace, IOT_CacheStats_t *stats)
     }
     else
     {
-        IOT_CacheNamespace_t *ns = find_namespace(namespace);
-        IOT_LOGE(TAG, "Getting stats for namespace: %s", ns ? ns->namespace : "NULL");
+        IOT_CacheNamespace_t *ns = find_namespace(nsName);
+        IOT_LOGE(TAG, "Getting stats for nsName: %s", ns ? ns->nsName : "NULL");
         if (!ns)
         {
             IOT_OsalMutexUnlock(s_cache_ctx.mutex);
@@ -1255,7 +1257,7 @@ iot_err_t IOT_CacheGetStats(const char *namespace, IOT_CacheStats_t *stats)
     return IOT_OK;
 }
 
-iot_err_t IOT_CacheResetStats(const char *namespace)
+iot_err_t IOT_CacheResetStats(const char *nsName)
 {
     if (!s_cache_ctx.initialized)
     {
@@ -1264,7 +1266,7 @@ iot_err_t IOT_CacheResetStats(const char *namespace)
 
     IOT_OsalMutexLock(s_cache_ctx.mutex, UINT32_MAX);
 
-    if (!namespace)
+    if (!nsName)
     {
         // Reset all
         memset(&s_cache_ctx.global_stats, 0, sizeof(IOT_CacheStats_t));
@@ -1282,7 +1284,7 @@ iot_err_t IOT_CacheResetStats(const char *namespace)
     }
     else
     {
-        IOT_CacheNamespace_t *ns = find_namespace(namespace);
+        IOT_CacheNamespace_t *ns = find_namespace(nsName);
         if (!ns)
         {
             IOT_OsalMutexUnlock(s_cache_ctx.mutex);
@@ -1300,7 +1302,7 @@ iot_err_t IOT_CacheResetStats(const char *namespace)
     return IOT_OK;
 }
 
-void IOT_CachePrintStatus(const char *namespace)
+void IOT_CachePrintStatus(const char *nsName)
 {
     if (!s_cache_ctx.initialized)
     {
@@ -1321,12 +1323,12 @@ void IOT_CachePrintStatus(const char *namespace)
             continue;
         }
 
-        if (namespace && strcmp(ns->namespace, namespace) != 0)
+        if (nsName && strcmp(ns->nsName, nsName) != 0)
         {
             continue;
         }
 
-        IOT_LOGI(TAG, "Namespace: %s", ns->namespace);
+        IOT_LOGI(TAG, "Namespace: %s", ns->nsName);
         IOT_LOGI(TAG,
                  "  Entries: %d/%d (dirty: %d)",
                  ns->stats.current_entries,

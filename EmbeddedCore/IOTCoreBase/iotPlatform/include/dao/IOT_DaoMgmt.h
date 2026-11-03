@@ -5,6 +5,10 @@
 #include <inttypes.h>
 #include "dao/IOT_DaoType.h"
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 iot_err_t IOT_DaoInit(void);
 iot_err_t IOT_DaoDeinit(void);
 
@@ -24,3 +28,6 @@ iot_err_t IOT_DaoFactoryResetAll(void);
  * @return IOT_OK on success
  */
 iot_err_t IOT_DaoGetStorageStats(uint32_t *usedEntries, uint32_t *totalEntries);
+#ifdef __cplusplus
+}
+#endif

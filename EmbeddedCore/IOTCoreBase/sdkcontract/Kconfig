@@ -1,0 +1,77 @@
+menu "IoT SDK contract"
+
+    config IOT_RECORD_ENABLED
+        bool "Record: keep attribute history on the device"
+        default y
+        help
+            Record logs attribute values into history blocks the app charts. Turn it off for a
+            product with no history (a relay, an IR blaster): Record's code and its static RAM
+            (about 6.5 KB with the default limits -- instance table, rules, reply buffers) are
+            left out of the build, which on an ESP32-C3 is heap a TLS handshake can use.
+            With it off, rules are accepted and ignored, nothing is stored, a state reply
+            carries no history blocks, and a history request from the app gets an empty reply.
+            History a previous firmware stored is not served and not removed while it is off.
+            A custom history store (IOT_ContractRecordUseCustomStore()) is never called while
+            it is off: a product that keeps its own history format stops logging.
+
+    config IOT_RECORD_MAX_OPEN_BLOCKS
+        int "Record: blocks held open in RAM at once"
+        depends on IOT_RECORD_ENABLED
+        default 6
+        range 1 64
+        help
+            How many sensor-log blocks may sit in RAM at the same time. This bounds RAM use only;
+            it does not change the stored or wire format. A lower value flushes blocks earlier.
+
+    config IOT_RECORD_MAX_INSTANCES
+        int "Record: attribute instances tracked"
+        depends on IOT_RECORD_ENABLED
+        default 32
+        range 1 255
+        help
+            How many (device, element, attribute) series the recorder tracks. This bounds RAM use
+            only; it does not change the stored or wire format. Series past the limit are not recorded.
+
+    config IOT_RECORD_BLOCKS_PER_ATTR
+        int "Record: blocks kept per attribute"
+        depends on IOT_RECORD_ENABLED
+        default 16
+        range 1 64
+        help
+            How many blocks each attribute's ring holds before the oldest is overwritten. This
+            bounds flash and RAM use only; the block format is unchanged. Set it once per product.
+            Raising it on deployed devices is safe. Lowering it is not supported: at boot, stored
+            blocks beyond the new depth are ignored (which ones is decided by storage scan order,
+            not age), and later rotations may overwrite them, so history can be lost.
+
+    config IOT_RECORD_FLUSH_INTERVAL_SEC
+        int "Record: longest a dirty block stays in RAM (seconds)"
+        depends on IOT_RECORD_ENABLED
+        default 60
+        range 1 3600
+        help
+            Upper bound on how long unwritten records sit in RAM before they are flushed. This is
+            a flush cadence, not part of the wire format: a shorter interval loses less on a power
+            cut and writes flash more often.
+
+    config IOT_RECORD_MIN_HEARTBEAT_SEC
+        int "Record: smallest heartbeat honoured (seconds)"
+        depends on IOT_RECORD_ENABLED
+        default 120
+        range 1 3600
+        help
+            A heartbeat shorter than this is raised to it, which bounds how often an unchanged
+            value is re-recorded. This limits storage growth; it does not change the wire format.
+
+    config IOT_RECORD_PUSH_ENABLED
+        bool "Record: push closed history blocks to the cloud"
+        depends on IOT_RECORD_ENABLED
+        default n
+        help
+            Send each closed history block to the cloud as it closes, and send any backlog
+            after a reconnect, paced. Off by default: turn it on once Rogo has confirmed that
+            your cloud tenant accepts pushed history. With it off, history still reaches the app
+            when the app asks for it. Has no effect while a custom history store is installed
+            (IOT_ContractRecordUseCustomStore()).
+
+endmenu

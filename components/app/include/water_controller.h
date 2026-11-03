@@ -4,11 +4,11 @@
 #include "common.h"
 #include "water_profile.h"
 
-#define MIN_TEMPERATURE_HOT_TANK 40
-#define MAX_TEMPERATURE_HOT_TANK 100 
+#define MIN_TEMPERATURE_HOT_TANK 80
+#define MAX_TEMPERATURE_HOT_TANK 200 
 
 #define MIN_TEMPERATURE_COLD_TANK 0
-#define MAX_TEMPERATURE_COLD_TANK 20 
+#define MAX_TEMPERATURE_COLD_TANK 40 
 
 _bool WaterControllerResetSystem(void);
 _bool WaterControllerSetFilterRuntimeMinutes(FilterTimeIndex filter_index, UI16 time_m);

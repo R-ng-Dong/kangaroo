@@ -327,8 +327,13 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
     char prefix[64] = "";
     if (g_log_config.show_level)
     {
+        /* %lu, not %lld: a 64-bit conversion is unrenderable under
+           CONFIG_LIBC_NEWLIB_NANO_FORMAT and would corrupt every log line. The
+           value fits either way -- on the target this is esp_log_timestamp(),
+           already a uint32_t of ms since boot; on a 64-bit host `unsigned long`
+           still holds epoch ms. */
         long long timestamp = get_timestamp_ms();
-        snprintf(prefix, sizeof(prefix), "%s (%lld) ", log_level_string(level), timestamp);
+        snprintf(prefix, sizeof(prefix), "%s (%lu) ", log_level_string(level), (unsigned long)timestamp);
     }
 
     /* Output to stdout */
@@ -383,8 +388,8 @@ void iot_log_hex_dump(log_level_t level, const void *data, size_t size, const ch
     char hex_line[80];
     char ascii_line[20];
 
-    log_write(level, __FILE__, __LINE__, __func__, "%s (size: %zu bytes)",
-              prefix ? prefix : "HEXDUMP", size);
+    log_write(level, __FILE__, __LINE__, __func__, "%s (size: %lu bytes)",
+              prefix ? prefix : "HEXDUMP", (unsigned long)size);
 
     for (size_t i = 0; i < size; i += 16)
     {
@@ -409,7 +414,8 @@ void iot_log_hex_dump(log_level_t level, const void *data, size_t size, const ch
             *hex_ptr++ = ' ';
         }
 
-        log_write(level, __FILE__, __LINE__, __func__, "%08zx: %-48s |%s|", i, hex_line, ascii_line);
+        log_write(level, __FILE__, __LINE__, __func__, "%08lx: %-48s |%s|", (unsigned long)i, hex_line,
+                  ascii_line);
     }
 }
 
@@ -439,8 +445,8 @@ void iot_log_hex_inline(log_level_t level, const void *data, size_t size, const 
 
     if (size > 64)
     {
-        log_write(level, __FILE__, __LINE__, __func__, "%s %s ... (%zu more)",
-                  prefix ? prefix : "", buf, size - 64);
+        log_write(level, __FILE__, __LINE__, __func__, "%s %s ... (%lu more)",
+                  prefix ? prefix : "", buf, (unsigned long)(size - 64));
     }
     else
     {

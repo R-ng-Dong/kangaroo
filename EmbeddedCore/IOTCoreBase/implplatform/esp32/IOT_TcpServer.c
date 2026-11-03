@@ -252,7 +252,7 @@ iot_err_t IOT_TcpSendData(uint16_t destPort, const uint8_t *data, size_t dataLen
         }
         totalSent += sent;
     }
-    IOT_LOGD(TAG, "Sent %zu bytes to %s:%d", dataLen, s_lastClientAddr, destPort);
+    IOT_LOGD(TAG, "Sent %lu bytes to %s:%d", (unsigned long)dataLen, s_lastClientAddr, destPort);
 send_done:
     close(sock);
     return result;

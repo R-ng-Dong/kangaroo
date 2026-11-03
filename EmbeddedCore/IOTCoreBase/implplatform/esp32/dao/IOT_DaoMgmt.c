@@ -10,7 +10,7 @@ static const char *TAG_MGMT = "DAO-MGMT";
 
 // ============================================================================
 // Platform-owned: storage infrastructure init/deinit
-// SDK-owned DAO inits are called by IOT_SDKInit() in rogosdk.
+// SDK-owned DAO inits are called by your SDK's own init.
 // ============================================================================
 
 iot_err_t IOT_DaoInit(void)

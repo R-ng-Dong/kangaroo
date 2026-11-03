@@ -95,7 +95,8 @@ bool Str_BinToHex(const uint8_t* data, size_t dataLen, char* hexStr, size_t hexS
     // Need 2 chars per byte plus null terminator
     size_t requiredSize = dataLen * 2 + 1;
     if (hexStrSize < requiredSize) {
-        COMMON_LOGE(TAG, "Hex buffer too small: need %zu, have %zu", requiredSize, hexStrSize);
+        COMMON_LOGE(TAG, "Hex buffer too small: need %lu, have %lu", (unsigned long)requiredSize,
+                    (unsigned long)hexStrSize);
         return false;
     }
 
@@ -116,7 +117,8 @@ bool Str_BinToHexUpper(const uint8_t* data, size_t dataLen, char* hexStr, size_t
 
     size_t requiredSize = dataLen * 2 + 1;
     if (hexStrSize < requiredSize) {
-        COMMON_LOGE(TAG, "Hex buffer too small: need %zu, have %zu", requiredSize, hexStrSize);
+        COMMON_LOGE(TAG, "Hex buffer too small: need %lu, have %lu", (unsigned long)requiredSize,
+                    (unsigned long)hexStrSize);
         return false;
     }
 
@@ -177,13 +179,14 @@ bool Str_HexToBin(const char* hexStr, uint8_t* data, size_t dataSize, size_t* ou
 
     // Must have even length
     if (hexLen % 2 != 0) {
-        COMMON_LOGE(TAG, "Hex string has odd length: %zu", hexLen);
+        COMMON_LOGE(TAG, "Hex string has odd length: %lu", (unsigned long)hexLen);
         return false;
     }
 
     size_t binLen = hexLen / 2;
     if (binLen > dataSize) {
-        COMMON_LOGE(TAG, "Binary buffer too small: need %zu, have %zu", binLen, dataSize);
+        COMMON_LOGE(TAG, "Binary buffer too small: need %lu, have %lu", (unsigned long)binLen,
+                    (unsigned long)dataSize);
         return false;
     }
 
@@ -192,7 +195,8 @@ bool Str_HexToBin(const char* hexStr, uint8_t* data, size_t dataSize, size_t* ou
         int low = hexCharToNibble(hexStr[i * 2 + 1]);
 
         if (high < 0 || low < 0) {
-            COMMON_LOGE(TAG, "Invalid hex character at position %zu", i * 2 + (high < 0 ? 0 : 1));
+            COMMON_LOGE(TAG, "Invalid hex character at position %lu",
+                        (unsigned long)(i * 2 + (high < 0 ? 0 : 1)));
             return false;
         }
 

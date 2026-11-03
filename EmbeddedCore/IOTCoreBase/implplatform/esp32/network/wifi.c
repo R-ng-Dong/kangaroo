@@ -14,6 +14,7 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include "nvs_flash.h"
+#include "IOT_TimerMgmt.h"
 #include "stdio.h"
 
 typedef enum
@@ -33,7 +34,123 @@ static wifi_cb_mgmt_t *wifiCallbackMgmt = NULL;
 static iot_wifi_auth_mode_t default_auth_mode = IOT_WIFI_AUTH_OPEN;
 static iot_wifi_sae_pwe_method_t default_sae_pwe_method = IOT_WPA3_SAE_PWE_HUNT_AND_PECK;
 static volatile wifi_event_status_t currentWifiStatus = WIFI_EVENT_STATUS_DISCONNECTED;
+
+/* Asynchronous scan. One at a time: esp_wifi_scan_start() returns ESP_ERR_WIFI_STATE if a
+ * scan is already running, and the caller gets IOT_ERR_BUSY rather than a second cb. */
+static iot_wifi_scan_done_cb_t s_scanCb      = NULL;
+static void                   *s_scanArg     = NULL;
+static uint8_t                 s_scanMax     = 0;
+static volatile bool           s_scanInFlight = false;
+
+/* Convert the driver's records into our own, freeing the driver buffer. Runs on the
+ * WiFi event task -- keep it allocation-light and never block. */
+static void wifiScanDeliver(iot_err_t err)
+{
+    iot_wifi_scan_done_cb_t cb = s_scanCb;
+    void *arg = s_scanArg;
+    uint8_t maxDevice = s_scanMax;
+
+    s_scanCb = NULL;
+    s_scanArg = NULL;
+    s_scanMax = 0;
+    s_scanInFlight = false;
+
+    if (cb == NULL)
+    {
+        return;
+    }
+    if (err != IOT_OK)
+    {
+        cb(err, NULL, 0, arg);
+        return;
+    }
+
+    uint16_t apCount = maxDevice;
+    wifi_ap_record_t *records =
+        (wifi_ap_record_t *) Mem_SafeCalloc(apCount, sizeof(wifi_ap_record_t), "iot_wifi", "ap records");
+    if (records == NULL)
+    {
+        cb(IOT_ERR_NO_MEM, NULL, 0, arg);
+        return;
+    }
+    esp_err_t ret = esp_wifi_scan_get_ap_records(&apCount, records);
+    if (ret != ESP_OK)
+    {
+        IOT_LOGE("iot_wifi", "scan_get_ap_records failed: %s", esp_err_to_name(ret));
+        SAFE_FREE(records);
+        cb(IOT_ERR_FAIL, NULL, 0, arg);
+        return;
+    }
+
+    iot_ap_info_t *aps =
+        (iot_ap_info_t *) Mem_SafeCalloc(apCount ? apCount : 1, sizeof(iot_ap_info_t), "iot_wifi", "scan results");
+    if (aps == NULL)
+    {
+        SAFE_FREE(records);
+        cb(IOT_ERR_NO_MEM, NULL, 0, arg);
+        return;
+    }
+    for (uint16_t i = 0; i < apCount; i++)
+    {
+        Str_SafeCopy(aps[i].ssid, (const char *) records[i].ssid, sizeof(aps[i].ssid));
+        memcpy(aps[i].bssid, records[i].bssid, sizeof(aps[i].bssid));
+        aps[i].rssi = records[i].rssi;
+        aps[i].primary = records[i].primary;
+        aps[i].authmode = (iot_wifi_auth_mode_t) records[i].authmode;
+    }
+    SAFE_FREE(records);
+    cb(IOT_OK, aps, (uint8_t) apCount, arg);
+}
+
+iot_err_t IOT_WifiScanAsync(uint8_t iface_num, uint8_t maxDevice, uint8_t timeout_sec,
+                            iot_wifi_scan_done_cb_t cb, void *arg)
+{
+    (void) iface_num;
+    (void) timeout_sec;
+    if (cb == NULL)
+    {
+        return IOT_ERR_INVALID_ARG;
+    }
+    if (s_scanInFlight)
+    {
+        IOT_LOGW("iot_wifi", "Scan already in flight");
+        return IOT_ERR_BUSY;
+    }
+
+    s_scanCb = cb;
+    s_scanArg = arg;
+    s_scanMax = (maxDevice > 0) ? maxDevice : 15;
+    s_scanInFlight = true;
+
+    /* Non-blocking: WIFI_EVENT_SCAN_DONE carries the result. Not ESP_ERROR_CHECK --
+     * a scan that cannot start must not abort() the device. */
+    esp_err_t ret = esp_wifi_scan_start(NULL, false);
+    if (ret != ESP_OK)
+    {
+        IOT_LOGE("iot_wifi", "esp_wifi_scan_start failed: %s", esp_err_to_name(ret));
+        s_scanCb = NULL;
+        s_scanArg = NULL;
+        s_scanMax = 0;
+        s_scanInFlight = false;
+        return (ret == ESP_ERR_WIFI_STATE) ? IOT_ERR_BUSY : IOT_ERR_FAIL;
+    }
+    return IOT_OK;
+}
 static volatile bool wifiAutoReconnect = true;
+
+/* Consecutive association failures since the last success. Drives the backoff — see
+ * wifi_reconnect.c for why an unthrottled retry loop is harmful. */
+static volatile uint32_t wifiConsecutiveFailures = 0;
+uint32_t iotWifiReconnectDelayMs(uint32_t consecutiveFailures);
+
+static void wifiReconnectTimerFired(void *userData)
+{
+    (void) userData;
+    if (wifiAutoReconnect)
+    {
+        esp_wifi_connect();
+    }
+}
 
 static void iotInternalEventCallHandler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -59,8 +176,43 @@ static void iotInternalEventCallHandler(void *arg, esp_event_base_t event_base, 
             }
             if (wifiAutoReconnect)
             {
-                IOT_LOGI("iot_wifi", "Auto-reconnecting to WiFi...");
-                esp_wifi_connect();
+                /* Backed off, not immediate. An unthrottled retry scans the band every
+                 * ~4.8 s forever when the AP is gone, and on a single-radio part that
+                 * starves BLE — the device stays visible but a GATT connection never
+                 * completes, so the change-WiFi recovery channel is unusable exactly
+                 * when it is the only way to fix the device. */
+                uint32_t delayMs = iotWifiReconnectDelayMs(wifiConsecutiveFailures);
+                if (wifiConsecutiveFailures < UINT32_MAX)
+                {
+                    wifiConsecutiveFailures++;
+                }
+
+                if (delayMs == 0)
+                {
+                    IOT_LOGI("iot_wifi", "Auto-reconnecting to WiFi...");
+                    esp_wifi_connect();
+                }
+                else
+                {
+                    IOT_LOGI("iot_wifi", "Auto-reconnecting to WiFi in %lu ms (failure %lu)",
+                             (unsigned long) delayMs, (unsigned long) wifiConsecutiveFailures);
+                    if (IOT_TimerInsertCb(wifiReconnectTimerFired, NULL, delayMs) == IOT_TIMER_HANDLE_INVALID)
+                    {
+                        /* No timer slot: fall back to the old immediate retry rather than
+                         * stop reconnecting altogether. Worse for BLE, but a device that
+                         * never retries is worse still. */
+                        IOT_LOGW("iot_wifi", "No timer for backoff — reconnecting immediately");
+                        esp_wifi_connect();
+                    }
+                }
+            }
+            break;
+        }
+        case WIFI_EVENT_SCAN_DONE:
+        {
+            if (s_scanInFlight)
+            {
+                wifiScanDeliver(IOT_OK);
             }
             break;
         }
@@ -71,6 +223,7 @@ static void iotInternalEventCallHandler(void *arg, esp_event_base_t event_base, 
         case WIFI_EVENT_STA_CONNECTED:
         {
             currentWifiStatus = WIFI_EVENT_STATUS_CONNECTED_NO_IP;
+            wifiConsecutiveFailures = 0; /* associated — next drop retries immediately */
             wifi_event_sta_connected_t *connectedData = (wifi_event_sta_connected_t *) event_data;
             IOT_LOGI("iot_wifi", "Connected to SSID: %.*s", connectedData->ssid_len, connectedData->ssid);
             wifi_mgmt_event_connected_data_t mgmtConnectedData = {0};
@@ -383,6 +536,10 @@ iot_err_t IOT_WifiConnect(uint8_t iface_num, const char *target_ssid, const char
     if (ret != ESP_OK)
     {
         IOT_LOGE("iot_wifi", "Failed to start WiFi to connect: %s", esp_err_to_name(ret));
+        /* Restore it before bailing: returning with auto-reconnect still suppressed
+         * left the device unable to recover from any later link loss, for the rest
+         * of the boot. */
+        wifiAutoReconnect = true;
         return IOT_ERR_FAIL;
     }
 
@@ -427,18 +584,32 @@ iot_ap_info_t *IOT_WifiScan(uint8_t iface_num, uint8_t *maxDevice, uint8_t timeo
         return NULL;
     }
     TickType_t scanStart = xTaskGetTickCount();
-    ESP_ERROR_CHECK(esp_wifi_scan_start(NULL, true)); // Blocking scan
+    /* NOT ESP_ERROR_CHECK: it abort()s, so a scan that could not start (WiFi not
+     * started, scan already running) used to reboot the device. */
+    esp_err_t scanRet = esp_wifi_scan_start(NULL, true); // Blocking scan
+    if (scanRet != ESP_OK)
+    {
+        IOT_LOGE("iot_wifi", "esp_wifi_scan_start failed: %s", esp_err_to_name(scanRet));
+        SAFE_FREE(ap_records);
+        return NULL;
+    }
 
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, ap_records));
+    scanRet = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    if (scanRet != ESP_OK)
+    {
+        IOT_LOGE("iot_wifi", "scan_get_ap_records failed: %s", esp_err_to_name(scanRet));
+        SAFE_FREE(ap_records);
+        return NULL;
+    }
     IOT_LOGI("iot_wifi", "Found %d APs", ap_count);
 
     /* Pad so total time reaches 2/3 of timeout_sec (leave 1/3 headroom for caller) */
     TickType_t elapsed = xTaskGetTickCount() - scanStart;
     TickType_t target = pdMS_TO_TICKS((timeout_sec * 1000 * 2) / 3);
-    if (elapsed < target)
-    {
-        vTaskDelay(target - elapsed);
-    }
+    // if (elapsed < target)
+    // {
+    //     vTaskDelay(target - elapsed);
+    // } TODO: temporary disabled.
 
     iot_ap_info_t *scanned_aps =
         (iot_ap_info_t *) Mem_SafeCalloc(ap_count, sizeof(iot_ap_info_t), "iot_wifi", "scan results");
@@ -449,41 +620,17 @@ iot_ap_info_t *IOT_WifiScan(uint8_t iface_num, uint8_t *maxDevice, uint8_t timeo
         return NULL;
     }
 
-    uint16_t unique_count = 0;
     for (int i = 0; i < ap_count; i++)
     {
-        iot_ap_info_t candidate = {0};
-        Str_SafeCopy(candidate.ssid, (const char *) ap_records[i].ssid, sizeof(candidate.ssid));
-        memcpy(candidate.bssid, ap_records[i].bssid, sizeof(candidate.bssid));
-        candidate.rssi = ap_records[i].rssi;
-        candidate.primary = ap_records[i].primary;
-        candidate.authmode = ap_records[i].authmode;
-
-        uint16_t duplicate_index = unique_count;
-        for (uint16_t j = 0; j < unique_count; j++)
-        {
-            if (memcmp(scanned_aps[j].ssid, candidate.ssid, sizeof(candidate.ssid)) == 0)
-            {
-                duplicate_index = j;
-                break;
-            }
-        }
-
-        if (duplicate_index < unique_count)
-        {
-            if (candidate.rssi > scanned_aps[duplicate_index].rssi)
-            {
-                scanned_aps[duplicate_index] = candidate;
-            }
-        }
-        else
-        {
-            scanned_aps[unique_count++] = candidate;
-        }
+        Str_SafeCopy(scanned_aps[i].ssid, (const char *) ap_records[i].ssid, sizeof(scanned_aps[i].ssid));
+        memcpy(scanned_aps[i].bssid, ap_records[i].bssid, sizeof(scanned_aps[i].bssid));
+        scanned_aps[i].rssi = ap_records[i].rssi;
+        scanned_aps[i].primary = ap_records[i].primary;
+        scanned_aps[i].authmode = ap_records[i].authmode;
     }
 
     SAFE_FREE(ap_records);
-    *maxDevice = (uint8_t) unique_count; 
+    *maxDevice = ap_count; // Update maxDevice with the actual number of scanned APs
     return scanned_aps;
 }
 

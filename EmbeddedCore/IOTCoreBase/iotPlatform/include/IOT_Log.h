@@ -87,13 +87,32 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
 typedef void (*log_tee_fn_t)(const char *line, size_t len);
 void log_set_tee(log_tee_fn_t fn);
 
+/* The levels again, as macros this header controls outright.
+ *
+ * NimBLE's log_common.h defines LOG_LEVEL_DEBUG/INFO/WARN/ERROR as MACROS, one
+ * step below the enum above (DEBUG 0, INFO 1, WARN 2, ERROR 3). Any translation
+ * unit that reaches a NimBLE header -- every BLE and mesh file -- then expands
+ * the bare enum names at the USE SITE to NimBLE's numbers, and each line is
+ * logged one level lower than it says: IOT_LOGE arrives as WARN, IOT_LOGI as
+ * DEBUG. Our own header still compiles, because it is included first; only the
+ * call sites are hijacked, so there is no warning anywhere.
+ *
+ * A message that silently drops below the active level is easy to misread as the
+ * event never happening. The macros below must not reference the bare LOG_LEVEL_* names. */
+#define IOT_LOG_LVL_TRACE 0
+#define IOT_LOG_LVL_DEBUG 1
+#define IOT_LOG_LVL_INFO  2
+#define IOT_LOG_LVL_WARN  3
+#define IOT_LOG_LVL_ERROR 4
+#define IOT_LOG_LVL_FATAL 5
+
 /* Main logging macros - for end users */
-#define LOG_TRACE(...) log_write(LOG_LEVEL_TRACE, __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define LOG_DEBUG(...) log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define LOG_INFO(...) log_write(LOG_LEVEL_INFO, __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define LOG_WARN(...) log_write(LOG_LEVEL_WARN, __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define LOG_ERROR(...) log_write(LOG_LEVEL_ERROR, __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define LOG_FATAL(...) log_write(LOG_LEVEL_FATAL, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_TRACE(...) log_write((log_level_t) IOT_LOG_LVL_TRACE, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_DEBUG(...) log_write((log_level_t) IOT_LOG_LVL_DEBUG, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_INFO(...) log_write((log_level_t) IOT_LOG_LVL_INFO, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_WARN(...) log_write((log_level_t) IOT_LOG_LVL_WARN, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_ERROR(...) log_write((log_level_t) IOT_LOG_LVL_ERROR, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define LOG_FATAL(...) log_write((log_level_t) IOT_LOG_LVL_FATAL, __FILE__, __LINE__, __func__, __VA_ARGS__)
 
 /* Library internal logging control - users can override this */
 #ifndef IOT_LOG_LOCAL_LEVEL
@@ -171,8 +190,13 @@ void iot_log_hex_inline(log_level_t level, const void *data, size_t size, const 
     } while (0)
 
 /* Default initialization values */
-#define LOG_DEFAULT_LEVEL LOG_LEVEL_DEBUG
-// #define LOG_DEFAULT_LEVEL LOG_LEVEL_INFO
+/* INFO, not DEBUG: on ESP32 every console line blocks the calling task on the UART, and
+ * DEBUG output on the per-message path cost a control command ~4x its real work (measured
+ * 2026-09-17). Override per build with -DLOG_DEFAULT_LEVEL=LOG_LEVEL_DEBUG, or at runtime
+ * with log_set_level(). */
+#ifndef LOG_DEFAULT_LEVEL
+#define LOG_DEFAULT_LEVEL LOG_LEVEL_INFO
+#endif
 #define LOG_DEFAULT_TARGET LOG_TARGET_STDOUT
 #define LOG_DEFAULT_TIMESTAMP 1
 #define LOG_DEFAULT_LEVEL_SHOW 1

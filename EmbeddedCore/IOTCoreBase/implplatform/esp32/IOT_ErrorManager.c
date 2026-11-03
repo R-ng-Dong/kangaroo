@@ -8,6 +8,8 @@ const char *iot_err_to_name(iot_err_t code)
         return "IOT_OK";
     case IOT_ERR_FAIL:
         return "IOT_ERR_FAIL";
+    case IOT_ERR_NOT_PROVISIONED:
+        return "IOT_ERR_NOT_PROVISIONED";
     case IOT_ERR_NO_MEM:
         return "IOT_ERR_NO_MEM";
     case IOT_ERR_INVALID_ARG:
@@ -38,6 +40,10 @@ const char *iot_err_to_name(iot_err_t code)
         return "IOT_ERR_ROC_IN_PROGRESS";
     case IOT_ERR_OTA_BOOT_DEGRADED:
         return "IOT_ERR_OTA_BOOT_DEGRADED";
+    case IOT_ERR_ALREADY_EXISTS:
+        return "IOT_ERR_ALREADY_EXISTS";
+    case IOT_ERR_BUSY:
+        return "IOT_ERR_BUSY";
     default:
         return "Unknown error code";
     }

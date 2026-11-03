@@ -12,7 +12,9 @@
 
 #define ROGO_NVS_PARTITION "rogo"
 #define DAO_QUEUE_SIZE 10
-#define DAO_TASK_STACK_SIZE 4096
+#include "../task_stacks.h"
+/* Sized against a measured peak; see task_stacks.h before changing. */
+#define DAO_TASK_STACK_SIZE IOT_STACK_DAO_TASK
 #define DAO_TASK_PRIORITY 5
 #define DAO_QUEUE_SEND_TIMEOUT_MS 100
 #define DAO_OPERATION_TIMEOUT_MS 5000

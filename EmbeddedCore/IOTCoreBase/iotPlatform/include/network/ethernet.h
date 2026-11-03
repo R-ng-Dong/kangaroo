@@ -1,4 +1,9 @@
 #pragma once
+
+#include <inttypes.h>
+#include <stdbool.h>
+#include <IOT_ErrorManager.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -11,10 +16,6 @@ extern "C"
  */
 #define IOT_ETH_EVENT "eth_event"
     typedef void *iot_eth_handle_t;
-#include <IOT_ErrorManager.h>
-#include <inttypes.h>
-#include <stdbool.h>
-#include <inttypes.h>
     /*
     Ethernet including:
     - Initialization

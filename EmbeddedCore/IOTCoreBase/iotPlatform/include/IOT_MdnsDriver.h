@@ -2,12 +2,16 @@
 
 #include "IOT_MdnsMgmt.h"
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct
 {
     iot_err_t (*startService)(const char *hostname, const char *domain);
     iot_err_t (*stopService)(void);
     iot_err_t (*addAdvertisement)(char *serviceName, char *serviceType, uint16_t port);
-    iot_err_t (*removeAdvertisement)(const char *serviceName);
+    iot_err_t (*removeAdvertisement)(const char *serviceType);
     iot_err_t (*removeAllAdvertisements)(void);
     iot_err_t (*startDiscovery)(char *serviceType);
     iot_err_t (*stopDiscovery)(void);
@@ -16,3 +20,6 @@ typedef struct
 } IOT_MdnsDriver_t;
 
 void IOT_MdnsRegisterDriver(const IOT_MdnsDriver_t *driver);
+#ifdef __cplusplus
+}
+#endif

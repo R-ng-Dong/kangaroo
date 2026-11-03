@@ -10,11 +10,19 @@
 // __attribute__((constructor)). When not compiled, IOT_Ble*() functions
 // return IOT_ERR_NOT_SUPPORTED.
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct
 {
     iot_err_t (*init)(void);
     iot_err_t (*deinit)(void);
     iot_err_t (*addServices)(const IOT_BleMgmtGattServ_t *service);
+    /* Optional. Activates the host after services are registered — see
+     * IOT_BleStart(). A driver that needs no activation step may leave this NULL;
+     * IOT_BleStart() then returns IOT_OK. */
+    iot_err_t (*start)(void);
     iot_err_t (*startAdvertising)(IOT_BleMgmtAdvData_t *adv);
     iot_err_t (*stopAdvertising)(void);
     iot_err_t (*startBeaconAdvertising)(IOT_BleMgmtAdvData_t *adv);
@@ -39,3 +47,6 @@ typedef struct
  * @param driver Pointer to driver function table (must have static/global lifetime)
  */
 void IOT_BleRegisterDriver(const IOT_BleDriver_t *driver);
+#ifdef __cplusplus
+}
+#endif

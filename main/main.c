@@ -8,6 +8,7 @@
 #include "app.h"
 
 #include "freertos/FreeRTOS.h"
+#include "record.h"
 
 #define STAGING_ENVIRONMENT 0
 #define PRODUCT_ENVIRONMENT !STAGING_ENVIRONMENT
@@ -43,21 +44,23 @@ void app_main(void)
     }
 
     WaterPurifierType model = AppCheckModel();
-    if(WATER_PURIFIER_TYPE_STANDARD == model)
-    {
-        static const char *MODEL_ID = "00000101C0040003";
-        err = IOT_CoreInit(MODEL_ID);
-    }else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
-    {
-        static const char *MODEL_ID = "00000101C0040003";
-        err = IOT_CoreInit(MODEL_ID);
-    }
-    if (err != IOT_OK)
-    {
-        IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
-        return;
-    }
+    // if(WATER_PURIFIER_TYPE_STANDARD == model)
+    // {
+    //     static const char *MODEL_ID = "00000101C0040004";
+    //     err = IOT_CoreInit(MODEL_ID);
+    // }else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    // {
+    //     static const char *MODEL_ID = "00000101C0040003";
+    //     err = IOT_CoreInit(MODEL_ID);
+    // }
+    // if (err != IOT_OK)
+    // {
+    //     IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
+    //     return;
+    // } 
 
+    AppRecordInit();
+    
     esp_err = AppInit(model);
     if(esp_err != ESP_OK)
     {

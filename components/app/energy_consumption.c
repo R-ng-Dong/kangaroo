@@ -24,7 +24,7 @@ _bool EnergyConsumptionGet(EnergyConsumption_t *out_consumption)
 
     const DeviceRuntimeSnapshot_t runtime = WaterRuntimeGetSnapshot();
     const UI32 now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
-    const UI32 system_runtime_seconds = SystemRuntimeGetSeconds(now_ms);
+    const UI32 system_runtime_seconds = SystemRuntimeGetSeconds(SYS_RUNTIME_INDEX, now_ms);
 
     out_consumption->hot_tank_wh = ((UI64)runtime.total_hot_tank_runtime * HOT_TANK_POWER_W) / SECONDS_PER_HOUR;
     out_consumption->cold_tank_wh = ((UI64)runtime.total_cold_tank_runtime * COLD_TANK_POWER_W) / SECONDS_PER_HOUR;

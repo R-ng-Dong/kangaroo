@@ -179,7 +179,7 @@ typedef struct __attribute__((packed))
     UI8 led_status;
     UI16 adc_raw_value_1;  //0-4095
     UI16 adc_raw_value_2;  //0-4095
-    UI8 reserved[2];
+    UI8 reserved[4];
 } KgrExternFrameTypeA;
 
 typedef void (*uart_protocol_event_handler_t)(const KgrDataFormat *frame);

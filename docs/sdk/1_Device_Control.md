@@ -2,6 +2,12 @@
 
 **SDK Writer Guide concepts:** Core Event Contract, SDK-Owned Responsibilities.
 
+> **Path B.** This guide is for an SDK written directly on `iotcore` with its own storage. On `sdkcontract/` (path A)
+> the contract resolves targets and groups, stores, reports and answers GET_STATE; you write `apply` to drive the
+> hardware and report a change your hardware made by itself with `IOT_ContractLocalChange()`. (Known limit:
+> `IOT_ContractLocalChange()` never raises a push notification yet.) See
+> [../../sdkcontract/README.md](../../sdkcontract/README.md).
+
 This guide explains how your SDK handles device state commands from the cloud. The core engine parses incoming protocol
 messages and dispatches structured events to your SDK via registered callbacks. Your SDK is responsible for resolving
 targets, updating your DAO, actuating hardware, and reporting state back to the cloud through the reporter API.
@@ -165,48 +171,121 @@ No DAO writes and no hardware actuation — this is a read-only operation.
 
 ---
 
-## 3. STATE_SENSOR_LOG
+## 3. History queries: STATE_RECORD and STATE_SENSOR_LOG
 
-When the cloud requests a sensor log for a specific attribute, iotcore dispatches `IOT_EVENT_TYPE_STATE_SENSOR_LOG`. The event data is in `event->evt.state.data.sensorLogRequest` (an `IOT_EventStateSensorLogRequest_t`).
+The app asks a device for an attribute's history in one of two ways. **This release's core
+library answers through Record (`IOT_EVENT_TYPE_STATE_RECORD`).** The older day-keyed sensor
+log (`IOT_EVENT_TYPE_STATE_SENSOR_LOG`) is legacy, and its reply packer is not included in the
+prebuilt core library — see 3.2.
 
-Available fields: `eid`, `elemId`, `attrId`, `year`, `dayOfYear`.
+In both cases **core owns every wire byte**. Your SDK hands over facts — timestamps and
+values — and core does the byte order, entry layout, ordering and truncation. Do not
+pre-pack entries.
+
+### 3.1 STATE_RECORD
+
+iotcore dispatches `IOT_EVENT_TYPE_STATE_RECORD` with the request in
+`event->evt.state.data.recordRequest` (an `IOT_EventStateRecordRequest_t`): `eid`, `elemId`,
+`attrId`, and `checkpoint` — the epoch **milliseconds** of the block being asked for, or `0`
+for the current (open) block. Answer with `IOT_CoreRequestRecordResponse()`
+(`IOT_CoreRecord.h`).
+
+History is kept in **blocks**. Each block carries its own `checkpoint` (epoch ms when it
+opened — every entry's `diffSeconds` is measured from it) and the `prevCheckpoint` of the
+block before it; `prevCheckpoint == 0` means there is nothing older. The app walks the chain
+backwards by asking for the last `prevCheckpoint` it received.
 
 ```c
-static iot_err_t handle_sensor_log(const IOT_EventStateSensorLogRequest_t *logReq)
+static iot_err_t handle_record(const IOT_EventStateRecordRequest_t *req)
 {
-    uint8_t *logData    = NULL;
-    uint16_t logDataLen = 0;
-
-    iot_err_t result = your_dao_read_sensor_log(
-        logReq->eid, logReq->elemId, logReq->attrId,
-        logReq->year, logReq->dayOfYear,
-        &logData, &logDataLen
-    );
-
-    if (result != IOT_OK) {
-        // iotcore will send an error response to cloud — do not call any reporter
-        return IOT_ERR_DATA_NOT_FOUND;
+    IOT_CoreRecordBlock_t blocks[2];
+    uint16_t blockCount = your_record_store_read(req->eid, req->elemId, req->attrId,
+                                                 req->checkpoint, blocks, 2);
+    if (blockCount == 0) {
+        /* Unknown or evicted checkpoint: still answer, with ONE empty block that echoes
+         * the requested checkpoint and ends the chain. */
+        blocks[0] = (IOT_CoreRecordBlock_t){ .checkpoint = req->checkpoint,
+                                             .prevCheckpoint = 0,
+                                             .fields = NULL, .fieldCount = 0 };
+        blockCount = 1;
     }
 
-    // Note: if the query is valid but no entries exist for that date, set
-    // logDataLen = 0 and still call the reporter below — this is NOT an error,
-    // just an empty result. Only return IOT_ERR_DATA_NOT_FOUND above if the
-    // DAO lookup itself fails (device not found, invalid parameters).
-
-    IOT_CoreSensorLogResponse_t response = {
-        .eid        = logReq->eid,
-        .elemId     = logReq->elemId,
-        .attrId     = logReq->attrId,
-        .year       = logReq->year,
-        .dayOfYear  = logReq->dayOfYear,
-        .logData    = logData,
-        .logDataLen = logDataLen,
-        .ctx        = logReq->ctx,     // pass through unchanged
+    IOT_CoreRecordResponse_t response = {
+        .eid        = req->eid,
+        .elemId     = req->elemId,
+        .attrId     = req->attrId,
+        .valueCount = IOT_AttrRecordValueCount(req->attrId),   /* 1 or 2 */
+        .blocks     = blocks,        /* newest first */
+        .blockCount = blockCount,    /* never 0 */
+        .ctx        = req->ctx,      /* pass through unchanged */
     };
-    IOT_CoreRequestSensorLogResponse(&response);
-    return IOT_OK;
+    return IOT_CoreRequestRecordResponse(&response);
 }
 ```
+
+Rules:
+
+- **Blocks newest first; entries within a block oldest first.** Each block's `fields` are
+  host-order `uint16_t`s laid out per entry as `[value][diffSeconds]` (1 field) or
+  `[value1][value2][diffSeconds]` (2 fields) — natural order; core swaps into the order the
+  cloud reads. `fieldCount` is the total number of `uint16_t`s, not the entry count, and must
+  divide by `valueCount + 1`.
+- **`valueCount` comes from `IOT_AttrRecordValueCount(attrId)`**, never from the state size:
+  history keeps at most two fields, and `OPEN_CLOSE_CTL` keeps only one. See *History
+  entries* in the Attribute Reference.
+- **`blockCount` is never 0.** For an unknown or evicted checkpoint, send one empty block whose
+  `checkpoint` echoes the request, as above. Never reply with checkpoint `0` — it is both the
+  end-of-chain marker and the "current block" request, and would send the app back to the head
+  of the chain.
+- **Answer synchronously, inside the event callback.** `ctx.senderId` points into the message
+  reader's buffer, which is freed when the handler returns; a reply built on another task
+  routes through freed memory. Arrays are borrowed only for the call — one scratch buffer may
+  be refilled between calls.
+- Core stops at the reply budget rather than failing; the app asks for the rest by checkpoint.
+- History queries are answered over MQTT and the LAN. Core refuses one that arrives over BLE
+  (the reply does not fit an unfragmented BLE frame), so your handler will not see it.
+
+How many blocks you keep, how often you record and how you rate-limit noisy measurements is
+your SDK's design.
+
+### 3.2 STATE_SENSOR_LOG (legacy)
+
+`IOT_EVENT_TYPE_STATE_SENSOR_LOG` carries `event->evt.state.data.sensorLogRequest` (an
+`IOT_EventStateSensorLogRequest_t`): `eid`, `elemId`, `attrId`, `year`, `dayOfYear`.
+
+> ⚠️ **In this release `IOT_CoreRequestSensorLogResponse()` sends nothing and returns
+> `IOT_ERR_NOT_SUPPORTED`**, with an error line in the log: the prebuilt core library does not
+> include the legacy sensor-log packer. The app's query gets no reply and times out. Implement
+> history through 3.1.
+
+`IOT_CoreSensorLogResponse_t` **no longer has `logData` / `logDataLen`** — a raw blob whose
+layout was never published. Code still filling those fields does not compile. The struct now
+takes entries:
+
+```c
+uint16_t minutes[48];       /* minutes since LOCAL midnight, any order — core sorts */
+uint8_t  values[48 * 2];    /* entry i at values[i * valueStride] */
+
+IOT_CoreSensorLogResponse_t response = {
+    .eid = req->eid, .elemId = req->elemId, .attrId = req->attrId,
+    .year = req->year, .dayOfYear = req->dayOfYear,
+    .minutes       = minutes,
+    .values        = values,
+    .count         = n,      /* 0 is valid: an empty log, not an error */
+    .valueStride   = 2,      /* bytes per value as you stored them */
+    .logValueBytes = 0,      /* 0 = core derives the log width from attrId */
+    .ctx           = req->ctx,
+};
+IOT_CoreRequestSensorLogResponse(&response);
+```
+
+Core sorts newest-first, derives the value width from `attrId`, widens anything narrower than
+two bytes, drops the oldest entries past what one reply carries, and packs. Leave
+`logValueBytes` at 0 for every standard attribute. If you set it, it must be **even** and at
+most **8** — the app parses a day as a fixed stride of 16-bit fields, so an odd width
+desynchronises every entry after the first; core rounds an odd value up. A width wider than
+`valueStride` is clamped down to it. Returns `IOT_ERR_INVALID_ARG` for a null entry array, or
+a zero `valueStride` with a non-zero `count`.
 
 ---
 
@@ -216,7 +295,8 @@ static iot_err_t handle_sensor_log(const IOT_EventStateSensorLogRequest_t *logRe
 |---|---|
 | Response to `IOT_EVENT_TYPE_STATE_GET` | `IOT_CoreRequestReportState()` |
 | State changed by a SET command | `IOT_CoreRequestReportStateChanged()` |
-| Response to `IOT_EVENT_TYPE_STATE_SENSOR_LOG` | `IOT_CoreRequestSensorLogResponse()` |
+| Response to `IOT_EVENT_TYPE_STATE_RECORD` | `IOT_CoreRequestRecordResponse()` — synchronously, inside the callback |
+| Response to `IOT_EVENT_TYPE_STATE_SENSOR_LOG` (legacy) | `IOT_CoreRequestSensorLogResponse()` — returns `IOT_ERR_NOT_SUPPORTED` in this release (see 3.2) |
 | Local state change (button press, sensor reading, timer) | Your SDK's local state update function — updates DAO, then calls `IOT_CoreRequestReportStateChanged()` with a local context (see Section 5) |
 
 Every reporter call must pass the original `ctx` from the event as-is (`.ctx = event->ctx`). The context carries transport routing, sender identity, transaction ID, and request correlation info — the SDK must not unpack or reconstruct it.
@@ -294,12 +374,17 @@ static void sdk_state_event_cb(void *arg, const IOT_CoreEvent_t *event)
         case IOT_EVENT_TYPE_STATE_GET:
             handle_state_get(&stateEvent->data.getRequest);
             break;
+        case IOT_EVENT_TYPE_STATE_RECORD:
+            handle_record(&stateEvent->data.recordRequest);   /* reply before returning */
+            break;
         case IOT_EVENT_TYPE_STATE_SENSOR_LOG:
-            handle_sensor_log(&stateEvent->data.sensorLogRequest);
+            /* legacy — see 3.2 */
+            break;
+        default:
             break;
     }
 }
 
-// In your IOT_SDKInit():
+// In your SDK's init function:
 IOT_DevCoreRegisterEventCb(IOT_EVENT_STATE, sdk_state_event_cb, NULL);
 ```

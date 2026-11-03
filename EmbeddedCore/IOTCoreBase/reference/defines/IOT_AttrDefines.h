@@ -28,11 +28,13 @@
  * of the message when the sizes differ. The deprecated ids at the end are still
  * reserved (old automation data parses through them), and the list is grouped by
  * purpose rather than sorted, so scanning one block does not prove a number is
- * free. If your attribute is not 1 byte, add a case to IOT_AttrGetSize() as well —
- * the default is 1 and nothing warns you.
+ * free. Allocate custom ids from the partner range 0xF700-0xFEFF, and give any
+ * multi-field attribute a case in IOT_AttrGetSize() — the default is 2*1 (two
+ * bytes) and nothing warns you when it is wrong.
  *
  * A custom id only becomes fully useful once the cloud and the app know it too;
- * agree it with us before relying on it end to end.
+ * send its definition to us to register before relying on it end to end. The full
+ * procedure is in `docs/core/Custom_Attributes.md`.
  * ---------------------------------------------------------------------------
  *
  * Contents:
@@ -43,8 +45,12 @@
  * Attribute sizes: call IOT_AttrGetSize(attrId). The size matters — an attribute
  * id does not carry a length, so a wrong size misparses the value. Multi-byte
  * values are big-endian.
- * Common sizes: ONOFF=2, BRIGHTNESS=2, KELVIN=2, FAN_SPEED=1, MODE=1,
- *               POSITION=1, COLOR_HSV=6, TEMP_HUMID_EVT=4.
+ *
+ * SIZES COUNT 16-BIT FIELDS, NOT BYTES: every size is 2*N, so a single-field
+ * attribute is 2 bytes and sizes are always even.
+ * Common sizes: ONOFF=2, BRIGHTNESS=2, KELVIN=2, FAN_SPEED=2, MODE=2,
+ *               POSITION=2, COLOR_HSV=6, TEMP_HUMID_EVT=4, OPEN_CLOSE_CTL=4,
+ *               AC=10, PRESENCE_MULTI_ZONE_EVT=24.
  */
 
 #include <stdint.h>
@@ -58,6 +64,10 @@
 // ============================================================================
 
 // Action attributes
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_ATTR_NONE                   0
 #define IOT_ATTR_ONOFF                  1
 #define IOT_ATTR_OPEN_CLOSE_CTL         2
@@ -99,6 +109,16 @@
 #define IOT_ATTR_LEVEL_EVT              62
 #define IOT_ATTR_EVT_PRESENCE           70
 #define IOT_ATTR_PRESENCE_MULTI_ZONE_EVT 71
+#define IOT_ATTR_EVT_PRESENCE_STATE     72
+/* Power block (0x004B..0x004E). */
+#define IOT_ATTR_POWER_VOLTAGE          75   /* 0x004B */
+#define IOT_ATTR_POWER_CONSUMED         76   /* 0x004C — cumulative energy */
+#define IOT_ATTR_POWER_CONSUMED_INSTANCE 77  /* 0x004D — instantaneous power */
+#define IOT_ATTR_POWER_CURRENT_INSTANCE 78   /* 0x004E — electrical current */
+
+/* Product attributes: Record keeps the leading 32-bit cumulative counter. */
+#define IOT_ATTR_APP_WATER_CONSUMPTION 45569
+#define IOT_ATTR_APP_ENERGY            63233
 
 // Device info attributes
 #define IOT_ATTR_MOTOR_CALIB_TIME_INFO  226
@@ -263,6 +283,7 @@ typedef enum
 #define IOT_DEVTYPE_AC_CONTROLLER       96
 #define IOT_DEVTYPE_IR_CONTROLLER       99
 #define IOT_DEVTYPE_GATE                100
+#define IOT_DEVTYPE_WATER_PURIFIER      112
 #define IOT_DEVTYPE_GATEWAY             192
 
 // ============================================================================
@@ -270,9 +291,70 @@ typedef enum
 // ============================================================================
 
 uint16_t IOT_AttrGetSize(uint16_t attrId);
+
+/**
+ * @brief Is this an attribute id this SDK defines?
+ *
+ * IOT_AttrGetSize() cannot answer this: it ends in `default: return 2*1`, so an
+ * attribute nobody has defined is sized at 2 and becomes indistinguishable from a
+ * known single-field one. The join path uses this predicate to warn when the cloud
+ * declares something we do not implement, instead of storing two zero bytes in
+ * silence.
+ *
+ * IOT_ATTR_NONE (0) is NOT known — it is the absence of an attribute.
+ * The *_DEPRECATED ids ARE known: we recognise them and retired them deliberately.
+ *
+ * Keep this in step with the IOT_ATTR_* ids above when you add one.
+ */
+bool IOT_AttrIsKnown(uint16_t attrId);
+
+/**
+ * @brief 16-bit fields one Record entry keeps for this attribute.
+ *
+ * The app sizes a record entry from attrId alone -- an entry is
+ * [BE16 value][BE16 diffSeconds] for 1, and [BE16 value2][BE16 value1][BE16 diffSeconds]
+ * for 2 -- so this is part of the wire contract, not an internal detail.
+ *
+ * Derived from IOT_AttrGetSize() rather than kept as a second table, so the two cannot
+ * disagree. The coupling is deliberate and it is the thing to watch: correcting a
+ * declared size moves the record width with it.
+ *
+ * Deriving the width yourself gets IOT_ATTR_OPEN_CLOSE_CTL wrong -- its wire value is
+ * command + position percentage, and a record keeps only the command. Call this instead.
+ *
+ * @param attrId Attribute ID.
+ * @return 1 or 2; never 0.
+ */
+uint8_t IOT_AttrRecordValueCount(uint16_t attrId);
+
+
 iot_err_t IOT_AttrFillDefault(uint16_t attrId, uint8_t *buffer);
 
 /* Example policy, NOT protocol: whether a value is worth a push notification.
  * The thresholds in the reference implementation are ours — replace them with
  * your own product's rules. */
 bool IOT_AttrIsNotifyWorthy(uint16_t attrId, uint8_t *attrValue, uint16_t attrSize);
+
+/**
+ * @brief Rewrite a "sync-on-off carrier" attribute to plain ON/OFF.
+ *
+ * 311 (SYNC_ONOFF_NORMAL) and 313 (SYNC_ONOFF_STAIR_SWITCH) are not real attributes a
+ * device stores. They are carriers meaning "apply this ON/OFF value, but do NOT evaluate
+ * your own triggers for it". The caller is responsible for the second half: suppressing
+ * trigger evaluation for this change.
+ *
+ * Without that suppression two stair-switch partners, each holding a COND_ANY trigger on
+ * its own element, would mirror each other forever.
+ *
+ * 312 (SYNC_ONOFF_REVERSING) is deliberately NOT a carrier — it is a stored-bind-command
+ * transform that inverts a value, and never arrives as an incoming control.
+ *
+ * @param[in,out] attrId  Rewritten to IOT_ATTR_ONOFF when it is a carrier; untouched
+ *                        otherwise.
+ * @return true if attrId was a carrier (and was rewritten), false otherwise.
+ */
+bool IOT_AttrResolveSyncOnOffCarrier(uint16_t *attrId);
+
+#ifdef __cplusplus
+}
+#endif

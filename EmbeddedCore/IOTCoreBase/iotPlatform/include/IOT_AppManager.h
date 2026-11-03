@@ -5,6 +5,10 @@
 #include <stdint.h>
 
 /* OTA status codes (MsgData byte 1) — match protocol spec SETTING_OTA_PROGRESS_INFO */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_OTA_STATUS_SUCCESS          0x00 /* OTA applied and verified — post-reboot only */
 #define IOT_OTA_STATUS_INPROGRESS       0x01 /* Legacy — do not use; replaced by 0x04/0x05/0x06 */
 #define IOT_OTA_STATUS_FAILURE          0x02 /* OTA failed; MsgData byte 2 = error code */
@@ -94,3 +98,6 @@ iot_err_t IOT_AppManagerCheckForUpdates(const char *newVersion, bool *isUpdateAv
 iot_err_t IOT_AppManagerStartUpdateProcess(const char *updateUrl, const char *cert, size_t certLen,
                                            const char *authToken, size_t authTokenLen,
                                            void *user_data, IOT_OtaProgressCb_t progressCb);
+#ifdef __cplusplus
+}
+#endif

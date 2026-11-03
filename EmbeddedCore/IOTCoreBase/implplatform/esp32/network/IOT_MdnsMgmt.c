@@ -91,21 +91,40 @@ static iot_err_t esp32MdnsAddAdvertisement(char *serviceName, char *serviceType,
     return IOT_OK;
 }
 
-static iot_err_t esp32MdnsRemoveAdvertisement(const char *serviceName)
+/* Removes ONE service type, e.g. "_wiledirectcfg".
+ *
+ * This used to call mdns_service_remove_all() and discard its argument, on the stated
+ * grounds that "ESP-IDF removes by service type, not name". The first half was right and
+ * the conclusion was not: mdns_service_remove(service_type, proto) exists and removes
+ * exactly one. Removing everything instead is a landmine for the caller that eventually
+ * wants to drop the provisioning advert while keeping the running-mode one -- it would
+ * silently take out both, and the device would stop being discoverable at all.
+ *
+ * Nothing called this when it was fixed (2026-09-15), so the change is free. */
+static iot_err_t esp32MdnsRemoveAdvertisement(const char *serviceType)
 {
     if (!s_initialized)
     {
         return IOT_OK;
     }
+    if (serviceType == NULL)
+    {
+        return IOT_ERR_INVALID_ARG;
+    }
 
-    /* ESP-IDF removes by service type, not name — remove all matching TCP services */
-    esp_err_t err = mdns_service_remove_all();
+    esp_err_t err = mdns_service_remove(serviceType, "_tcp");
+    if (err == ESP_ERR_NOT_FOUND)
+    {
+        /* Nothing registered under that type: the caller's intent is already satisfied. */
+        return IOT_OK;
+    }
     if (err != ESP_OK)
     {
-        IOT_LOGE(TAG, "mdns_service_remove failed: %d", err);
+        IOT_LOGE(TAG, "mdns_service_remove(%s) failed: %d", serviceType, err);
         return IOT_ERR_FAIL;
     }
 
+    IOT_LOGI(TAG, "Advertisement removed: %s", serviceType);
     return IOT_OK;
 }
 

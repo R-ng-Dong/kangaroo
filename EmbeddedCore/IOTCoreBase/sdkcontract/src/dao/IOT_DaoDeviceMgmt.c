@@ -1,4 +1,5 @@
 #include "dao/IOT_DaoDeviceMgmt.h"
+#include "dao/IOT_DaoStoresInternal.h"
 #include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
@@ -79,16 +80,16 @@ static iot_err_t getEidByMac(uint8_t *mac, uint8_t macSize, uint16_t *outEid)
             for (uint16_t j = 0; j < eidCount; j++)
             {
                 if (dataList && dataList[j])
-                    free(dataList[j]);
+                    SAFE_FREE(dataList[j]);
                 if (eidKeyList && eidKeyList[j])
-                    free(eidKeyList[j]);
+                    SAFE_FREE(eidKeyList[j]);
             }
             if (dataList)
-                free(dataList);
+                SAFE_FREE(dataList);
             if (dataSizes)
-                free(dataSizes);
+                SAFE_FREE(dataSizes);
             if (eidKeyList)
-                free(eidKeyList);
+                SAFE_FREE(eidKeyList);
             return IOT_OK;
         }
     }
@@ -97,16 +98,16 @@ static iot_err_t getEidByMac(uint8_t *mac, uint8_t macSize, uint16_t *outEid)
     for (uint16_t j = 0; j < eidCount; j++)
     {
         if (dataList && dataList[j])
-            free(dataList[j]);
+            SAFE_FREE(dataList[j]);
         if (eidKeyList && eidKeyList[j])
-            free(eidKeyList[j]);
+            SAFE_FREE(eidKeyList[j]);
     }
     if (dataList)
-        free(dataList);
+        SAFE_FREE(dataList);
     if (dataSizes)
-        free(dataSizes);
+        SAFE_FREE(dataSizes);
     if (eidKeyList)
-        free(eidKeyList);
+        SAFE_FREE(eidKeyList);
 
     return IOT_ERR_NOT_FOUND;
 }
@@ -122,7 +123,7 @@ void IOT_DaoDeviceFreeIdentityInfo(IOT_DevIdentityInfo_t *info)
 
     if (info->mac != NULL)
     {
-        free(info->mac);
+        SAFE_FREE(info->mac);
         info->mac = NULL;
     }
     info->macSize = 0;
@@ -146,16 +147,16 @@ void IOT_DaoDeviceFreeElemsInfo(IOT_DaoDeviceElemsAttrsInfo_t *elemsInfo)
                 {
                     if (elem->attrList[j].attrValue != NULL)
                     {
-                        free(elem->attrList[j].attrValue);
+                        SAFE_FREE(elem->attrList[j].attrValue);
                         elem->attrList[j].attrValue = NULL;
                     }
                 }
-                free(elem->attrList);
+                SAFE_FREE(elem->attrList);
                 elem->attrList = NULL;
             }
             elem->numOfAttr = 0;
         }
-        free(elemsInfo->elemList);
+        SAFE_FREE(elemsInfo->elemList);
         elemsInfo->elemList = NULL;
     }
     elemsInfo->numOfElem = 0;
@@ -169,11 +170,23 @@ iot_err_t IOT_DaoDeviceInit(void)
 {
     IOT_LOGI(TAG, "Initializing device management");
 
-    // Register element state namespace with cache (frequently accessed)
-    const IOT_CacheConfig_t nsConfig = {.namespace = DEVICE_ELEMS_STATE_INFO_NAMESPACE,
+    /* Write-back, flushed once a second.
+     *
+     * The storage write dominates the cost of a control command, so a command writes to RAM
+     * and a burst of changes coalesces into one flush. Storage already skips writes of
+     * identical values, so this pays off for bursts of CHANGING values; an idle device sees
+     * no change.
+     *
+     * The flush runs on the cache's own worker, never on the timer service task: serialising
+     * each dirty entry and waiting on storage does not fit in a timer callback's stack.
+     *
+     * Why 1 s: a control burst coalesces whole inside it, and a short interval keeps the
+     * window in which a power cut loses the last state change small. Controlled restarts
+     * flush first, so the exposure is genuine power loss only. */
+    const IOT_CacheConfig_t nsConfig = {.nsName = DEVICE_ELEMS_STATE_INFO_NAMESPACE,
                                         .maxEntries = MAX_DEVICE_CACHE,
-                                        .flushIntervalMs = 0, // Manual flush only
-                                        .policy = IOT_CACHE_WRITE_THROUGH};
+                                        .flushIntervalMs = 1000,
+                                        .policy = IOT_CACHE_WRITE_BACK};
 
     iot_err_t err = IOT_CacheRegisterNamespace(&nsConfig);
     if (err != IOT_OK && err != IOT_ERR_INVALID_STATE) // Already registered is OK
@@ -213,7 +226,7 @@ iot_err_t IOT_DaoDeviceSetIdentityInfo(uint16_t eid, IOT_DevIdentityInfo_t *devI
 
     // Prepare identity data: mactype(1), macsize(1 byte), mac, devId(12 bytes)
     size_t flatDataLen = 1 + 1 + macSize + 12;
-    uint8_t *flatData = malloc(flatDataLen);
+    uint8_t *flatData = Mem_SafeMalloc(flatDataLen, TAG, "identity flat data");
     if (flatData == NULL)
     {
         return IOT_ERR_NO_MEM;
@@ -225,7 +238,7 @@ iot_err_t IOT_DaoDeviceSetIdentityInfo(uint16_t eid, IOT_DevIdentityInfo_t *devI
     memcpy(&flatData[2 + macSize], devId, 12);
 
     iot_err_t storageErr = IOT_DaoStorageSet(DEVICE_IDENTITY_INFO_NAMESPACE, key, IOT_DAO_BLOB, flatData, flatDataLen);
-    free(flatData);
+    SAFE_FREE(flatData);
 
     if (storageErr != IOT_OK)
     {
@@ -255,7 +268,7 @@ iot_err_t IOT_DaoDeviceSetIdentityInfoAsync(uint16_t eid, IOT_DevIdentityInfo_t 
 
     // Prepare identity data
     size_t flatDataLen = 1 + 1 + macSize + 12;
-    uint8_t *flatData = malloc(flatDataLen);
+    uint8_t *flatData = Mem_SafeMalloc(flatDataLen, TAG, "identity flat data");
     if (flatData == NULL)
     {
         return IOT_ERR_NO_MEM;
@@ -267,7 +280,7 @@ iot_err_t IOT_DaoDeviceSetIdentityInfoAsync(uint16_t eid, IOT_DevIdentityInfo_t 
     memcpy(&flatData[2 + macSize], devId, 12);
 
     iot_err_t storageErr = IOT_DaoStorageSetAsync(DEVICE_IDENTITY_INFO_NAMESPACE, key, IOT_DAO_BLOB, flatData, flatDataLen);
-    free(flatData); // DAO_SetDataAsync copies the data internally
+    SAFE_FREE(flatData); // DAO_SetDataAsync copies the data internally
 
     if (storageErr != IOT_OK)
     {
@@ -306,7 +319,7 @@ iot_err_t IOT_DaoDeviceGetIdentityInfo(uint16_t eid, IOT_DevIdentityInfo_t *outD
     // Validate minimum length: macType(1) + macSize(1) + devId(12)
     if (flatDataLen < 1 + 1 + 12)
     {
-        free(flatData);
+        SAFE_FREE(flatData);
         return IOT_ERR_FAIL;
     }
 
@@ -316,22 +329,22 @@ iot_err_t IOT_DaoDeviceGetIdentityInfo(uint16_t eid, IOT_DevIdentityInfo_t *outD
     // Validate total length
     if (flatDataLen != 1 + 1 + macSize + 12)
     {
-        free(flatData);
+        SAFE_FREE(flatData);
         return IOT_ERR_FAIL;
     }
 
     outDevIdentityInfo->macType = macType;
     outDevIdentityInfo->macSize = macSize;
-    outDevIdentityInfo->mac = malloc(macSize);
+    outDevIdentityInfo->mac = Mem_SafeMalloc(macSize, TAG, "identity mac");
     if (outDevIdentityInfo->mac == NULL)
     {
-        free(flatData);
+        SAFE_FREE(flatData);
         return IOT_ERR_NO_MEM;
     }
     memcpy(outDevIdentityInfo->mac, &flatData[2], macSize);
     memcpy(outDevIdentityInfo->devId, &flatData[2 + macSize], 12);
 
-    free(flatData);
+    SAFE_FREE(flatData);
     return IOT_OK;
 }
 
@@ -403,12 +416,12 @@ iot_err_t IOT_DaoDeviceGetCommonInfo(uint16_t eid, IOT_DevCommonInfo_t *outDevCo
 
     if (dataLen != sizeof(IOT_DevCommonInfo_t))
     {
-        free(data);
+        SAFE_FREE(data);
         return IOT_ERR_FAIL;
     }
 
     memcpy(outDevCommonInfo, data, sizeof(IOT_DevCommonInfo_t));
-    free(data);
+    SAFE_FREE(data);
     return IOT_OK;
 }
 
@@ -456,7 +469,7 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     if (attrCount > 0 && attrList == NULL)
     {
         if (currentState)
-            free(currentState);
+            SAFE_FREE(currentState);
         return IOT_ERR_INVALID_ARG;
     }
 
@@ -470,7 +483,7 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
         if (attrSize > 0 && attrList[i].attrValue == NULL)
         {
             if (currentState)
-                free(currentState);
+                SAFE_FREE(currentState);
             return IOT_ERR_INVALID_ARG;
         }
         totalAttrBytes += 2 + 1 + attrSize; // attrId(2) + size(1) + value
@@ -482,16 +495,16 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     if (newStateLen_sz > UINT16_MAX)
     {
         if (currentState)
-            free(currentState);
+            SAFE_FREE(currentState);
         return IOT_ERR_FAIL;
     }
     uint16_t newStateLen = (uint16_t) newStateLen_sz;
 
-    uint8_t *newState = malloc(newStateLen);
+    uint8_t *newState = Mem_SafeMalloc(newStateLen, TAG, "elem new state");
     if (newState == NULL)
     {
         if (currentState)
-            free(currentState);
+            SAFE_FREE(currentState);
         return IOT_ERR_NO_MEM;
     }
 
@@ -499,7 +512,7 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     if (currentState != NULL && currentStateLen > 0)
     {
         memcpy(newState, currentState, currentStateLen);
-        free(currentState);
+        SAFE_FREE(currentState);
     }
 
     // Append new element info
@@ -535,7 +548,7 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     {
         IOT_LOGE(TAG, "Failed to persist updated element state for DevEid %04x", DevEid);
     }
-    free(newState);
+    SAFE_FREE(newState);
 
     return iot_err;
 }
@@ -579,7 +592,7 @@ static iot_err_t parseElemsFromBlob(const uint8_t *data, uint16_t dataLen, IOT_D
     }
 
     // Allocate
-    outInfo->elemList = calloc(elemCount, sizeof(IOT_DaoDeviceStateElemState_t));
+    outInfo->elemList = Mem_SafeCalloc(elemCount, sizeof(IOT_DaoDeviceStateElemState_t), TAG, "parse elem list");
     if (outInfo->elemList == NULL)
         return IOT_ERR_NO_MEM;
     outInfo->numOfElem = elemCount;
@@ -600,7 +613,7 @@ static iot_err_t parseElemsFromBlob(const uint8_t *data, uint16_t dataLen, IOT_D
 
         if (elem->numOfAttr > 0)
         {
-            elem->attrList = calloc(elem->numOfAttr, sizeof(IOT_DaoDeviceStateAttr_t));
+            elem->attrList = Mem_SafeCalloc(elem->numOfAttr, sizeof(IOT_DaoDeviceStateAttr_t), TAG, "parse attr list");
             if (elem->attrList == NULL)
             {
                 IOT_DaoDeviceFreeElemsInfo(outInfo);
@@ -614,7 +627,7 @@ static iot_err_t parseElemsFromBlob(const uint8_t *data, uint16_t dataLen, IOT_D
 
                 if (elem->attrList[j].attrSize > 0)
                 {
-                    elem->attrList[j].attrValue = malloc(elem->attrList[j].attrSize);
+                    elem->attrList[j].attrValue = Mem_SafeMalloc(elem->attrList[j].attrSize, TAG, "parse attr value");
                     if (elem->attrList[j].attrValue == NULL)
                     {
                         IOT_DaoDeviceFreeElemsInfo(outInfo);
@@ -670,7 +683,7 @@ static iot_err_t serializeElemsToBlob(const IOT_DaoDeviceElemsAttrsInfo_t *info,
     if (totalSize > UINT16_MAX)
         return IOT_ERR_FAIL;
 
-    uint8_t *data = malloc(totalSize);
+    uint8_t *data = Mem_SafeMalloc(totalSize, TAG, "serialize elem blob");
     if (data == NULL)
         return IOT_ERR_NO_MEM;
 
@@ -714,8 +727,6 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
         return IOT_ERR_INVALID_ARG;
 
     iot_err_t iot_err = IOT_OK;
-    // IOT_LOGI(TAG, "Updating element state: DevEid=%04x, ElemNum=%d", eid, elemInfo->numOfElem);
-
     char key[8];
     eid_to_key(eid, key, sizeof(key));
 
@@ -740,11 +751,14 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
     iot_err = parseElemsFromBlob(currentState, currentStateLen, &currentElemsInfo);
     if (iot_err != IOT_OK)
     {
-        free(currentState);
+        SAFE_FREE(currentState);
         return iot_err;
     }
-    free(currentState);
+    SAFE_FREE(currentState);
     currentState = NULL;
+
+    bool anyUpdated = false;  // an attribute MATCHED (or was added) — drives NOT_FOUND
+    bool anyChanged = false;  // the blob would actually differ — drives the NVS write
 
     // Apply updates to the parsed structure
     for (uint16_t e = 0; e < elemInfo->numOfElem; e++)
@@ -770,7 +784,7 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
 
         if (dstElem == NULL)
         {
-            IOT_LOGW(TAG, "Element %04x not found, skipping", srcElem->elemId);
+            IOT_LOGW(TAG, "Element %04x not found in device %04x, skipping", srcElem->elemId, eid);
             continue;
         }
 
@@ -781,17 +795,43 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
 
             // Skip if source has no data to update with
             if (srcAttr->attrValue == NULL || srcAttr->attrSize == 0)
+            {
+                IOT_LOGD(TAG, "Skipping empty update for attr %04x", srcAttr->attrId);
                 continue;
+            }
 
             // Find matching attribute
+            bool attrFound = false;
             for (uint8_t j = 0; j < dstElem->numOfAttr; j++)
             {
                 if (dstElem->attrList[j].attrId == srcAttr->attrId)
                 {
-                    // Reallocate if size changed (including from 0 to non-zero)
-                    if (dstElem->attrList[j].attrSize != srcAttr->attrSize)
+                    attrFound = true;
+
+                    /* Does this update actually change anything? State is one blob per
+                     * device in a write-through namespace, so an update that sets an
+                     * attribute to the value it already holds would serialize a
+                     * byte-identical blob and burn an NVS erase cycle for nothing. That is
+                     * not a rare case: ACTIVE_BY_TRIGGER re-execution, group/broadcast
+                     * control, sync-on-off mirroring and the cloud pushing current state
+                     * all re-assert the present value. */
+                    bool sizeDiffers = (dstElem->attrList[j].attrSize != srcAttr->attrSize ||
+                                        dstElem->attrList[j].attrValue == NULL);
+                    if (!sizeDiffers &&
+                        memcmp(dstElem->attrList[j].attrValue, srcAttr->attrValue, srcAttr->attrSize) == 0)
                     {
-                        uint8_t *newValue = malloc(srcAttr->attrSize);
+                        /* Matched, so this is NOT a "nothing found" case — but there is
+                         * nothing to persist. anyChanged stays false. */
+                        anyUpdated = true;
+                        IOT_LOGD(TAG, "Attr %04x of elem %04x already holds this value — no write",
+                                 srcAttr->attrId, dstElem->elemId);
+                        break;
+                    }
+
+                    // Reallocate if size changed (including from 0 to non-zero)
+                    if (sizeDiffers)
+                    {
+                        uint8_t *newValue = Mem_SafeMalloc(srcAttr->attrSize, TAG, "update attr value");
                         if (newValue == NULL)
                         {
                             IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
@@ -800,16 +840,71 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
                         // Free old value if it exists
                         if (dstElem->attrList[j].attrValue != NULL)
                         {
-                            free(dstElem->attrList[j].attrValue);
+                            SAFE_FREE(dstElem->attrList[j].attrValue);
                         }
                         dstElem->attrList[j].attrValue = newValue;
                         dstElem->attrList[j].attrSize = srcAttr->attrSize;
                     }
                     memcpy(dstElem->attrList[j].attrValue, srcAttr->attrValue, srcAttr->attrSize);
+                    anyUpdated = true;
+                    anyChanged = true;
+                    IOT_LOGD(TAG, "Updated device %04x elem %04x attr %04x (size %d)", 
+                             eid, dstElem->elemId, srcAttr->attrId, srcAttr->attrSize);
                     break;
                 }
             }
+            if (!attrFound)
+            {
+                IOT_LOGI(TAG, "Attribute %04x not found in element %04x, adding it", srcAttr->attrId, dstElem->elemId);
+                
+                // Reallocate attribute list to add one more
+                uint8_t newCount = dstElem->numOfAttr + 1;
+                IOT_DaoDeviceStateAttr_t *newList = Mem_SafeRealloc(dstElem->attrList, 
+                                                                  newCount * sizeof(IOT_DaoDeviceStateAttr_t), 
+                                                                  TAG, "upsert attr list");
+                if (newList == NULL)
+                {
+                    IOT_LOGE(TAG, "Failed to reallocate attribute list for upsert");
+                    IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
+                    return IOT_ERR_NO_MEM;
+                }
+                
+                dstElem->attrList = newList;
+                dstElem->attrList[dstElem->numOfAttr].attrId = srcAttr->attrId;
+                dstElem->attrList[dstElem->numOfAttr].attrSize = srcAttr->attrSize;
+                dstElem->attrList[dstElem->numOfAttr].attrValue = Mem_SafeMalloc(srcAttr->attrSize, TAG, "upsert attr val");
+                
+                if (dstElem->attrList[dstElem->numOfAttr].attrValue == NULL)
+                {
+                    // Note: currentElemsInfo will free the partially updated list correctly
+                    IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
+                    return IOT_ERR_NO_MEM;
+                }
+                
+                memcpy(dstElem->attrList[dstElem->numOfAttr].attrValue, srcAttr->attrValue, srcAttr->attrSize);
+                dstElem->numOfAttr = newCount;
+                anyUpdated = true;
+                anyChanged = true;
+            }
         }
+    }
+
+    if (!anyUpdated)
+    {
+        IOT_LOGW(TAG, "No attributes were updated for device %04x", eid);
+        IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
+        return IOT_ERR_NOT_FOUND;
+    }
+
+    /* Everything matched but every value was already what was asked for: the serialized
+     * blob would be byte-identical. Skip the write — but still return IOT_OK, because the
+     * requested state IS in effect. Callers use the return only to detect "not found", and
+     * the state-changed report to the cloud is driven by the caller, not by this write. */
+    if (!anyChanged)
+    {
+        IOT_LOGD(TAG, "Device %04x: no attribute value changed — skipping NVS write", eid);
+        IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
+        return IOT_OK;
     }
 
     // Serialize back to blob
@@ -825,31 +920,35 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
 
     // Persist
     iot_err = IOT_CacheSet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, newState, newStateLen);
-    free(newState);
+    SAFE_FREE(newState);
 
     return iot_err;
 }
 
-iot_err_t IOT_DaoDeviceUpdateElementStateAsync(uint16_t eid, IOT_DaoDeviceElemsAttrsInfo_t *elemInfo)
+iot_err_t IOT_DaoDeviceUpsertAttribute(uint16_t devEid, uint16_t elemId, uint16_t attrId, const uint8_t *attrData, uint16_t attrDataLen)
 {
-    // For async update, we need to read current state first (blocking),
-    // then queue the write. This is a limitation - true async would need
-    // the DAO task to handle the read-modify-write cycle.
-    //
-    // For now, we do the update synchronously but queue just the final write.
-    // This is still useful for non-time-critical updates from callbacks.
+    IOT_DaoDeviceStateAttr_t attr = {
+        .attrId = attrId,
+        .attrSize = attrDataLen,
+        .attrValue = (uint8_t *)attrData
+    };
+    IOT_DaoDeviceStateElemState_t elem = {
+        .elemId = elemId,
+        .numOfAttr = 1,
+        .attrList = &attr
+    };
+    IOT_DaoDeviceElemsAttrsInfo_t info = {
+        .numOfElem = 1,
+        .elemList = &elem
+    };
+    
+    return IOT_DaoDeviceUpdateElementState(devEid, &info);
+}
 
-    if (elemInfo == NULL || elemInfo->numOfElem == 0 || elemInfo->elemList == NULL)
-        return IOT_ERR_INVALID_ARG;
-
-    // Note: This implementation does a blocking read + async write
-    // A fully async version would require more complex queue handling
-
-    // IOT_LOGW(TAG, "UpdateElementStateAsync: performing sync read + async write");
-
-    // For simplicity, just call the sync version
-    // TODO: Implement true async read-modify-write if needed
-    return IOT_DaoDeviceUpdateElementState(eid, elemInfo);
+iot_err_t IOT_DaoDeviceUpsertAttributeAsync(uint16_t devEid, uint16_t elemId, uint16_t attrId, const uint8_t *attrData, uint16_t attrDataLen)
+{
+    // Synchronous, like IOT_DaoDeviceUpdateElementState: the cache is written to storage later
+    return IOT_DaoDeviceUpsertAttribute(devEid, elemId, attrId, attrData, attrDataLen);
 }
 
 iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAttrsInfo_t *outElemsInfo)
@@ -888,7 +987,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         if (offset + 5 > currentStateLen)
         {
             IOT_LOGE(TAG, "Truncated element header at offset %u", offset);
-            free(currentState);
+            SAFE_FREE(currentState);
             return IOT_ERR_FAIL;
         }
 
@@ -899,13 +998,13 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         {
             if (attrOffset + 3 > currentStateLen)
             {
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_FAIL;
             }
             uint16_t attrSize = (uint16_t) currentState[attrOffset + 2];
             if (attrOffset + 3 + attrSize > currentStateLen)
             {
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_FAIL;
             }
             attrOffset += 2 + 1 + attrSize;
@@ -915,10 +1014,10 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
     }
 
     // Allocate elemList
-    outElemsInfo->elemList = calloc(elemCount, sizeof(IOT_DaoDeviceStateElemState_t));
+    outElemsInfo->elemList = Mem_SafeCalloc(elemCount, sizeof(IOT_DaoDeviceStateElemState_t), TAG, "get elem list");
     if (outElemsInfo->elemList == NULL)
     {
-        free(currentState);
+        SAFE_FREE(currentState);
         return IOT_ERR_NO_MEM;
     }
 
@@ -930,7 +1029,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         if (offset + 5 > currentStateLen)
         {
             IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
-            free(currentState);
+            SAFE_FREE(currentState);
             return IOT_ERR_FAIL;
         }
 
@@ -948,11 +1047,11 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         // Allocate attrList
         if (featureCount > 0)
         {
-            elemInfoOut->attrList = calloc(featureCount, sizeof(IOT_DaoDeviceStateAttr_t));
+            elemInfoOut->attrList = Mem_SafeCalloc(featureCount, sizeof(IOT_DaoDeviceStateAttr_t), TAG, "get attr list");
             if (elemInfoOut->attrList == NULL)
             {
                 IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_NO_MEM;
             }
         }
@@ -963,7 +1062,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
             if (attrOffset + 3 > currentStateLen)
             {
                 IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_FAIL;
             }
 
@@ -973,7 +1072,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
             if (attrOffset + 3 + attrSize > currentStateLen)
             {
                 IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_FAIL;
             }
 
@@ -982,11 +1081,11 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
 
             if (attrSize > 0)
             {
-                elemInfoOut->attrList[j].attrValue = malloc(attrSize);
+                elemInfoOut->attrList[j].attrValue = Mem_SafeMalloc(attrSize, TAG, "get attr value");
                 if (elemInfoOut->attrList[j].attrValue == NULL)
                 {
                     IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
-                    free(currentState);
+                    SAFE_FREE(currentState);
                     return IOT_ERR_NO_MEM;
                 }
                 memcpy(elemInfoOut->attrList[j].attrValue, &currentState[attrOffset + 3], attrSize);
@@ -1003,7 +1102,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         offset = attrOffset;
     }
 
-    free(currentState);
+    SAFE_FREE(currentState);
     return IOT_OK;
 }
 
@@ -1037,7 +1136,7 @@ iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t
     {
         if (offset + 5 > currentStateLen)
         {
-            free(currentState);
+            SAFE_FREE(currentState);
             return IOT_ERR_FAIL;
         }
 
@@ -1048,7 +1147,7 @@ iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t
         if (currentElemId == elemId)
         {
             *outElemType = currentElemType;
-            free(currentState);
+            SAFE_FREE(currentState);
             return IOT_OK;
         }
 
@@ -1058,7 +1157,7 @@ iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t
         {
             if (attrOffset + 3 > currentStateLen)
             {
-                free(currentState);
+                SAFE_FREE(currentState);
                 return IOT_ERR_FAIL;
             }
             uint16_t attrSize = (uint16_t) currentState[attrOffset + 2];
@@ -1067,7 +1166,7 @@ iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t
         offset = attrOffset;
     }
 
-    free(currentState);
+    SAFE_FREE(currentState);
     return IOT_ERR_DATA_NOT_FOUND; // Element not found
 }
 
@@ -1075,7 +1174,7 @@ iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t
 // Mesh Key Management
 // ============================================================================
 
-iot_err_t IOT_DaoDeviceGetMeshKey(uint16_t eid, uint8_t *outKey, uint8_t *outKeyLen)
+iot_err_t IOT_DaoDeviceGetMeshKey(uint16_t eid, uint8_t *outKey, uint8_t outKeyCap, uint8_t *outKeyLen)
 {
     if (outKey == NULL || outKeyLen == NULL)
         return IOT_ERR_INVALID_ARG;
@@ -1094,6 +1193,16 @@ iot_err_t IOT_DaoDeviceGetMeshKey(uint16_t eid, uint8_t *outKey, uint8_t *outKey
     {
         IOT_LOGE(TAG, "Failed to get mesh dev key for Eid %04x", eid);
         return IOT_ERR_FAIL;
+    }
+
+    // Bound the copy against the caller's buffer; a buffer smaller than the stored blob
+    // returns IOT_ERR_NO_MEM.
+    if (dataLen > outKeyCap)
+    {
+        IOT_LOGE(TAG, "Mesh dev key for Eid %04x is %u bytes, caller buffer holds %u", eid,
+                 (unsigned) dataLen, (unsigned) outKeyCap);
+        SAFE_FREE(data);
+        return IOT_ERR_NO_MEM;
     }
 
     memcpy(outKey, data, dataLen);
@@ -1283,10 +1392,10 @@ bool IOT_DaoDeviceGetEidByDevId(uint8_t *devId, uint16_t *outEid)
         uint8_t macSize = flatData[1];
         uint16_t devIdOffset = 2 + macSize;
 
-        if (dataSizes[i] < devIdOffset + DEVICE_ID_LEN)
+        if (dataSizes[i] < devIdOffset + IOT_DAO_DEVICE_ID_LEN)
             continue;
 
-        if (memcmp(devId, &flatData[devIdOffset], DEVICE_ID_LEN) == 0)
+        if (memcmp(devId, &flatData[devIdOffset], IOT_DAO_DEVICE_ID_LEN) == 0)
         {
             *outEid = (uint16_t) atoi(eidKeyList[i]);
             found = true;
@@ -1297,16 +1406,16 @@ bool IOT_DaoDeviceGetEidByDevId(uint8_t *devId, uint16_t *outEid)
     for (uint16_t j = 0; j < eidCount; j++)
     {
         if (dataList && dataList[j])
-            free(dataList[j]);
+            SAFE_FREE(dataList[j]);
         if (eidKeyList && eidKeyList[j])
-            free(eidKeyList[j]);
+            SAFE_FREE(eidKeyList[j]);
     }
     if (dataList)
-        free(dataList);
+        SAFE_FREE(dataList);
     if (dataSizes)
-        free(dataSizes);
+        SAFE_FREE(dataSizes);
     if (eidKeyList)
-        free(eidKeyList);
+        SAFE_FREE(eidKeyList);
 
     return found;
 }

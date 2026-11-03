@@ -1,37 +1,40 @@
 #include "system_runtime.h"
-
 #include <string.h>
 
 #include "esp_err.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#define MAX_NUM_FILTER 5
+
 #define SYSTEM_RUNTIME_NVS_NAMESPACE "system_runtime"
 #define SYSTEM_RUNTIME_DEVICE_TOTAL_KEY "device_total"
 
-static UI32 s_device_runtime_total_s = 0U;
-static UI32 s_device_active_start_ms = 0U;
+static UI32 s_device_runtime_total_s[MAX_NUM_FILTER + 1] = {0U};
+static UI32 s_device_active_start_ms[MAX_NUM_FILTER + 1] = {0U};
 
-static UI32 SystemRuntimeCurrentSeconds(UI32 now_ms)
+static UI32 SystemRuntimeCurrentSeconds(UI8 filter_idx, UI32 now_ms)
 {
-    return s_device_runtime_total_s + ((now_ms - s_device_active_start_ms) / 1000U);
+    if(filter_idx > MAX_NUM_FILTER) return 0;
+    return s_device_runtime_total_s[filter_idx] + ((now_ms - s_device_active_start_ms[filter_idx]) / 1000U);
 }
 
-bool SystemRuntimeSaveToFlash(void)
+_bool SystemRuntimeSaveToFlash(void)
 {
-    // return true;
+    // return D_TRUE;
+    printf("SystemRuntimeSaveToFlash === \n");
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(SYSTEM_RUNTIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
-        return false;
+        return D_FALSE;
     }
 
-    err = nvs_set_u32(handle, SYSTEM_RUNTIME_DEVICE_TOTAL_KEY, s_device_runtime_total_s);
+    err = nvs_set_blob(handle, SYSTEM_RUNTIME_DEVICE_TOTAL_KEY, s_device_runtime_total_s, sizeof(s_device_runtime_total_s));
     if (err != ESP_OK)
     {
         nvs_close(handle);
-        return false;
+        return D_FALSE;
     }
 
     err = nvs_commit(handle);
@@ -39,57 +42,81 @@ bool SystemRuntimeSaveToFlash(void)
     return err == ESP_OK;
 }
 
-bool SystemRuntimeLoadFromFlash(void)
+_bool SystemRuntimeLoadFromFlash(void)
 {
     nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(SYSTEM_RUNTIME_NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t err = nvs_open(SYSTEM_RUNTIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
-        return false;
+        return D_FALSE;
     }
 
-    uint32_t value = 0U;
-    err = nvs_get_u32(handle, SYSTEM_RUNTIME_DEVICE_TOTAL_KEY, &value);
-    if (err == ESP_OK)
+    uint32_t value[MAX_NUM_FILTER + 1];
+    size_t value_size = sizeof(value);
+    err = nvs_get_blob(handle, SYSTEM_RUNTIME_DEVICE_TOTAL_KEY, &value, &value_size);
+    if (err == ESP_OK && value_size == sizeof(value))
     {
-        s_device_runtime_total_s = value;
+        printf("device_runtime_total_s: ");
+        for (UI8 i = 0; i <= MAX_NUM_FILTER; i++)
+        {
+            s_device_runtime_total_s[i] = value[i];
+            printf("%lu ", s_device_runtime_total_s[i]);
+        }
+        printf("\n");
     }
     else
     {
-        s_device_runtime_total_s = 0U;
+        for (UI8 i = 0; i <= MAX_NUM_FILTER; i++)
+        {
+            s_device_runtime_total_s[i] = 0;
+        }
+        err = nvs_set_blob(handle, SYSTEM_RUNTIME_DEVICE_TOTAL_KEY, s_device_runtime_total_s, sizeof(s_device_runtime_total_s));
+        if (err == ESP_OK)
+        {
+            err = nvs_commit(handle);
+        }
     }
 
     nvs_close(handle);
-    return true;
+    return D_TRUE;
 }
 
-void SystemRuntimeInit(void)
+_bool SystemRuntimeInit(void)
 {
 
-    s_device_runtime_total_s = 0U;
-    s_device_active_start_ms = 0U;
-
-    SystemRuntimeLoadFromFlash();
+    // s_device_runtime_total_s = 0U;
+    // s_device_active_start_ms = 0U;
+    printf("SystemRuntimeInit === \n");
+    return SystemRuntimeLoadFromFlash();
 }
 
-bool SystemRuntimeReconfig(UI32 time_s, UI32 now_ms)
+_bool SystemRuntimeReconfig(UI8 filter_idx, UI32 time_s, UI32 now_ms)
 {
-
-    s_device_runtime_total_s = time_s;
-    s_device_active_start_ms = now_ms;
+    if(filter_idx > MAX_NUM_FILTER) return D_FALSE;
+    s_device_runtime_total_s[filter_idx] = time_s;
+    s_device_active_start_ms[filter_idx] = now_ms;
     return SystemRuntimeSaveToFlash();
 }
 
-bool SystemRuntimeUpdate(UI32 now_ms)
+_bool SystemRuntimeUpdate(UI8 filter_idx, UI32 now_ms)
 {
-
-    s_device_runtime_total_s += (now_ms - s_device_active_start_ms) / 1000U;
-    s_device_active_start_ms = now_ms;
-    SystemRuntimeSaveToFlash();
-    return true;
+    if(filter_idx > MAX_NUM_FILTER && filter_idx != SYS_UPDATE_ALL) return D_FALSE;
+    if(filter_idx == SYS_UPDATE_ALL)
+    {
+        for (UI8 i = 0; i <= MAX_NUM_FILTER; i++)
+        {
+            s_device_runtime_total_s[i] += (now_ms - s_device_active_start_ms[i]) / 1000U;
+            s_device_active_start_ms[i] = now_ms;
+        }
+    }
+    else{
+        s_device_runtime_total_s[filter_idx] += (now_ms - s_device_active_start_ms[filter_idx]) / 1000U;
+        s_device_active_start_ms[filter_idx] = now_ms;
+    }
+    return SystemRuntimeSaveToFlash();
 }
 
-UI32 SystemRuntimeGetSeconds(UI32 now_ms)
+UI32 SystemRuntimeGetSeconds(UI8 filter_idx, UI32 now_ms)
 {
-    return SystemRuntimeCurrentSeconds(now_ms); //s_device_runtime_total_s
+    return SystemRuntimeCurrentSeconds(filter_idx, now_ms); //s_device_runtime_total_s
 }

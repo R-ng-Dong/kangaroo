@@ -142,7 +142,7 @@ iot_err_t IOT_NwkInit(IOT_NetworkIface *ifaces)
     }
     uint8_t index = 0;
     iot_err_t res = IOT_OK;
-    while (ifaces[index].type != NETWORK_TYPE_NONE)
+    while (index < IOT_NWK_MAX_IFACES && ifaces[index].type != NETWORK_TYPE_NONE)
     {
         switch (ifaces[index].type)
         { // TODO: Add 2 dimensional array to support multiple interfaces
@@ -214,7 +214,7 @@ iot_err_t IOT_NwkDeinit(IOT_NetworkIface *ifaces)
     uint8_t index = 0;
     iot_err_t res = IOT_OK;
 
-    while (ifaces[index].type != NETWORK_TYPE_NONE)
+    while (index < IOT_NWK_MAX_IFACES && ifaces[index].type != NETWORK_TYPE_NONE)
     {
         switch (ifaces[index].type)
         {
@@ -253,6 +253,114 @@ iot_err_t IOT_NwkDeinit(IOT_NetworkIface *ifaces)
 
     IOT_LOGI("iot_iface", "Network interface(s) de-initialized successfully");
     return IOT_OK;
+}
+
+/* Context for one in-flight async scan. Freed by the adapter on every path. */
+typedef struct
+{
+    IOT_NwkScanDoneCb_t cb;
+    void               *arg;
+    IOT_NetworkIface    iface;
+} NwkScanCtx_t;
+
+/* Channel -> centre frequency (MHz). Shared with the synchronous path below. */
+static uint16_t nwkChannelToFreq(uint8_t ch)
+{
+    if (ch >= 1 && ch <= 13)
+    {
+        return (uint16_t) (2412 + (ch - 1) * 5);
+    }
+    if (ch == 14)
+    {
+        return 2484;
+    }
+    if (ch >= 36)
+    {
+        return (uint16_t) (5000 + ch * 5);
+    }
+    return 0;
+}
+
+/* Runs on the WiFi event task. Converts iot_ap_info_t -> wifi_scan_res_require_t and
+ * hands ownership to the caller's callback, which frees both the array and each ssid. */
+static void nwkScanDoneAdapter(iot_err_t err, iot_ap_info_t *aps, uint8_t count, void *arg)
+{
+    NwkScanCtx_t *ctx = (NwkScanCtx_t *) arg;
+    if (ctx == NULL)
+    {
+        SAFE_FREE(aps);
+        return;
+    }
+
+    wifi_scan_res_require_t *res = NULL;
+    uint8_t produced = 0;
+
+    if (err == IOT_OK && count > 0)
+    {
+        res = (wifi_scan_res_require_t *) Mem_SafeCalloc(count, sizeof(wifi_scan_res_require_t),
+                                                         "iot_iface", "async scan results");
+        if (res == NULL)
+        {
+            err = IOT_ERR_NO_MEM;
+        }
+        else
+        {
+            for (uint8_t i = 0; i < count; i++)
+            {
+                res[i].ssid = Mem_SafeStrdup(aps[i].ssid, "iot_iface", "scan ssid");
+                if (res[i].ssid == NULL)
+                {
+                    for (uint8_t j = 0; j < i; j++)
+                    {
+                        SAFE_FREE(res[j].ssid);
+                    }
+                    SAFE_FREE(res);
+                    err = IOT_ERR_NO_MEM;
+                    break;
+                }
+                res[i].authType = (uint8_t) aps[i].authmode;
+                res[i].minusRssi = (uint8_t) (-aps[i].rssi);
+                res[i].freq = nwkChannelToFreq(aps[i].primary);
+            }
+            if (res != NULL)
+            {
+                produced = count;
+            }
+        }
+    }
+
+    SAFE_FREE(aps);
+    ctx->cb(ctx->iface, err, res, produced, ctx->arg);
+    SAFE_FREE(ctx);
+}
+
+iot_err_t IOT_NwkScanWifiAsync(IOT_NetworkIface iface, uint8_t interval, uint8_t maxResults,
+                               IOT_NwkScanDoneCb_t cb, void *arg)
+{
+    if (cb == NULL)
+    {
+        return IOT_ERR_INVALID_ARG;
+    }
+    if (iface.type != WIFI)
+    {
+        return IOT_ERR_NOT_SUPPORTED;
+    }
+
+    NwkScanCtx_t *ctx = (NwkScanCtx_t *) Mem_SafeMalloc(sizeof(NwkScanCtx_t), "iot_iface", "scan ctx");
+    if (ctx == NULL)
+    {
+        return IOT_ERR_NO_MEM;
+    }
+    ctx->cb = cb;
+    ctx->arg = arg;
+    ctx->iface = iface;
+
+    iot_err_t err = IOT_WifiScanAsync(iface.number, maxResults, interval, nwkScanDoneAdapter, ctx);
+    if (err != IOT_OK)
+    {
+        SAFE_FREE(ctx);
+    }
+    return err;
 }
 
 iot_err_t IOT_NwkScanWifi(IOT_NetworkIface iface, uint8_t interval, wifi_scan_res_require_t *res, uint8_t *numOfResults)
@@ -318,7 +426,12 @@ iot_err_t IOT_NwkConnectWifi(IOT_NetworkIface *ifaces, char *ssid, char *pwd, ui
     uint8_t index = 0;
     iot_err_t res = IOT_OK;
 
-    while (ifaces[index].type != NETWORK_TYPE_NONE)
+    /* NETWORK_TYPE_NONE is the only thing that ends this walk — there is no count
+     * parameter. Callers that passed a single stack struct sent it off the end of their
+     * own frame; IOT_NWK_MAX_IFACES caps that at "we stopped" rather than "we connected
+     * a second time using whatever the neighbouring stack bytes looked like". The bound
+     * is a backstop, not the fix: the terminator is the contract (IOT_NetworkMgmt.h). */
+    while (index < IOT_NWK_MAX_IFACES && ifaces[index].type != NETWORK_TYPE_NONE)
     {
         if (ifaces[index].type != WIFI)
         {

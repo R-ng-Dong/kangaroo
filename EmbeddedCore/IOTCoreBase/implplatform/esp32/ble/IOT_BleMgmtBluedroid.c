@@ -5,6 +5,7 @@
 #include "ble/IOT_BleMgmt.h"
 #include "ble/IOT_BleDriver.h"
 #include "ble/IOT_BleAdvBuild.h"
+#include "ble_ext_adv_policy.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_bt_defs.h"
@@ -112,6 +113,39 @@ static size_t reg_desc_idx = 0;
 static esp_ble_adv_params_t pending_adv_params;
 static uint8_t adv_pending_mask = 0;
 
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+/* ── BLE 5.0: advertise through extended advertising sets ─────────────────────
+ *
+ * Same reason as the NimBLE driver, and the same shape. Enabling BLE 5.0 on Bluedroid
+ * makes the controller REFUSE the legacy calls this file otherwise uses -- measured
+ * 2026-09-11 on an ESP32-S3:
+ *
+ *   E BT_APPL: bta_dm_ble_set_adv_params_all(), fail to set ble adv params.
+ *   E BLE_BD:  Advertising start failed, status 13        (HCI 0x0C, Command Disallowed)
+ *
+ * and the advert never reaches the air, with or without mesh running. So on a BLE 5.0
+ * build the extended API is not an option, it is the only path.
+ *
+ * BLE 4.2 builds keep the legacy path below, untouched.
+ *
+ * legacy_pdu (ESP_BLE_GAP_SET_EXT_ADV_PROP_LEGACY_*) keeps the on-air PDU an ADV_IND /
+ * ADV_NONCONN_IND exactly as before, so scanners see no difference. Instance ids are
+ * shared with the NimBLE driver via ble_ext_adv_policy.h, so both hosts agree on which
+ * sets belong to us and which belong to BLE Mesh.
+ *
+ * Bluedroid sequences extended advertising through GAP events rather than returning
+ * synchronously: set_params -> SET_PARAMS_COMPLETE -> config data -> DATA_SET_COMPLETE ->
+ * (scan rsp -> SCAN_RSP_DATA_SET_COMPLETE) -> start. The payload buffers therefore have
+ * to outlive this call, which is what s_extAdvData/s_extRspData are for.
+ */
+static uint8_t s_extAdvData[IOT_BLE_ADV_MAX_LEN];
+static uint8_t s_extAdvLen;
+static uint8_t s_extRspData[IOT_BLE_ADV_MAX_LEN];
+static uint8_t s_extRspLen;
+static uint8_t s_extInstance;
+static bool s_extStartPending;
+#endif /* CONFIG_BT_BLE_50_FEATURES_SUPPORTED */
+
 /**
  * @brief Clear one pending adv-data set and start advertising once none remain
  */
@@ -128,6 +162,103 @@ static void advPendingComplete(uint8_t which)
         esp_ble_gap_start_advertising(&pending_adv_params);
     }
 }
+
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+/**
+ * @brief Kick off an extended advertising set; the GAP callback carries it the rest of the way.
+ *
+ * @param instance    advertising set id (ble_ext_adv_policy.h)
+ * @param connectable true for ADV_IND, false for ADV_NONCONN_IND
+ */
+static iot_err_t extAdvStart(uint8_t instance, bool connectable, IOT_BleMgmtAdvData_t *adv)
+{
+    IOT_BleExtAdvShape_t shape;
+    IOT_BleExtAdvShapeFromConnectable(connectable, &shape);
+
+    s_extAdvLen = 0;
+    s_extRspLen = 0;
+
+    iot_err_t err = IOT_BleAdvBuildPayload(adv, s_extAdvData, sizeof(s_extAdvData), &s_extAdvLen);
+    if (err != IOT_OK)
+    {
+        IOT_LOGE(TAG, "Adv data exceeds %d bytes", IOT_BLE_ADV_MAX_LEN);
+        return err;
+    }
+
+    /* A non-connectable legacy PDU cannot answer scan requests, so a name would be
+     * silently dropped on air -- say so rather than let it look configured. */
+    if (shape.scannable)
+    {
+        err = IOT_BleAdvBuildScanRsp(adv, s_extRspData, sizeof(s_extRspData), &s_extRspLen);
+        if (err != IOT_OK)
+        {
+            IOT_LOGE(TAG, "Scan response exceeds %d bytes", IOT_BLE_ADV_MAX_LEN);
+            return err;
+        }
+    }
+    else if (adv->name != NULL && adv->nameLen > 0)
+    {
+        IOT_LOGW(TAG, "Ignoring adv name: this advertising type cannot answer scan requests");
+    }
+
+    esp_ble_gap_ext_adv_params_t params;
+    memset(&params, 0, sizeof(params));
+    params.type = shape.connectable ? ESP_BLE_GAP_SET_EXT_ADV_PROP_LEGACY_IND
+                                    : ESP_BLE_GAP_SET_EXT_ADV_PROP_LEGACY_NONCONN;
+    params.interval_min = 0x20;
+    params.interval_max = 0x40;
+    params.channel_map = ADV_CHNL_ALL;
+    params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
+    params.filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+    params.primary_phy = ESP_BLE_GAP_PHY_1M;
+    params.secondary_phy = ESP_BLE_GAP_PHY_1M;
+    params.sid = instance;
+    params.tx_power = EXT_ADV_TX_PWR_NO_PREFERENCE;
+
+    s_extInstance = instance;
+    s_extStartPending = true;
+
+    esp_err_t ret = esp_ble_gap_ext_adv_set_params(instance, &params);
+    if (ret != ESP_OK)
+    {
+        IOT_LOGE(TAG, "ext adv %u set params failed: %s", instance, esp_err_to_name(ret));
+        s_extStartPending = false;
+        return IOT_ERR_FAIL;
+    }
+    return IOT_OK;
+}
+
+/** @brief Final step of the chain: enable the set the payloads were just written to. */
+static void extAdvStartNow(void)
+{
+    esp_ble_gap_ext_adv_t start = {.instance = s_extInstance, .duration = 0, .max_events = 0};
+    esp_err_t ret = esp_ble_gap_ext_adv_start(1, &start);
+    if (ret != ESP_OK)
+    {
+        IOT_LOGE(TAG, "ext adv start failed: %s", esp_err_to_name(ret));
+        s_extStartPending = false;
+    }
+}
+
+static iot_err_t extAdvStop(uint8_t instance)
+{
+    if (!IOT_BleExtAdvIsConfigured(instance))
+    {
+        /* Never configured, so nothing is on air. The legacy path answers
+         * ESP_ERR_INVALID_STATE here and callers treat that as success; keep that
+         * contract rather than reporting a failure for a no-op. */
+        return IOT_OK;
+    }
+    uint8_t inst = instance;
+    esp_err_t ret = esp_ble_gap_ext_adv_stop(1, &inst);
+    if (ret == ESP_ERR_INVALID_STATE)
+    {
+        IOT_LOGW(TAG, "BLE advertising already stopped");
+        return IOT_OK;
+    }
+    return (ret == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
+}
+#endif /* CONFIG_BT_BLE_50_FEATURES_SUPPORTED */
 
 /**
  * @brief Configure raw adv data, and a scan response when the caller supplied a name
@@ -903,6 +1034,78 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         break;
     }
 
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    /* The extended-advertising chain. Bluedroid completes each step by event rather
+     * than returning, so the sequence lives here: params -> data -> (scan rsp) -> start. */
+    case ESP_GAP_BLE_EXT_ADV_SET_PARAMS_COMPLETE_EVT:
+    {
+        if (param->ext_adv_set_params.status != ESP_BT_STATUS_SUCCESS)
+        {
+            IOT_LOGE(TAG, "ext adv set params failed, status %d", param->ext_adv_set_params.status);
+            s_extStartPending = false;
+            break;
+        }
+        /* Configured now, which is what extAdvStop() checks before trying to stop it. */
+        IOT_BleExtAdvMarkConfigured(s_extInstance);
+        esp_err_t ret = esp_ble_gap_config_ext_adv_data_raw(s_extInstance, s_extAdvLen, s_extAdvData);
+        if (ret != ESP_OK)
+        {
+            IOT_LOGE(TAG, "ext adv data set failed: %s", esp_err_to_name(ret));
+            s_extStartPending = false;
+        }
+        break;
+    }
+
+    case ESP_GAP_BLE_EXT_ADV_DATA_SET_COMPLETE_EVT:
+    {
+        if (param->ext_adv_data_set.status != ESP_BT_STATUS_SUCCESS)
+        {
+            IOT_LOGE(TAG, "ext adv data set failed, status %d", param->ext_adv_data_set.status);
+            s_extStartPending = false;
+            break;
+        }
+        if (s_extRspLen > 0)
+        {
+            esp_err_t ret =
+                esp_ble_gap_config_ext_scan_rsp_data_raw(s_extInstance, s_extRspLen, s_extRspData);
+            if (ret != ESP_OK)
+            {
+                IOT_LOGE(TAG, "ext scan rsp set failed: %s", esp_err_to_name(ret));
+                s_extStartPending = false;
+            }
+            break; /* start happens on SCAN_RSP_DATA_SET_COMPLETE */
+        }
+        extAdvStartNow();
+        break;
+    }
+
+    case ESP_GAP_BLE_EXT_SCAN_RSP_DATA_SET_COMPLETE_EVT:
+    {
+        if (param->scan_rsp_set.status != ESP_BT_STATUS_SUCCESS)
+        {
+            IOT_LOGE(TAG, "ext scan rsp set failed, status %d", param->scan_rsp_set.status);
+            s_extStartPending = false;
+            break;
+        }
+        extAdvStartNow();
+        break;
+    }
+
+    case ESP_GAP_BLE_EXT_ADV_START_COMPLETE_EVT:
+    {
+        s_extStartPending = false;
+        if (param->ext_adv_start.status != ESP_BT_STATUS_SUCCESS)
+        {
+            IOT_LOGE(TAG, "ext adv start failed, status %d", param->ext_adv_start.status);
+        }
+        else
+        {
+            IOT_LOGI(TAG, "Advertising started (extended, instance %u)", s_extInstance);
+        }
+        break;
+    }
+#endif /* CONFIG_BT_BLE_50_FEATURES_SUPPORTED */
+
     case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
     {
         if (callbackMgmt && callbackMgmt[BLE_MGMT_EVENT_STATUS_TYPE_ADV_STOP].isRegistered)
@@ -1430,14 +1633,22 @@ static iot_err_t bluedroid_startBeaconAdvertising(IOT_BleMgmtAdvData_t *adv_requ
     pending_adv_params.channel_map = ADV_CHNL_ALL;
     pending_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    return extAdvStart(IOT_BLE_ADV_INST_BEACON, false /* non-connectable */, adv_requirements);
+#else
     /* ADV_NONCONN_IND is not scannable — no scan response is possible here */
     return configureAdvPayloads(adv_requirements, false);
+#endif
 }
 
 static iot_err_t bluedroid_stopBeaconAdvertising(void)
 {
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    return extAdvStop(IOT_BLE_ADV_INST_BEACON);
+#else
     esp_err_t ret = esp_ble_gap_stop_advertising();
     return (ret == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
+#endif
 }
 
 static iot_err_t bluedroid_startAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
@@ -1467,12 +1678,19 @@ static iot_err_t bluedroid_startAdvertising(IOT_BleMgmtAdvData_t *adv_requiremen
     pending_adv_params.channel_map = ADV_CHNL_ALL;
     pending_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    return extAdvStart(IOT_BLE_ADV_INST_CONN, true /* connectable */, adv_requirements);
+#else
     /* ADV_IND is scannable — the device name rides in the scan response */
     return configureAdvPayloads(adv_requirements, true);
+#endif
 }
 
 static iot_err_t bluedroid_stopAdvertising(void)
 {
+#if CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    return extAdvStop(IOT_BLE_ADV_INST_CONN);
+#else
     esp_err_t ret = esp_ble_gap_stop_advertising();
     if (ret == ESP_ERR_INVALID_STATE)
     {
@@ -1480,6 +1698,7 @@ static iot_err_t bluedroid_stopAdvertising(void)
         return IOT_OK;
     }
     return (ret == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
+#endif
 }
 
 static iot_err_t bluedroid_notifyToCharacteristic(const char *addr, const uint8_t *charUuid,
@@ -1576,6 +1795,8 @@ static iot_err_t bluedroid_unregisterEventCallback(IOT_BleMgmtEventStatusType_t 
 static const IOT_BleDriver_t s_bluedroidDriver = {
     .init                    = bluedroid_init,
     .deinit                  = bluedroid_deinit,
+    /* .start is deliberately absent: Bluedroid is usable straight after init and
+     * needs no activation step, so IOT_BleStart() returns IOT_OK for it. */
     .addServices             = bluedroid_addServices,
     .startAdvertising        = bluedroid_startAdvertising,
     .stopAdvertising         = bluedroid_stopAdvertising,

@@ -6,19 +6,7 @@
 
 static void TdsManagerUpdateWarning(WarningId warning_id, bool should_be_active)
 {
-    if (WarningManagerIsActive(warning_id) == should_be_active)
-    {
-        return;
-    }
-
-    if (should_be_active)
-    {
-        WarningManagerSet(warning_id);
-    }
-    else
-    {
-        WarningManagerClear(warning_id);
-    }
+    WarningManagerUpdate(warning_id, should_be_active);
 }
 
 __attribute__((weak)) void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm)

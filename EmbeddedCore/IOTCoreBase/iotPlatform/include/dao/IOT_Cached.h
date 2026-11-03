@@ -42,7 +42,7 @@ extern "C"
 
     typedef struct
     {
-        const char *namespace;
+        const char *nsName;
         uint16_t maxEntries;           // Max cached items for this namespace
         uint32_t flushIntervalMs;      // Auto-flush interval (0 = manual only)
         IOT_CacheWritePolicy_t policy; // Write policy
@@ -88,10 +88,10 @@ extern "C"
 
     /**
      * @brief Unregister a namespace (flushes dirty data first)
-     * @param namespace Namespace to unregister
+     * @param nsName Namespace to unregister
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheUnregisterNamespace(const char *namespace);
+    iot_err_t IOT_CacheUnregisterNamespace(const char *nsName);
 
     // ============================================================================
     // Data Access
@@ -99,42 +99,42 @@ extern "C"
 
     /**
      * @brief Get data from cache (or NVS if not cached)
-     * @param namespace Namespace
+     * @param nsName Namespace
      * @param key Key
      * @param type Data type
      * @param outData Output data pointer (caller must free)
      * @param outLen Output data length (required for STRING/BLOB)
      * @return IOT_OK on success, IOT_ERR_NOT_FOUND if key doesn't exist
      */
-    iot_err_t IOT_CacheGet(const char *namespace, const char *key, IOT_DaoType type, void **outData, uint16_t *outLen);
+    iot_err_t IOT_CacheGet(const char *nsName, const char *key, IOT_DaoType type, void **outData, uint16_t *outLen);
 
     /**
      * @brief Set data to cache (and optionally NVS based on policy)
-     * @param namespace Namespace
+     * @param nsName Namespace
      * @param key Key
      * @param type Data type
      * @param data Data to store
      * @param len Data length (for BLOB type)
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheSet(const char *namespace, const char *key, IOT_DaoType type, void *data, uint16_t len);
+    iot_err_t IOT_CacheSet(const char *nsName, const char *key, IOT_DaoType type, void *data, uint16_t len);
 
     /**
      * @brief Delete data from cache and NVS
-     * @param namespace Namespace
+     * @param nsName Namespace
      * @param key Key
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheDelete(const char *namespace, const char *key);
+    iot_err_t IOT_CacheDelete(const char *nsName, const char *key);
 
     /**
      * @brief Check if key exists in cache or NVS
-     * @param namespace Namespace
+     * @param nsName Namespace
      * @param key Key
      * @param exists Output: true if exists
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheExists(const char *namespace, const char *key, bool *exists);
+    iot_err_t IOT_CacheExists(const char *nsName, const char *key, bool *exists);
 
     // ============================================================================
     // Cache Control
@@ -142,25 +142,25 @@ extern "C"
 
     /**
      * @brief Flush dirty entries to NVS
-     * @param namespace Namespace to flush (NULL = flush all namespaces)
+     * @param nsName Namespace to flush (NULL = flush all namespaces)
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheFlush(const char *namespace);
+    iot_err_t IOT_CacheFlush(const char *nsName);
 
     /**
      * @brief Invalidate cache entry (will reload from NVS on next access)
-     * @param namespace Namespace
+     * @param nsName Namespace
      * @param key Key (NULL = invalidate entire namespace)
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheInvalidate(const char *namespace, const char *key);
+    iot_err_t IOT_CacheInvalidate(const char *nsName, const char *key);
 
     /**
      * @brief Preload all keys from namespace into cache
-     * @param namespace Namespace to preload
+     * @param nsName Namespace to preload
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CachePreload(const char *namespace);
+    iot_err_t IOT_CachePreload(const char *nsName);
 
     /**
      * @brief Clear all cache entries (optionally flush first)
@@ -175,24 +175,24 @@ extern "C"
 
     /**
      * @brief Get cache statistics for a namespace
-     * @param namespace Namespace (NULL = global stats)
+     * @param nsName Namespace (NULL = global stats)
      * @param stats Output statistics
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheGetStats(const char *namespace, IOT_CacheStats_t *stats);
+    iot_err_t IOT_CacheGetStats(const char *nsName, IOT_CacheStats_t *stats);
 
     /**
      * @brief Reset cache statistics
-     * @param namespace Namespace (NULL = reset all)
+     * @param nsName Namespace (NULL = reset all)
      * @return IOT_OK on success
      */
-    iot_err_t IOT_CacheResetStats(const char *namespace);
+    iot_err_t IOT_CacheResetStats(const char *nsName);
 
     /**
      * @brief Print cache status to log (for debugging)
-     * @param namespace Namespace (NULL = print all)
+     * @param nsName Namespace (NULL = print all)
      */
-    void IOT_CachePrintStatus(const char *namespace);
+    void IOT_CachePrintStatus(const char *nsName);
 
 #ifdef __cplusplus
 }

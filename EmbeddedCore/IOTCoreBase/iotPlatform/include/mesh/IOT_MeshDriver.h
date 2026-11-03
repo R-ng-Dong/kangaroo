@@ -12,11 +12,25 @@
 // When libiotmesh.a is linked, the ESP32 mesh driver auto-registers via constructor.
 // When not linked, IOT_Mesh*() functions return IOT_ERR_NOT_SUPPORTED.
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct
 {
     // Lifecycle
     iot_err_t (*init)(void);
     iot_err_t (*deinit)(void);
+    /* Optional. Registers the mesh stack's own GATT services while the BLE host is
+     * still down — see IOT_MeshRegisterGattServices(). NULL means nothing to do. */
+    iot_err_t (*registerGattServices)(void);
+
+    /* Optional. Called once the platform's BLE radio is actually up and usable.
+     * A stack that arms its mesh scan at JOIN time needs this when the join can
+     * precede the radio: on BLE 4.x NimBLE the arming silently fails and latches
+     * a "scanning" flag anyway, so nothing ever starts the scan and the node
+     * transmits without receiving. NULL where the radio is up before the join. */
+    iot_err_t (*radioStarted)(void);
     bool (*isProvisioned)(void);
 
     // Network
@@ -50,3 +64,6 @@ typedef struct
  * @param driver Pointer to driver function table (must be static/global lifetime)
  */
 void IOT_MeshRegisterDriver(const IOT_MeshDriver_t *driver);
+#ifdef __cplusplus
+}
+#endif

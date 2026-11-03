@@ -7,27 +7,51 @@ to the protocol engine. Core moves attribute values through unchanged: it hands 
 and the raw value bytes in an event, and sends back whatever bytes you report. Nothing in
 `iotcore.a` includes an attribute header, and no core API takes these constants as a type.
 
-`sdk/defines/IOT_AttrDefines.{h,c}` ships them as **reference material** so you do not have to
-transcribe the ids by hand. Copy it into your own SDK and keep only what your devices expose —
-it is a starting point, not an API you are bound to. The `.c` shows the three helpers every SDK
-ends up needing (value size, default value, and whether a change is worth a push notification);
-of those, only the sizes and defaults are protocol-relevant — `IOT_AttrIsNotifyWorthy()` is our
-product's policy, included to show where yours goes.
+`reference/defines/IOT_AttrDefines.{h,c}` ships them as **reference material** so you do not
+have to transcribe the ids by hand. Copy it into your own SDK and keep only what your devices
+expose — it is a starting point, not an API you are bound to. The `.c` shows the helpers every
+SDK ends up needing: value size (`IOT_AttrGetSize()`), default value (`IOT_AttrFillDefault()`),
+history entry width (`IOT_AttrRecordValueCount()`, see [History entries](#history-entries-a-different-width)),
+whether an id is one you recognise at all (`IOT_AttrIsKnown()` — `IOT_AttrGetSize()` cannot
+tell you, because its default sizes an unknown id at 2 bytes), and whether a change is worth a
+push notification. The sizes, defaults and history widths are protocol-relevant;
+`IOT_AttrIsNotifyWorthy()` is our product's policy, included to show where yours goes.
 
 This document remains the definitive list.
 
-The **Size** column is the value length core expects on the wire for that attribute. Get it
-wrong and the value is misparsed — the id alone does not carry a length. Multi-byte values are
-**big-endian**. Attributes not listed here default to 1 byte.
+The **Size** column is the value length in bytes for that attribute. Get it wrong and the
+value is misparsed — the id alone does not carry a length. Multi-byte values are
+**big-endian**.
+
+**Sizes count 16-bit fields, not bytes.** Every size is `2 * N`, so a single-field attribute
+is **2 bytes, not 1**, and sizes are always even. Attributes not listed here are 2 bytes.
+
+**Never return 0 from your size helper.** A zero-size attribute is accepted all the way down:
+element state stores it as a placeholder, and core then has no bytes to put in a report, so
+the device provisions and runs with that attribute simply absent — a blank control in the app.
+Core now logs a warning naming the attribute, EID and element it dropped; if you see it, the fix
+is in your size table. Default to `2 * 1`, as the reference does.
+
+**A size change reaches a device only when it re-joins.** The width is written into the
+device's stored element table when it is provisioned, so an OTA alone does not move an
+already-provisioned device to a new size; it has to be re-provisioned.
+
+> **Corrected 2026-10-12.** An earlier revision of this document gave single-field
+> attributes as 1 byte, and `OPEN_CLOSE_CTL` as 2, `AC` as 6, `BUTTON_PRESS_EVT` as 1,
+> `PRESENCE_MULTI_ZONE_EVT` as 5, `SETTING_PRESENCE_ZONE_SENSITIVE` as 1. Every size in this
+> table is now generated from the reference implementation, which is itself pinned against
+> the firmware the cloud and app were built on. **If you built a size table from the older
+> revision, re-check it** — a device that half-sizes a value round-trips correctly against
+> itself and fails only against the app.
 
 Only implement the attributes your device type actually exposes; the rest can be ignored.
 
-**Adding your own:** define it in your copy of the header, but never reuse a value listed
-here — including the deprecated ones, which stay reserved so old automation data keeps
-parsing. Ids are one flat namespace and a duplicate fails *silently*: the value is parsed as
-the other attribute, at that attribute's size. Give any non-1-byte attribute a size entry
-too. A custom id is only fully useful once the cloud and app recognise it — agree it with us
-first.
+**Adding your own:** see **[Custom_Attributes.md](Custom_Attributes.md)**, which covers the
+partner id range, the three declaration points, and the cloud-side step. In short: never
+reuse a value listed here — including the deprecated ones, which stay reserved so old
+automation data keeps parsing. Ids are one flat namespace and a duplicate fails *silently*:
+the value is parsed as the other attribute, at that attribute's size. A custom id is only
+fully useful once the cloud and app recognise it — send its definition to us to register.
 
 ---
 
@@ -73,19 +97,19 @@ Device type constants used by the cloud provisioning system to classify elements
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_NONE` | 0 | 1 | No attribute (placeholder) |
+| `IOT_ATTR_NONE` | 0 | 2 | No attribute (placeholder) |
 | `IOT_ATTR_ONOFF` | 1 | 2 | On/off state — see `iot_attr_onoff_t` |
-| `IOT_ATTR_OPEN_CLOSE_CTL` | 2 | 2 | Open/close/stop command — see `iot_attr_openclose_action_t` |
-| `IOT_ATTR_LOCK_UNLOCK` | 3 | 1 | Lock/unlock command — see `iot_attr_lock_t` |
-| `IOT_ATTR_BATTERY` | 9 | 1 | Battery level (0–100) |
-| `IOT_ATTR_POSITION` | 11 | 1 | Position (0–100 %) |
-| `IOT_ATTR_MODE` | 17 | 1 | Operating mode (AC) — see `iot_attr_mode_t` |
-| `IOT_ATTR_FAN_SWING` | 18 | 1 | Fan swing — see `iot_attr_fan_swing_t` |
-| `IOT_ATTR_FAN_SPEED` | 19 | 1 | Fan speed — see `iot_attr_fan_speed_t` |
+| `IOT_ATTR_OPEN_CLOSE_CTL` | 2 | 4 | Open/close/stop command — see `iot_attr_openclose_action_t` |
+| `IOT_ATTR_LOCK_UNLOCK` | 3 | 2 | Lock/unlock command — see `iot_attr_lock_t` |
+| `IOT_ATTR_BATTERY` | 9 | 2 | Battery level (0–100) |
+| `IOT_ATTR_POSITION` | 11 | 2 | Position (0–100 %) |
+| `IOT_ATTR_MODE` | 17 | 2 | Operating mode (AC) — see `iot_attr_mode_t` |
+| `IOT_ATTR_FAN_SWING` | 18 | 2 | Fan swing — see `iot_attr_fan_swing_t` |
+| `IOT_ATTR_FAN_SPEED` | 19 | 2 | Fan speed — see `iot_attr_fan_speed_t`. One field, deliberately: a second (custom-speed) field is described for value 255, but no app sends it, and widening the size would fail silently on devices in the field |
 | `IOT_ATTR_TEMP_SET` | 20 | 2 | Target temperature setpoint |
-| `IOT_ATTR_CAMERA_STREAMING` | 22 | 1 | Camera streaming state |
-| `IOT_ATTR_CALLING` | 23 | 1 | Calling / intercom state |
-| `IOT_ATTR_ALARM` | 24 | 1 | Alarm state |
+| `IOT_ATTR_CAMERA_STREAMING` | 22 | 2 | Camera streaming state |
+| `IOT_ATTR_CALLING` | 23 | 2 | Calling / intercom state |
+| `IOT_ATTR_ALARM` | 24 | 2 | Alarm state |
 
 ### Light Attributes
 
@@ -95,9 +119,9 @@ Device type constants used by the cloud provisioning system to classify elements
 | `IOT_ATTR_KELVIN` | 29 | 2 | Color temperature in Kelvin |
 | `IOT_ATTR_BRIGHTNESS_KELVIN` | 30 | 4 | Combined brightness + kelvin (2 bytes each) |
 | `IOT_ATTR_COLOR_HSV` | 31 | 6 | HSV color (H, S, V — 2 bytes each) |
-| `IOT_ATTR_COLOR_HSL` | 32 | 1 | HSL color |
-| `IOT_ATTR_COLOR_HSV_CHANNEL` | 33 | 1 | HSV channel selector |
-| `IOT_ATTR_LEVEL` | 36 | 1 | Generic level |
+| `IOT_ATTR_COLOR_HSL` | 32 | 6 | HSL color (H, S, L — 2 bytes each) |
+| `IOT_ATTR_COLOR_HSV_CHANNEL` | 33 | 2 | HSV channel selector |
+| `IOT_ATTR_LEVEL` | 36 | 2 | Generic level |
 
 ### Sensor / Event Attributes
 
@@ -106,70 +130,85 @@ Device type constants used by the cloud provisioning system to classify elements
 | `IOT_ATTR_HUMID_EVT` | 48 | 2 | Humidity event reading |
 | `IOT_ATTR_TEMP_EVT` | 49 | 2 | Temperature event reading |
 | `IOT_ATTR_TEMP_HUMID_EVT` | 50 | 4 | Combined temp + humidity (2 bytes each) |
-| `IOT_ATTR_OPEN_CLOSE_EVT` | 51 | 1 | Door/contact open-close event |
-| `IOT_ATTR_MOTION_LUX_EVT` | 52 | 1 | Combined motion + lux event |
-| `IOT_ATTR_MOTION_EVT` | 53 | 1 | Motion detected event |
+| `IOT_ATTR_OPEN_CLOSE_EVT` | 51 | 2 | Door/contact open-close event |
+| `IOT_ATTR_MOTION_LUX_EVT` | 52 | 4 | Combined motion + lux event (2 bytes each) |
+| `IOT_ATTR_MOTION_EVT` | 53 | 2 | Motion detected event |
 | `IOT_ATTR_LUX_EVT` | 54 | 2 | Lux level event |
-| `IOT_ATTR_SMOKE_EVT` | 55 | 1 | Smoke detected event |
-| `IOT_ATTR_WALL_MOUNTED_EVT` | 56 | 1 | Wall-mounted button event |
-| `IOT_ATTR_MOTION_SENSITIVE_LV` | 57 | 1 | Motion sensitivity level |
-| `IOT_ATTR_BUTTON_PRESS_EVT` | 60 | 1 | Button press type — see `iot_attr_button_press_t` |
-| `IOT_ATTR_KNOB_EVT` | 61 | 1 | Knob rotation event |
-| `IOT_ATTR_LEVEL_EVT` | 62 | 1 | Level event |
-| `IOT_ATTR_EVT_PRESENCE` | 70 | 1 | Presence detection event |
-| `IOT_ATTR_PRESENCE_MULTI_ZONE_EVT` | 71 | 5 | Multi-zone presence event (1 byte per zone, 5 zones) |
+| `IOT_ATTR_SMOKE_EVT` | 55 | 2 | Smoke detected event |
+| `IOT_ATTR_WALL_MOUNTED_EVT` | 56 | 2 | Wall-mounted button event |
+| `IOT_ATTR_MOTION_SENSITIVE_LV` | 57 | 2 | Motion sensitivity level |
+| `IOT_ATTR_BUTTON_PRESS_EVT` | 60 | 2 | Button press type — see `iot_attr_button_press_t` |
+| `IOT_ATTR_KNOB_EVT` | 61 | 2 | Knob rotation event |
+| `IOT_ATTR_LEVEL_EVT` | 62 | 2 | Level event |
+| `IOT_ATTR_EVT_PRESENCE` | 70 | 2 | Presence detection event |
+| `IOT_ATTR_PRESENCE_MULTI_ZONE_EVT` | 71 | 24 | Multi-zone presence event — 4 leading 16-bit fields + 4 zones × 2 16-bit fields (`4*2 + 2*4*2`) |
+| `IOT_ATTR_EVT_PRESENCE_STATE` | 72 | 2 | Presence state |
+
+### Power Attributes
+
+| Constant | Value | Size (bytes) | Description |
+|---|---|---|---|
+| `IOT_ATTR_POWER_VOLTAGE` | 75 | 2 | Voltage |
+| `IOT_ATTR_POWER_CONSUMED` | 76 | 2 | Cumulative energy |
+| `IOT_ATTR_POWER_CONSUMED_INSTANCE` | 77 | 2 | Instantaneous power |
+| `IOT_ATTR_POWER_CURRENT_INSTANCE` | 78 | 2 | Electrical current |
+
+All four are **one field**. If you keep your own size table, do **not** give them an explicit
+case — let them take the `2 * 1` default. A wider size also widens their history entries
+(below), which the app keeps reading at the narrower width and renders as plausible but wrong
+data rather than failing.
 
 ### Complex / IR Attributes
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_IR` | 81 | 1 | IR command (protocol-based) |
-| `IOT_ATTR_IR_KEY` | 82 | 1 | IR key code |
-| `IOT_ATTR_IR_RAW` | 83 | 1 | IR raw signal |
-| `IOT_ATTR_AC` | 257 | 6 | AC full state: power(1) + mode(1) + temp(2) + fan(1) + swing(1) |
-| `IOT_ATTR_SMART_TEMPERATURE` | 1024 | 1 | Smart automation temperature trigger |
+| `IOT_ATTR_IR` | 81 | 2 | IR command (protocol-based) |
+| `IOT_ATTR_IR_KEY` | 82 | 2 | IR key code |
+| `IOT_ATTR_IR_RAW` | 83 | 2 | IR raw signal |
+| `IOT_ATTR_AC` | 257 | 10 | AC full state, 5 × 16-bit fields: power + mode + temp + fan + swing (2 bytes each) |
+| `IOT_ATTR_SMART_TEMPERATURE` | 1024 | 2 | Smart automation temperature trigger |
 
 ### Device Info Attributes
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_VENDOR` | 225 | 1 | Vendor identifier |
-| `IOT_ATTR_MOTOR_CALIB_TIME_INFO` | 226 | 1 | Motor calibration time info |
-| `IOT_ATTR_MOTOR_TYPE_INFO` | 227 | 1 | Motor type info |
+| `IOT_ATTR_VENDOR` | 225 | 2 | Vendor identifier |
+| `IOT_ATTR_MOTOR_CALIB_TIME_INFO` | 226 | 2 | Motor calibration time info |
+| `IOT_ATTR_MOTOR_TYPE_INFO` | 227 | 2 | Motor type info |
 
 ### Sync Attributes
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_REVERSE_ONOFF` | 310 | 1 | Reverse on/off logic |
-| `IOT_ATTR_SYNC_ONOFF_NORMAL` | 311 | 1 | Sync on/off — normal mode |
-| `IOT_ATTR_SYNC_ONOFF_REVERSING` | 312 | 1 | Sync on/off — reversing mode |
-| `IOT_ATTR_SYNC_ONOFF_STAIR_SWITCH` | 313 | 1 | Sync on/off — stair switch mode |
-| `IOT_ATTR_SYNC_ONOFF_NO_TRIGGER` | 314 | 1 | Sync on/off — no trigger mode |
+| `IOT_ATTR_REVERSE_ONOFF` | 310 | 2 | Reverse on/off logic |
+| `IOT_ATTR_SYNC_ONOFF_NORMAL` | 311 | 2 | Sync on/off — normal mode |
+| `IOT_ATTR_SYNC_ONOFF_REVERSING` | 312 | 2 | Sync on/off — reversing mode |
+| `IOT_ATTR_SYNC_ONOFF_STAIR_SWITCH` | 313 | 2 | Sync on/off — stair switch mode |
+| `IOT_ATTR_SYNC_ONOFF_NO_TRIGGER` | 314 | 2 | Sync on/off — no trigger mode |
 | `IOT_ATTR_SYNC_ONOFF_ELEMENTS` | 315 | 2 × N (variable) | Sync on/off element list — N big-endian `uint16` element ids. Variable length: take N from the attribute value length, do not assume a fixed size |
 
 ### Step Control Attributes
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_BRIGHTNESS_UP` | 320 | 1 | Step brightness up |
-| `IOT_ATTR_BRIGHTNESS_DOWN` | 321 | 1 | Step brightness down |
-| `IOT_ATTR_KELVIN_WARM_UP` | 322 | 1 | Step kelvin warmer |
-| `IOT_ATTR_KELVIN_WARM_DOWN` | 323 | 1 | Step kelvin cooler |
-| `IOT_ATTR_COLOR_HSV_CHANNEL_UP` | 324 | 1 | Step HSV channel up |
-| `IOT_ATTR_COLOR_HSV_CHANNEL_DOWN` | 325 | 1 | Step HSV channel down |
-| `IOT_ATTR_TEMP_UP` | 326 | 1 | Step temperature up |
-| `IOT_ATTR_TEMP_DOWN` | 327 | 1 | Step temperature down |
-| `IOT_ATTR_UP_OTHER_ATTR` | 328 | 1 | Step up generic attr (value: attr + step) |
-| `IOT_ATTR_DOWN_OTHER_ATTR` | 329 | 1 | Step down generic attr (value: attr + step) |
+| `IOT_ATTR_BRIGHTNESS_UP` | 320 | 2 | Step brightness up |
+| `IOT_ATTR_BRIGHTNESS_DOWN` | 321 | 2 | Step brightness down |
+| `IOT_ATTR_KELVIN_WARM_UP` | 322 | 2 | Step kelvin warmer |
+| `IOT_ATTR_KELVIN_WARM_DOWN` | 323 | 2 | Step kelvin cooler |
+| `IOT_ATTR_COLOR_HSV_CHANNEL_UP` | 324 | 2 | Step HSV channel up |
+| `IOT_ATTR_COLOR_HSV_CHANNEL_DOWN` | 325 | 2 | Step HSV channel down |
+| `IOT_ATTR_TEMP_UP` | 326 | 2 | Step temperature up |
+| `IOT_ATTR_TEMP_DOWN` | 327 | 2 | Step temperature down |
+| `IOT_ATTR_UP_OTHER_ATTR` | 328 | 2 | Step up generic attr (value: attr + step) |
+| `IOT_ATTR_DOWN_OTHER_ATTR` | 329 | 2 | Step down generic attr (value: attr + step) |
 
 ### Notification & Trigger Attributes
 
 | Constant | Value | Size (bytes) | Description |
 |---|---|---|---|
-| `IOT_ATTR_PUSH_NOTIFICATION` | 330 | 1 | Push notification trigger |
-| `IOT_ATTR_TRIGGER_ACTION_CFG` | 331 | 1 | Trigger action configuration |
-| `IOT_ATTR_TRIGGER_ZONE_CFG` | 332 | 1 | Trigger zone configuration |
+| `IOT_ATTR_PUSH_NOTIFICATION` | 330 | 2 | Push notification trigger |
+| `IOT_ATTR_TRIGGER_ACTION_CFG` | 331 | 2 | Trigger action configuration |
+| `IOT_ATTR_TRIGGER_ZONE_CFG` | 332 | 2 | Trigger zone configuration |
 
 ### Setting / Working-Params Attributes
 
@@ -177,7 +216,7 @@ Device type constants used by the cloud provisioning system to classify elements
 |---|---|---|---|
 | `IOT_ATTR_SETTING_LOCK_BUTTON` | 61952 (0xF200) | 4 | Lock button setting (2 × 2 bytes) |
 | `IOT_ATTR_STT_WORKING_PARAMS` | 61984 (0xF220) | 2 | Device working parameters |
-| `IOT_ATTR_SETTING_PRESENCE_ZONE_SENSITIVE` | 61986 (0xF222) | 1 | Presence zone sensitivity setting |
+| `IOT_ATTR_SETTING_PRESENCE_ZONE_SENSITIVE` | 61986 (0xF222) | 4 | Presence zone sensitivity setting |
 
 ### Deprecated Attributes
 
@@ -191,6 +230,55 @@ These are kept only for backward compatibility with old automation data. Do not 
 | `IOT_ATTR_ONOFF_SWITCH_ROGO_V1_DEPRECATED` | 800 | Legacy V1 on/off switch attribute |
 | `IOT_ATTR_ONOFF_SWITCH_ROGO_V2_DEPRECATED` | 801 | Legacy V2 on/off switch attribute |
 | `IOT_ATTR_CMD_FORCE_RESET_MESH_DEVICE_DEPRECATED` | 462 | Legacy mesh device force-reset command |
+
+---
+
+## History entries: a different width
+
+**An attribute is not the same width in every message.** A state report carries the full value
+(the **Size** column above). A history (record) entry keeps **at most two** 16-bit fields plus
+a timestamp, to save flash on the device — and nothing in either message says which width it
+is using. Never derive one from the other:
+
+| you are building or reading | width comes from |
+|---|---|
+| a state value | `IOT_AttrGetSize(attrId)` |
+| a history entry | `IOT_AttrRecordValueCount(attrId)` — 1 or 2 fields; the entry is `2 * count + 2` bytes |
+
+```
+fields N      = IOT_AttrGetSize(attrId) / 2
+history count = min(N, 2)                    -- exception: OPEN_CLOSE_CTL keeps 1
+entry, 1 field:  [BE16 value][BE16 diffSeconds]                  4 bytes
+entry, 2 fields: [BE16 value2][BE16 value1][BE16 diffSeconds]     6 bytes
+```
+
+Call `IOT_AttrRecordValueCount()` (or copy it) rather than re-deriving the rule: the obvious
+`IOT_AttrGetSize() / 2` is wrong for `OPEN_CLOSE_CTL` and unbounded for wide attributes.
+When you reply to a history query with `IOT_CoreRequestRecordResponse()`, pass this as
+`valueCount` and supply the fields in natural order (`value1`, `value2`) — core writes them in
+the order the cloud expects.
+
+Attributes whose history entry is **not** simply `state + 2` bytes:
+
+| attribute | id | state | fields kept | history entry | why |
+|---|---|---|---|---|---|
+| `OPEN_CLOSE_CTL` | 2 | 4 B | 1 | **4 B** | the state is `[command][position %]`; history keeps only the command |
+| `COLOR_HSV` | 31 | 6 B | 2 | **6 B** | capped at two fields |
+| `COLOR_HSL` | 32 | 6 B | 2 | **6 B** | capped at two fields |
+| `PRESENCE_MULTI_ZONE_EVT` | 71 | 24 B | 2 | **6 B** | capped at two fields |
+| `AC` | 257 | 10 B | 2 | **6 B** | capped at two fields |
+
+The other two-field attributes (`BRIGHTNESS_KELVIN` 30, `TEMP_HUMID_EVT` 50,
+`MOTION_LUX_EVT` 52, `SETTING_LOCK_BUTTON` 0xF200, `SETTING_PRESENCE_ZONE_SENSITIVE` 0xF222)
+have a 4-byte state and a 6-byte history entry. Every other attribute has one field: a 2-byte
+state and a 4-byte history entry.
+
+`OPEN_CLOSE_CTL` is the trap: state and history are both 4 bytes, but not the same 4 bytes. A
+reader that assumes a history entry carries the position percentage reads the timestamp as a
+position.
+
+`TEMP_HUMID_EVT` (50) is recorded as two histories, filed under `TEMP_EVT` (49) and
+`HUMID_EVT` (48); nothing is recorded under 50 itself.
 
 ---
 

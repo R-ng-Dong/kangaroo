@@ -4,10 +4,13 @@
 
 **Audience:** SDK writers building their own SDK layer (e.g., `raiosdk/`) on top of iotcore.
 
+> This applies on both paths. On `sdkcontract/` (path A) your SDK's app-facing surface sits on `apply`,
+> `IOT_ContractLocalChange()` and the read-only Device store instead of on core events and your own DAOs.
+
 **Purpose:** Guidance on designing the public API surface that your app-writer customers will use. This doc covers what
 to expose, what to hide, and how to simplify iotcore's protocol concepts into clean, hardware-centric abstractions.
 
-> **Reference implementations:** `IOT_SDKEvents.h` and `IOT_HubEvents.h` are shipped with this distribution as reference designs. They show Rogo's own choices for type names, event structures, and callback signatures. You may adopt them directly or design your own equivalents — either is valid. The principles in this doc apply regardless.
+> **Names in this guide are illustrative.** The type names below show one way to shape the surface; no header in this distribution declares them. Design your own equivalents — the principles apply regardless.
 
 ---
 
@@ -62,7 +65,7 @@ iotcore identifies the origin of every control request with a `senderFrom` byte.
 
 `IOT_SENDER_UNKNOWN` maps to `CONTROL_FROM_LOCAL` as a safe fallback — it is most likely a local or internal command with no sender identification.
 
-The reference design in `IOT_SDKEvents.h` implements this as `IOT_ControlSource_t` with four values (`IOT_CONTROL_FROM_LOCAL`, `IOT_CONTROL_FROM_APP`, `IOT_CONTROL_FROM_CLOUD`, `IOT_CONTROL_FROM_DEVICE`).
+One way to shape it is an enum such as `IOT_ControlSource_t` with four values (`IOT_CONTROL_FROM_LOCAL`, `IOT_CONTROL_FROM_APP`, `IOT_CONTROL_FROM_CLOUD`, `IOT_CONTROL_FROM_DEVICE`).
 
 ### Single Control Callback Per Element
 
@@ -100,7 +103,7 @@ typedef enum {
 typedef void (*YourLifecycleCb_t)(YourLifecycleEvent_t event, bool isProvisioned);
 ```
 
-The reference design in `IOT_SDKEvents.h` implements this as `IOT_LifecycleEventType_t` and `IOT_LifecycleCb_t`.
+One way to shape it is a lifecycle event enum and callback, such as `IOT_LifecycleEventType_t` and `IOT_LifecycleCb_t`.
 
 ### No Context Pass-Through
 

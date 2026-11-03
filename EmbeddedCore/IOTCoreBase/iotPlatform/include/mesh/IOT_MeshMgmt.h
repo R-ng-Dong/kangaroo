@@ -33,6 +33,10 @@
  *
  * @return IOT_OK on success
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 iot_err_t IOT_MeshInit(void);
 
 /**
@@ -40,6 +44,36 @@ iot_err_t IOT_MeshInit(void);
  * @return IOT_OK on success
  */
 iot_err_t IOT_MeshDeinit(void);
+
+/**
+ * @brief Register the mesh stack's own GATT services, before the BLE host starts.
+ *
+ * Call once during platform init, after IOT_BleInit() and before anything can
+ * advertise. Mesh's prov/proxy services have to be on the pending list that
+ * ble_hs_start() consumes; a service offered afterwards is never registered, and
+ * joining the network then asserts on a proxy service it cannot find.
+ *
+ * It cannot wait for mesh's own init. An unprovisioned device does not start mesh
+ * until provisioning completes, by which time the provisioning advert has already
+ * started the host.
+ *
+ * Idempotent. A driver with nothing to register returns IOT_OK — this is not an
+ * optional-feature probe, and a non-OK result fails the boot.
+ *
+ * @return IOT_OK, or an error from the underlying stack.
+ */
+iot_err_t IOT_MeshRegisterGattServices(void);
+
+/**
+ * @brief Tell the mesh platform the BLE radio is now up and usable.
+ *
+ * Call after the radio starts, when the mesh join may already have happened.
+ * Platforms that arm their scan at join time re-arm it here. A platform with
+ * nothing to do returns IOT_OK, so this is safe to call unconditionally.
+ *
+ * @return IOT_OK, or an error from the underlying stack.
+ */
+iot_err_t IOT_MeshRadioStarted(void);
 
 /**
  * @brief Check if the mesh stack is initialized and network is joined.
@@ -217,3 +251,6 @@ iot_err_t IOT_MeshRegisterTopologyCb(IOT_MeshTopologyCb_t cb);
  * @return IOT_OK on success, IOT_ERR_NOT_FOUND if no callback registered
  */
 iot_err_t IOT_MeshNotifyTopologyChange(const IOT_MeshTopologyEvent_t *event);
+#ifdef __cplusplus
+}
+#endif

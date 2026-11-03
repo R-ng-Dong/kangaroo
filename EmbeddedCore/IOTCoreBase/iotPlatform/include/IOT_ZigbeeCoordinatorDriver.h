@@ -10,6 +10,10 @@
 // When the platform Zigbee impl is linked, it auto-registers via constructor.
 // When not linked, IOT_ZigbeeCoordinator*() functions return IOT_ERR_NOT_SUPPORTED.
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct
 {
     iot_err_t (*init)(const IOT_ZigbeeCoordinatorCallbacks_t *cbs);
@@ -26,3 +30,6 @@ typedef struct
  * @param driver Pointer to driver function table (must have static/global lifetime)
  */
 void IOT_ZigbeeCoordinatorRegisterDriver(const IOT_ZigbeeCoordinatorDriver_t *driver);
+#ifdef __cplusplus
+}
+#endif

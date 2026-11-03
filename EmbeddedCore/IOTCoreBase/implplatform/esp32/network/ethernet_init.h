@@ -10,7 +10,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "IOT_DeviceConfiguration.h"
 // #define CONFIG_EXAMPLE_USE_INTERNAL_ETHERNET 1 // temp
 // #define CONFIG_ETH_USE_SPI_ETHERNET 1
 // #define CONFIG_EXAMPLE_USE_SPI_ETHERNET 1

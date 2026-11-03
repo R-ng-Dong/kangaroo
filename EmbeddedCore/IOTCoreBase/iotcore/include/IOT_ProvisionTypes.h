@@ -1,15 +1,5 @@
 #pragma once
-
-/**
- * @brief Provisioning mode selection.
- *
- * Controls how the device enters provisioning when not yet provisioned.
- * Default is IOT_PROVISION_BLE_LAN (BLE config + LAN discovery).
- * Call IOT_CoreSetProvisionMode() before IOT_CoreStartProvision() to override.
- */
-typedef enum
-{
-    IOT_PROVISION_BLE_LAN = 0, ///< BLE config + LAN discovery (default)
-    IOT_PROVISION_LAN_ONLY,    ///< LAN config only, no BLE (not yet implemented)
-    IOT_PROVISION_AP_MODE,     ///< Device as WiFi AP (not yet implemented)
-} IOT_ProvisionMode_t;
+/* Deprecated forwarding header. IOT_ProvisionMode_t moved into IOT_Core.h on 2026-10-14.
+ * Kept because this name has shipped; include IOT_Core.h in new code. Scheduled for removal
+ * one release after the move ships. */
+#include "IOT_Core.h"

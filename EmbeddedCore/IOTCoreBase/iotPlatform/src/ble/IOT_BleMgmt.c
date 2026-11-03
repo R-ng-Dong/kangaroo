@@ -41,6 +41,17 @@ iot_err_t IOT_BleAddServices(const IOT_BleMgmtGattServ_t *service)
     return s_driver->addServices(service);
 }
 
+iot_err_t IOT_BleStart(void)
+{
+    if (s_driver == NULL)
+        return IOT_ERR_NOT_SUPPORTED;
+    /* A stack with no separate activation step (Bluedroid) leaves this NULL and is
+     * already usable after init — that is success, not "unsupported". */
+    if (s_driver->start == NULL)
+        return IOT_OK;
+    return s_driver->start();
+}
+
 iot_err_t IOT_BleStartAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
 {
     if (s_driver == NULL || s_driver->startAdvertising == NULL)

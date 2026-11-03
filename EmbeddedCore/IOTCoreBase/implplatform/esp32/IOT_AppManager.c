@@ -94,7 +94,7 @@ static void ota_update_task(void *pvParameter)
              (unsigned long) esp_get_free_heap_size(),
              (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
-    /* Wait for WiFi connection before downloading (matching WiLe behavior) */
+    /* Wait for WiFi connection before downloading  */
     int waitCount = 0;
     while (IOT_WifiGetConnectionStatus(0) != WIFI_EVENT_STATUS_GOT_IP)
     {

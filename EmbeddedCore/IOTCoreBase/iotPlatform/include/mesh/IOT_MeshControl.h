@@ -16,6 +16,10 @@
  * @param onoff 0=OFF, 1=ON
  * @param appIdx Application key index
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 iot_err_t IOT_MeshSendOnOff(uint16_t nwkAddr, uint8_t onoff, uint16_t appIdx);
 
 /**
@@ -46,3 +50,6 @@ iot_err_t IOT_MeshSendLightHSL(uint16_t nwkAddr, uint16_t hue, uint16_t saturati
  * @param dataLen Payload length
  */
 iot_err_t IOT_MeshSendVendor(uint16_t deviceType, uint16_t nwkAddr, uint8_t *data, uint16_t dataLen);
+#ifdef __cplusplus
+}
+#endif

@@ -193,6 +193,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         {
             IOT_LOGI(TAG, "Last error code reported from esp-tls: 0x%x", event->error_handle->esp_tls_last_esp_err);
             IOT_LOGI(TAG, "Last tls stack error number: 0x%x", event->error_handle->esp_tls_stack_err);
+            /* The single most diagnostic field, and it was not being logged. esp-tls captures
+             * the X.509 verify flags but only PRINTS them under CONFIG_LOG_DEFAULT_LEVEL_DEBUG
+             * and at ESP_LOGD (esp_tls_mbedtls.c:444), so a release-level capture of a failing
+             * handshake showed -0x2700 with no reason attached — which sent a 2026-09-14
+             * investigation through the broker, the clock and the heap before landing here.
+             *
+             * Decode: 0x01 EXPIRED, 0x02 REVOKED, 0x04 CN_MISMATCH, 0x08 NOT_TRUSTED,
+             * 0x200 FUTURE. CN_MISMATCH means the server's name does not cover the host we
+             * asked for; NOT_TRUSTED means the CA we were provisioned with did not issue it. */
+            IOT_LOGI(TAG, "TLS cert verify flags: 0x%x%s%s%s%s",
+                     event->error_handle->esp_tls_cert_verify_flags,
+                     (event->error_handle->esp_tls_cert_verify_flags & 0x01) ? " EXPIRED" : "",
+                     (event->error_handle->esp_tls_cert_verify_flags & 0x04) ? " CN_MISMATCH" : "",
+                     (event->error_handle->esp_tls_cert_verify_flags & 0x08) ? " NOT_TRUSTED" : "",
+                     (event->error_handle->esp_tls_cert_verify_flags & 0x200) ? " FUTURE" : "");
             IOT_LOGI(TAG,
                      "Last captured errno : %d (%s)",
                      event->error_handle->esp_transport_sock_errno,
@@ -251,6 +266,7 @@ iot_err_t IOT_MqttConfigClient(IOT_MqttClientHandle_t handle, const IOT_MqttClie
             return IOT_ERR_NO_MEM;
         }
         strcpy(handle->pem, config.cert);
+
     }
 
     const esp_mqtt_client_config_t mqtt_cfg = {

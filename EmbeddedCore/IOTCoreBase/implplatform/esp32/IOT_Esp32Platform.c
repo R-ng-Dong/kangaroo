@@ -4,6 +4,7 @@
 #include "network/IOT_NetworkMgmt.h"
 #include "IOT_Platform.h"
 #include "ble/IOT_BleMgmt.h"
+#include "mesh/IOT_MeshMgmt.h"
 #if CONFIG_IOT_LOG_TCP_ENABLED
 #include "log/IOT_LogTcp.h"
 #endif
@@ -99,6 +100,19 @@ iot_err_t IOT_InitPlatform(void)
         return err;
     }
     platHeapLog("plat/BleInit");
+
+    /* Mesh's own GATT services go on the pending list here, while the BLE host is
+     * still down and before anything can advertise. It cannot wait for mesh init:
+     * an unprovisioned device does not start mesh until provisioning completes, by
+     * which time the provisioning advert has started the host and the registration
+     * is impossible. A build without mesh returns IOT_OK and nothing happens. */
+    err = IOT_MeshRegisterGattServices();
+    if (err != IOT_OK)
+    {
+        IOT_LOGE("platform", "Failed to pre-register mesh GATT services: %d", err);
+        return err;
+    }
+
     IOT_LOGI("Platform", "Platform initialized successfully");
     return IOT_OK;
 }

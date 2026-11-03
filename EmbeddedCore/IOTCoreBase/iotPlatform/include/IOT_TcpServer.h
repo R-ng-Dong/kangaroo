@@ -4,6 +4,10 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef enum
 {
     TCP_SERVER_EVENT_STATUS_RECEIVED_DATA,
@@ -36,3 +40,6 @@ iot_err_t IOT_TcpUnregisterEventCb(IOT_TcpEventStatus_t eventType);
  * @return IOT_OK on success
  */
 iot_err_t IOT_TcpSendData(uint16_t destPort, const uint8_t *data, size_t dataLen);
+#ifdef __cplusplus
+}
+#endif

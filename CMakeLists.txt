@@ -6,6 +6,8 @@ get_filename_component(SDK_PATH
         REALPATH
     )
 # set(PROJECT_VER "2.0.0.0") 
+set(EXTRA_COMPONENT_DIRS "${SDK_PATH}/sdkcontract")
+set(IOT_ATTR_DEFINES_DIR "${SDK_PATH}/reference")
 
 # Now include ESP-IDF project helpers
 # The build script passes the full chain via -D SDKCONFIG_DEFAULTS; only

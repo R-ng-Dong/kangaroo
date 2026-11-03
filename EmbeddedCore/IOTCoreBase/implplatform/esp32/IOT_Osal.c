@@ -91,7 +91,24 @@ iot_err_t IOT_OsalTaskCreate(IOT_OsalTaskFunc_t func, const IOT_OsalTaskConfig_t
 
     if (ret != pdPASS)
     {
-        IOT_LOGE(TAG, "Failed to create task: %s", config->name ? config->name : "unnamed");
+        /* Report what was actually available, in the capability set that MATTERS.
+         * xTaskCreate() takes the stack from MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT, which is
+         * not the same pool as the plain MALLOC_CAP_8BIT figure most of our heap logging
+         * prints -- on a chip with retention RAM the two can disagree wildly, so a healthy
+         * "free heap" number sitting next to this failure proves nothing either way.
+         *
+         * Without these numbers this line said only that something failed, which cost real
+         * time chasing a mesh-join failure on 2026-09-15: 42 KB free and a 31 KB largest
+         * block were logged seconds earlier, and a 6 KB stack still could not be had. */
+        IOT_LOGE(TAG,
+                 "Failed to create task: %s (stack=%u) | 8BIT free=%u largest=%u | "
+                 "INTERNAL+8BIT free=%u largest=%u",
+                 config->name ? config->name : "unnamed",
+                 (unsigned) config->stack_size,
+                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         return IOT_ERR_NO_MEM;
     }
 

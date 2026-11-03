@@ -6,12 +6,19 @@
 #include "IOT_CoreEventHandler.h"
 #include "IOT_CoreReporter.h"
 #include "IOT_TimerMgmt.h"
-#include "dao/IOT_DaoDeviceMgmt.h"
+#include "IOT_DaoDeviceMgmt.h"
+#include "IOT_DaoStoresInternal.h"
 #include "IOT_AppManager.h"
 #include "led_manager.h"
 #include "device_element_manager.h"
-
+#include "group.h"
+#include "iot_smart.h"
 #include "tds_task.h"
+
+#include "IOT_Record.h"
+#include "IOT_ContractStateQuery.h"
+#include "IOT_ContractInternal.h"
+#include "IOT_Contract.h" //IOT_ContractPrepareRestart
 
 static const char *TAG = "CORE_EVT";
 
@@ -86,6 +93,45 @@ static iot_err_t resolveSetTargetEid(const IOT_EventStateSetRequest_t *setData, 
             (*changeId)[index++] = elmId;
             CloudUpdateState(elmId, devSetInfo.attrId, devSetInfo.attrValue, devSetInfo.attrSize);
         }
+        return IOT_OK;
+    }
+    case IOT_SET_TARGET_GROUP:
+    {
+        IOT_LOGI(TAG, "==> ^-^ Control by group");
+        IOT_LOGW(TAG, "Group SET_STATE target %04x needs group DAO expansion", setData->target.group.groupEid);
+        dev_set_info_t devSetInfo = setData->devSetInfo;
+        DaoGroup *groupTemp = GroupGetById(setData->target.group.groupEid);
+        if(groupTemp == NULL)
+        {
+            return IOT_ERR_INVALID_ARG;
+        }
+
+        uint16_t eid = 0;
+        if (IOT_CoreGetRootEid(&eid) != IOT_OK)
+        {
+            IOT_LOGE(TAG, "Get Eid Failed");
+            return IOT_ERR_INVALID_ARG;
+        }
+        *outEid = eid;
+        
+        IOT_DevCommonInfo_t outDevCommonInfo = {0};
+        iot_err_t err_check = IOT_DaoDeviceGetCommonInfo(eid, &outDevCommonInfo);
+        if(err_check != IOT_OK)
+        {
+            return IOT_ERR_INVALID_ARG;
+        }else{
+            printf("outDevCommonInfo.deviceType: %d, setData->targetDeviceType: %d \n", outDevCommonInfo.deviceType, setData->targetDeviceType);
+            if(outDevCommonInfo.deviceType != (uint16_t)setData->targetDeviceType)
+            {
+                IOT_LOGE(TAG, "Unknown target device type");
+                return IOT_ERR_INVALID_ARG;
+            }
+        }
+
+            *numChanged = 1;
+            (*changeId)[0] = 0x0001;
+            CloudUpdateState(0x0001, devSetInfo.attrId, devSetInfo.attrValue, devSetInfo.attrSize);
+        
         return IOT_OK;
     }
 
@@ -177,7 +223,7 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
             .mac = info.mac,
             .macLen = info.macSize,
             .devId = info.devId,
-            .devIdLen = DEVICE_ID_LEN,
+            .devIdLen = IOT_DAO_DEVICE_ID_LEN,
             .fullState = &fullState,
             .numChangedElems = numChanged,
             .changedElemIds = changedIds,
@@ -244,6 +290,18 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
             .unixTime = getData->unixTime,
         };
 
+        /* The app's first history checkpoint, handed over with the state rather than costing it a
+        * second round trip. Record omits anything still provisional. */
+        IOT_CoreRecordStateBlock_t recordBlocks[IOT_CORE_RECORD_STATE_BLOCKS_MAX];
+        uint8_t recordBlockCount = 0;
+        if (IOT_ContractRecordGetCurrentBlocks(getData->eid, recordBlocks, IOT_CORE_RECORD_STATE_BLOCKS_MAX,
+                                            &recordBlockCount) == IOT_OK &&
+            recordBlockCount > 0)
+        {
+            response.recordBlocks = recordBlocks;
+            response.numRecordBlocks = recordBlockCount;
+        }
+
         iot_err = IOT_CoreRequestReportState(&response);
         if (iot_err != IOT_OK)
         {
@@ -255,6 +313,9 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
         }
         break;
     }
+    case IOT_EVENT_TYPE_STATE_RECORD:
+        (void)IOT_ContractStateRespondRecord(&stateEvent->data.recordRequest);
+        break;
     default:
         IOT_LOGW(TAG, "Unknown STATE event type: %d", stateEvent->type);
         iot_err = IOT_ERR_INVALID_ARG;
@@ -287,6 +348,7 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
         IOT_CoreSmartEventEnableDisableData_t *data = &smartEvent->data.enableDisable;
         IOT_LOGI(TAG, "SMART event SMART_EVENT_ENABLE_DISABLE, smid: %04x, en/dis: %d", data->smid, data->enabled);
 
+        IotSmartEnableCommand(data->smid, data->enabled);
         // REQUIRED: call after DAO update — core sends cloud ack from here
         IOT_CoreSmartCmdResponse_t resp = {
             .cmdType = IOT_SMART_CMD_ENABLE_DISABLE,
@@ -302,7 +364,7 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
         IOT_CoreSmartEventRemoveAnnounceData_t *data = &smartEvent->data.removeAnnounce;
         IOT_LOGI(TAG, "SMART event: REMOVE_ANNOUNCE, SMID=%04x", data->smid);
         // TODO: Remove automation with this SMID from your DAO
-
+        IotSmartUnBindCommand(data->smid);
         break;
     }
     case SMART_EVENT_ACTIVE_BY_USER:
@@ -464,6 +526,16 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
                              data->secondaryAttrValue.attrSize,
                              "Secondary Attr Value:");
         }
+
+        if (data->bindTriggerElmInfo.subSmartType == APP_SYNC_ON_OFF_SUBTYPE &&
+            data->primaryAttrValue.attrId == APP_ATTR_SYNC_ONOFF_ELEMENTS)
+        {
+            // app_sync_bind_set(data->bindTriggerElmInfo.smid,
+            //                   data->primaryAttrValue.attrValue,
+            //                   data->primaryAttrValue.attrSize);
+        }else{
+            (void)IotSmartBindCommand(data);
+        }
         // TODO: Store trigger binding in your DAO (IOT_DaoSmartTriggerMgmt equivalent)
 
         // REQUIRED: call after DAO save — core sends cloud ack from here
@@ -481,7 +553,14 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
         IOT_CoreSmartEventUnboundTriggerData_t *data = &smartEvent->data.unboundTrigger;
         IOT_LOGI(TAG, "SMART event: UNBOUND_TRIGGER, EID=%04x, SMID=%04x", data->eid, data->smid);
         // TODO: Remove trigger binding from your DAO
+        uint16_t myRootEid = 0;
+        if(IOT_CoreGetRootEid(&myRootEid) == IOT_OK && data->eid == myRootEid)
+        {
+            if(IotSmartUnBindCommand(data->smid))
+            {
 
+            }
+        }
         // REQUIRED: call after DAO delete — core sends cloud ack from here
         IOT_CoreSmartCmdResponse_t resp = {
             .cmdType = IOT_SMART_CMD_UNBOUND_TRIGGER,
@@ -687,6 +766,8 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
 // DEVICE Event Handler
 // ============================================================================
 
+extern void RAL_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event);
+
 static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
 {
     static uint16_t groupId = 0;
@@ -700,12 +781,12 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
 
     switch (deviceEvent->type)
     {
-    case DEV_EVENT_BOOTED:
-    {
-        IOT_LOGI(TAG, "DEVICE event: BOOTED");
-        // TODO: Restore hardware state from your DAO if device is provisioned
-        break;
-    }
+    // case DEV_EVENT_BOOTED:
+    // {
+    //     IOT_LOGI(TAG, "DEVICE event: BOOTED");
+    //     // TODO: Restore hardware state from your DAO if device is provisioned
+    //     break;
+    // }
     case DEV_EVENT_IDENTIFICATION:
     {
         IOT_LOGI(TAG, "DEVICE event: IDENTIFICATION — blink LED to identify device");
@@ -719,141 +800,15 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGI(TAG, "DEVICE event: PROVISION_COMPLETED — device is cloud-connected");
         // TODO: Initialize device state, set default values
         RAL_DeinitBle();
-        // TdsTaskStart();
         TdsTaskContinue();
         break;
     }
     case DEV_EVENT_NEW_DEVICE_JOINED:
     {
-        IOT_LOGI(TAG, "DEVICE event: NEW_DEVICE_JOINED");
-        IOT_LOGW(TAG, "  New Device Joined Event: handle new device joined if needed.");
-        IOT_CoreDeviceEventNewDeviceJoinedData_t *joinData = &deviceEvent->data.newDeviceJoined;
-        switch (joinData->phase)
-        {
-        case IOT_DEV_JOIN_PHASE_DEVICE_INFO:
-        {
-            IOT_LOGI(TAG,
-                     "DEVICE event: NEW DEVICE JOINED, EID: %04x, PHASE: DEVICE_INFO",
-                     joinData->data.deviceInfo.eid);
-
-            uint16_t eid = joinData->data.deviceInfo.eid;
-            if (iot_err != IOT_OK)
-            {
-                IOT_LOGE(TAG, "Failed to save device EID to DAO");
-            }
-            printf("set ele ID : %04x\n", eid);
-
-            // Set device common info
-            IOT_DevCommonInfo_t commonInfo = {
-                .deviceType = joinData->data.deviceInfo.deviceType,
-                .protocol = joinData->data.deviceInfo.protocol,
-                .nwkAddr = joinData->data.deviceInfo.nwkAddr,
-                .rootEid = joinData->data.deviceInfo.rootEid,
-            };
-            iot_err = IOT_DaoDeviceSetCommonInfo(eid, &commonInfo);
-            if (iot_err != IOT_OK)
-            {
-                IOT_LOGE(TAG, "Failed to store common info for EID %04x", eid);
-            }
-
-            // Set device identity info
-            uint8_t macWithPrefix[8];
-            macWithPrefix[0] = joinData->data.deviceInfo.macType;
-            macWithPrefix[1] = 6;
-            memcpy(&macWithPrefix[2], joinData->data.deviceInfo.mac, 6);
-            IOT_DevIdentityInfo_t identityInfo = {
-                .macType = joinData->data.deviceInfo.macType,
-                .mac = macWithPrefix,
-                .macSize = 6,
-            };
-            memcpy(identityInfo.devId, joinData->data.deviceInfo.devId, DEVICE_ID_LEN);
-            iot_err_t identityErr = IOT_DaoDeviceSetIdentityInfo(eid, &identityInfo);
-            if (identityErr != IOT_OK)
-            {
-                IOT_LOGE(TAG, "Failed to store identity info for EID %04x", eid);
-                if (iot_err == IOT_OK)
-                {
-                    iot_err = identityErr;
-                }
-            }
-            IOT_DaoDeviceSetCommonInfo(eid, &commonInfo);
-
-            // Add to groups
-            groupId = joinData->data.deviceInfo.groupId;
-            
-
-            // REQUIRED: call after each DAO phase — core sends cloud ack from here
-            IOT_CoreDeviceCmdResponse_t resp = {
-                .cmdType = IOT_DEVICE_CMD_SYNC_DEV_JOINED,
-                .result  = iot_err,
-                .cmdData2 = joinData->cmdData2,
-                .ctx     = joinData->ctx,
-            };
-            IOT_CoreRespondDeviceCmd(&resp);
-            break;
-        }
-        case IOT_DEV_JOIN_PHASE_ELM_INFO:
-        {
-            IOT_LOGI(TAG,
-                     "DEVICE event: NEW DEVICE JOINED, EID: %04x, PHASE: ELM_INFO",
-                     joinData->data.elmInfo.eid);
-            uint16_t eid = joinData->data.elmInfo.eid;
-            IOT_LOGI(TAG, "DEVICE event: NEW DEVICE JOINED, EID: %04x, PHASE: ELM_INFO", eid);
-            IOT_LOGW(TAG, "  Number of Elements, ELM_STATE MUST BE HANDLE SAVING TO DAO");
-
-            // REQUIRED: call after DAO save — core sends cloud ack from here
-            IOT_CoreDeviceCmdResponse_t resp = {
-                .cmdType = IOT_DEVICE_CMD_SYNC_DEV_JOINED,
-                .result  = IOT_OK,
-                .cmdData2 = joinData->cmdData2,
-                .ctx     = joinData->ctx,
-            };
-            IOT_CoreRespondDeviceCmd(&resp);
-            break;
-        }
-        case IOT_DEV_JOIN_PHASE_SYNC_COMPLETE:
-        {
-            // to be updated.
-
-            break;
-        }
-        default:
-            break;
-        }
-        break;
     }
     case DEV_EVENT_DEVICE_REMOVED:
     {
-        uint16_t eid = deviceEvent->data.deviceRemoved.eid;
-        bool isRootDevice = deviceEvent->data.deviceRemoved.isRootDevice;
 
-        IOT_LOGI(TAG, "DEVICE event: DEVICE_REMOVED, EID: %04x, isRoot: %d", eid, isRootDevice);
-
-        if (isRootDevice)
-        {
-            IOT_LOGI(TAG, "Root device removed, restarting chip...");
-            // TODO: Clear all application state, reset hardware
-        }
-        else
-        {
-            // Non-root device - remove from DAO storage
-            // REQUIRED: call after DAO delete — core sends cloud ack from here
-            IOT_CoreDeviceCmdResponse_t resp = {
-                .cmdType = IOT_DEVICE_CMD_SYNC_DEV_REMOVED,
-                .result  = IOT_OK,
-                .cmdData2 = deviceEvent->data.deviceRemoved.cmdData2,
-                .ctx     = deviceEvent->data.deviceRemoved.ctx,
-            };
-            IOT_CoreRespondDeviceCmd(&resp);
-        }
-        // RAL_NOTE: KICK_OUT
-        iot_err = IOT_ApplicationRestartChip();
-        if (iot_err != IOT_OK)
-        {
-            IOT_LOGE(TAG, "Failed to restart chip");
-        }
-
-        break;
     }
     case DEV_EVENT_GROUP_BIND:
     {
@@ -861,19 +816,41 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGI(TAG, "DEVICE event: GROUP_BIND, EID=%04x, newGroup=%04x, oldGroup=%04x, elmLen=%u",
                  bindData->eid, bindData->newGroupId, bindData->oldGroupId, bindData->elemDataLen);
 
-        // TODO: Remove EID from oldGroupId in your DAO (if oldGroupId != 0)
-        // TODO: Add EID to newGroupId in your DAO, with optional element bindings (elemData/elemDataLen)
-        //
-        // REQUIRED: call after DAO update — core sends cloud ack from here
-        bool hasElms = (bindData->elemDataLen > 0);
-        IOT_CoreDeviceCmdResponse_t resp = {
-            .cmdType  = hasElms ? IOT_DEVICE_CMD_BIND_GRP_ELMS : IOT_DEVICE_CMD_BIND_GRP,
-            .cmdData2 = bindData->cmdData2,
-            .result   = IOT_OK,
-            .ctx      = bindData->ctx,
-        };
-        IOT_CoreRespondDeviceCmd(&resp);
-        break;
+
+        uint16_t eid_temp = 0;
+        if (IOT_CoreGetRootEid(&eid_temp) != IOT_OK)
+        {
+            eid_temp = 0;
+        }        
+        printf("bind group: oldGroupId: %04x newGroupId: %04x \n", bindData->oldGroupId, bindData->newGroupId);
+
+        if(bindData->newGroupId == 0x0000)
+        {
+            IOT_LOGE(TAG,"  remove groupId: %04x", bindData->oldGroupId);
+            if(GroupDelete(bindData->oldGroupId) == D_TRUE && eid_temp == bindData->eid)
+            {
+                printf("remove groupId: %04x done\n", bindData->oldGroupId);
+            }
+        }else{
+            IOT_LOGI(TAG," old groupId: %04x - new groupId: %04x", bindData->oldGroupId, bindData->newGroupId);
+            if(bindData->oldGroupId != 0x0000)
+            {
+                if(GroupDelete(bindData->oldGroupId) == D_TRUE && eid_temp == bindData->eid)
+                {
+                    IOT_LOGI(TAG,"  add groupId: %04x", bindData->newGroupId);
+                    if(GroupAdd(bindData->newGroupId) == D_TRUE)
+                    {
+                        printf("add groupId: %04x done\n", bindData->newGroupId);
+                    }
+                }
+            }else{
+                    IOT_LOGI(TAG,"  add groupId: %04x", bindData->newGroupId);
+                    if(GroupAdd(bindData->newGroupId) == D_TRUE && eid_temp == bindData->eid)
+                    {
+                        printf("add groupId: %04x done\n", bindData->newGroupId);
+                    }
+            }
+        }
     }
     case DEV_EVENT_GROUP_UNBIND:
     {
@@ -881,44 +858,24 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGI(TAG, "DEVICE event: GROUP_UNBIND, EID=%04x, group=%04x",
                  unbindData->eid, unbindData->groupId);
 
-        // TODO: Remove EID from groupId in your DAO
-        //
-        // REQUIRED: call after DAO delete — core sends cloud ack from here
-        IOT_CoreDeviceCmdResponse_t resp = {
-            .cmdType  = IOT_DEVICE_CMD_UNBOUND_GRP,
-            .cmdData2 = unbindData->cmdData2,
-            .result   = IOT_OK,
-            .ctx      = unbindData->ctx,
-        };
-        IOT_CoreRespondDeviceCmd(&resp);
-        break;
+        uint16_t eid_temp = 0;
+        if (IOT_CoreGetRootEid(&eid_temp) != IOT_OK)
+        {
+            eid_temp = 0;
+        }
+        if(eid_temp == unbindData->eid)
+        {
+            IOT_LOGI(TAG,"  remove groupId: %04x", unbindData->groupId);
+            if(GroupDelete(unbindData->groupId) == ESP_OK)
+            {
+                
+            }
+        }
     }
 
     case DEV_EVENT_DEVICE_ATTR_SET:
     {
-        IOT_CoreDeviceEventAttrSetData_t *attrSet = &deviceEvent->data.attrSet;
-        IOT_LOGI(TAG, "DEVICE event: DEVICE_ATTR_SET, EID=%04x, ELM=%04x, attr=%04x, len=%u",
-                 attrSet->eid, attrSet->elm, attrSet->attrId, attrSet->attrDataLen);
-        
-        printf("[CORE EVT] data setting: ");
-        for (size_t i = 0; i < attrSet->attrDataLen; i++)
-        {
-            printf(" %02x", attrSet->attrData[i]);
-        }
-        printf("\n");
-        
-        // CloudUpdateState(attrSet->elm, attrSet->attrId, &attrSet->attrData[0], attrSet->attrDataLen);
-        // dev_rsp_state_to_cloud(attrSet->elm, attrSet->attrId, &attrSet->attrData[0], attrSet->attrDataLen);
-
-        // TODO: Persist the attribute value in your DAO.
-        // REQUIRED: call after DAO update — core sends cloud ack from here.
-        IOT_CoreDeviceCmdResponse_t resp = {
-            .cmdType  = IOT_DEVICE_CMD_DEVICE_ATTR,
-            .cmdData2 = 0,
-            .result   = IOT_OK,
-            .ctx      = attrSet->ctx,
-        };
-        IOT_CoreRespondDeviceCmd(&resp);
+        RAL_ContractHandleDeviceEvent(deviceEvent);
         break;
     }
 
@@ -928,6 +885,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         {
             s_wifi_connected = true;
             LedManagerSetNetworkConnected();
+            LedManagerSetError();
         }
         IOT_LOGW(TAG, "DEVICE event: WIFI_CONNECTED, IP: %08lx",
                  (unsigned long)deviceEvent->data.wifiConnected.ip);
@@ -952,6 +910,8 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         g_cloud_is_connected = 1;
         LedManagerSetNormal();
 
+        IOT_ContractOnCloudConnected();
+        IOT_ContractStateSyncSchedule();
         // app_cond_resync_all();
         // esp_event_post(EVENT_BASE_COMMON, EVENT_CLOUD_CONNECTED, NULL, 0, pdMS_TO_TICKS(10));
         break;
@@ -1098,7 +1058,12 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
         IOT_LOGE(TAG, "Invalid osEvent pointer");
         return IOT_ERR_INVALID_ARG;
     }
-
+    if (osEvent->type == OS_EVENT_REBOOT || osEvent->type == OS_EVENT_OTA_REQUESTED)
+    {
+        iot_err_t err = IOT_ContractPrepareRestart();
+        if (err != IOT_OK)
+            IOT_LOGW(TAG, "Flush before restart incomplete: %d", (int) err);
+    }
     switch (osEvent->type)
     {
     case OS_EVENT_REBOOT:
@@ -1215,6 +1180,12 @@ void RootDeviceFactoryReset(void)
     {
         IOT_LOGE(TAG, "Failed to factory reset device DAO");
     }
+
+    if (GroupResetAll() != D_TRUE)
+    {
+        IOT_LOGE(TAG, "Failed to factory reset group DAO");
+    }
+
     iot_err = IOT_CoreFactoryReset();
     if (iot_err != IOT_OK)
     {

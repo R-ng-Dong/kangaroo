@@ -32,11 +32,11 @@ iot_err_t IOT_MdnsAddAdvertisement(char *serviceName, char *serviceType, uint16_
     return s_driver->addAdvertisement(serviceName, serviceType, port);
 }
 
-iot_err_t IOT_MdnsRemoveAdvertisement(const char *serviceName)
+iot_err_t IOT_MdnsRemoveAdvertisement(const char *serviceType)
 {
     if (s_driver == NULL || s_driver->removeAdvertisement == NULL)
         return IOT_ERR_NOT_SUPPORTED;
-    return s_driver->removeAdvertisement(serviceName);
+    return s_driver->removeAdvertisement(serviceType);
 }
 
 iot_err_t IOT_MdnsRemoveAllAdvertisements(void)

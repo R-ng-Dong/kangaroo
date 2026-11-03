@@ -17,6 +17,20 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nimble/ble.h"
+#include "IOT_Osal.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+/* How long nimble_ensureHostStarted() waits for controller sync, and how often it looks.
+ * Sync is normally tens of ms; the ceiling is one only a broken controller reaches.
+ *
+ * Taken FROM the published IOT_BleStart() contract rather than chosen here: callers size
+ * their own waits against that number (the advertiser arbiter's lock timeout is derived
+ * from it), and two independently maintained constants would drift. Raising the ceiling
+ * means raising IOT_BLE_START_MAX_BLOCK_MS, which is the point -- everything that has to
+ * know then knows. */
+#define NIMBLE_SYNC_TIMEOUT_MS IOT_BLE_START_MAX_BLOCK_MS
+#define NIMBLE_SYNC_POLL_MS 10u
 #include "services/ans/ble_svc_ans.h"
 
 /* Undo NimBLE's log_common.h macro redefinitions so our enum values are used. */
@@ -34,6 +48,47 @@
 #include <string.h>
 
 #include "IOT_Common.h"
+#include "ble_ext_adv_policy.h"
+#include "mesh_adv_restore.h"
+#include "freertos/semphr.h"
+#include "esp_heap_caps.h"
+
+/* Our advertising sets must not be ids BLE Mesh drives. Caught at compile time so a
+ * Kconfig change cannot quietly reintroduce the collision at runtime. */
+#if MYNEWT_VAL(BLE_EXT_ADV) && defined(CONFIG_BLE_MESH_ADV_INST_ID)
+_Static_assert(IOT_BLE_ADV_INST_CONN != CONFIG_BLE_MESH_ADV_INST_ID &&
+                   IOT_BLE_ADV_INST_BEACON != CONFIG_BLE_MESH_ADV_INST_ID,
+               "advertising instance collides with CONFIG_BLE_MESH_ADV_INST_ID");
+#endif
+#if MYNEWT_VAL(BLE_EXT_ADV) && defined(CONFIG_BLE_MESH_PROXY_ADV_INST_ID)
+_Static_assert(IOT_BLE_ADV_INST_CONN != CONFIG_BLE_MESH_PROXY_ADV_INST_ID &&
+                   IOT_BLE_ADV_INST_BEACON != CONFIG_BLE_MESH_PROXY_ADV_INST_ID,
+               "advertising instance collides with CONFIG_BLE_MESH_PROXY_ADV_INST_ID");
+#endif
+#if MYNEWT_VAL(BLE_EXT_ADV)
+_Static_assert(IOT_BLE_ADV_INST_CONN < BLE_ADV_INSTANCES && IOT_BLE_ADV_INST_BEACON < BLE_ADV_INSTANCES,
+               "raise CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES to cover our advertising sets");
+
+/* The controller hands out connection handles from the same activity budget that
+ * advertising sets consume, and NimBLE indexes slave_conn[], g_max_tx_time[] and
+ * g_max_rx_time[] in ble_gap.c by the raw handle. Those arrays are sized
+ * CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1, with no bounds check, so a handle past the
+ * end writes into whatever follows and the next disconnect faults in
+ * ble_gap_conn_broken() (measured: 7 panics in 10 connect/disconnect cycles).
+ *
+ * With one legacy advertising set handles stayed at 0-1 and this never bit, which
+ * is why most targets still ship MAX_CONNECTIONS=3 safely. Extended advertising
+ * puts four sets in play and makes the whole range reachable -- so the constraint
+ * is asserted here, where enabling EXT_ADV on a target sized for legacy becomes a
+ * build error instead of a crash on the bench. Raising MAX_CONNECTIONS on targets
+ * that do not use EXT_ADV would cost RAM for a handle they can never be issued. */
+#if defined(CONFIG_BT_CTRL_BLE_MAX_ACT)
+_Static_assert(CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1 >= CONFIG_BT_CTRL_BLE_MAX_ACT,
+               "raise CONFIG_BT_NIMBLE_MAX_CONNECTIONS: extended advertising makes the "
+               "controller's full handle range reachable, and NimBLE indexes its "
+               "per-connection arrays by the raw handle");
+#endif
+#endif
 
 static const char *TAG = "BLE-NE";
 
@@ -93,6 +148,17 @@ static size_t persistent_services_count = 0;
  * points that call into the NimBLE host so a caller hitting a torn-down stack
  * (e.g. OTA deinitializes BLE to free heap) gets an error instead of a crash. */
 static bool s_nimbleInitialized = false;
+/* Host task start is deferred until first use — see nimble_ensureHostStarted(). */
+static bool s_hostStarted = false;
+/* STARTED is not USABLE. nimble_port_freertos_init() returns as soon as the host task
+ * exists, but the controller only hands the host an identity address later, when it
+ * signals sync. Until then ble_hs_id_infer_auto() returns BLE_HS_ENOADDR (21) and every
+ * advertise/scan fails. Written by the host task in internalSyncCb(), read by callers
+ * waiting in nimble_ensureHostStarted(); volatile because those are different tasks. */
+static volatile bool s_hostSynced = false;
+static void internalSyncCb(void);
+static iot_err_t nimble_ensureHostStarted(void);
+static iot_err_t nimble_ensureHostStartedImplicit(const char *caller);
 
 /**
  * @brief Find attribute indexes by handle
@@ -212,13 +278,22 @@ internalCharAccessCallback(uint16_t conn_handle, uint16_t attr_handle, struct bl
         goto cleanup_error;
     }
 
-    convertCtxt->om->data = Mem_SafeMalloc(ctxt->om->om_len, TAG, "operation data");
+    /* A write NimBLE reassembled from several ACL fragments arrives as an mbuf CHAIN; om_len is
+     * only the first link, and copying just that silently truncates the write. Take the packet
+     * length and flatten the whole chain. */
+    uint16_t pktLen = OS_MBUF_PKTLEN(ctxt->om);
+    convertCtxt->om->data = Mem_SafeMalloc(pktLen, TAG, "operation data");
     if (convertCtxt->om->data == NULL)
     {
         goto cleanup_error;
     }
-    convertCtxt->om->len = ctxt->om->om_len;
-    memcpy(convertCtxt->om->data, ctxt->om->om_data, convertCtxt->om->len);
+    uint16_t copied = 0;
+    if (ble_hs_mbuf_to_flat(ctxt->om, convertCtxt->om->data, pktLen, &copied) != 0 || copied != pktLen)
+    {
+        IOT_LOGE(TAG, "Failed to flatten %u-byte GATT write (copied %u)", (unsigned) pktLen, (unsigned) copied);
+        goto cleanup_error;
+    }
+    convertCtxt->om->len = copied;
 
     iot_err_t err = characteristic->access_cb(convertCtxt, characteristic->arg);
     if (err != IOT_OK)
@@ -433,6 +508,10 @@ static IOT_BleMgmtEventStatusType_t getEventTypeFromEspBleEvent(int event_type)
         return BLE_MGMT_EVENT_STATUS_TYPE_MAX; // Unknown event type
     }
 }
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+static void advRestoreOnConnect(void);
+#endif
+
 static int internalGapCb(struct ble_gap_event *event, void *arg)
 {
     if (event == NULL)
@@ -441,6 +520,14 @@ static int internalGapCb(struct ble_gap_event *event, void *arg)
     }
 
     IOT_BleMgmtEventStatusType_t evType = getEventTypeFromEspBleEvent(event->type);
+
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+    /* A connection consumes the advert; the app re-advertises itself if it wants to. */
+    if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0)
+    {
+        advRestoreOnConnect();
+    }
+#endif
 
     /* Special-case CONNECT: if connect failed, treat as DISCONNECT callback */
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status != 0)
@@ -506,6 +593,29 @@ static int internalGapCb(struct ble_gap_event *event, void *arg)
             IOT_BleMgmtEventConnectData_t conn_info;
             memset(&conn_info, 0, sizeof(conn_info));
             currConnectionHandle = event->connect.conn_handle;
+            /* Worth logging: the controller's activity budget (CONFIG_BT_CTRL_BLE_MAX_ACT)
+             * is shared between connections AND advertising sets, so every extra
+             * advertising instance pushes connection handles higher. NimBLE indexes
+             * several per-connection arrays by this handle, sized
+             * CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1 — a handle past that end corrupts
+             * whatever follows. Keep CONFIG_BT_NIMBLE_MAX_CONNECTIONS above the advertising sets in use. */
+            IOT_LOGI(TAG, "Connected, handle=%u", (unsigned) currConnectionHandle);
+#ifdef CONFIG_BT_NIMBLE_MAX_CONNECTIONS
+            if (currConnectionHandle > CONFIG_BT_NIMBLE_MAX_CONNECTIONS)
+            {
+                /* NimBLE is about to corrupt its own memory. g_max_tx_time[],
+                 * g_max_rx_time[], g_max_tx_octets[], g_max_rx_octets[] and
+                 * slave_conn[] in ble_gap.c are all sized
+                 * CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1 and indexed by this handle with
+                 * no bounds check. Nothing fails now — the next disconnect faults
+                 * walking whatever was overwritten. Say so while the cause is still
+                 * on screen. */
+                IOT_LOGE(TAG, "Connection handle %u exceeds CONFIG_BT_NIMBLE_MAX_CONNECTIONS (%d) — "
+                              "NimBLE will write out of bounds; raise it to at least "
+                              "CONFIG_BT_CTRL_BLE_MAX_ACT",
+                         (unsigned) currConnectionHandle, CONFIG_BT_NIMBLE_MAX_CONNECTIONS);
+            }
+#endif
             isBleConnected = true;
             callbackMgmt[evType].cb(callbackMgmt[evType].arg, evType, &conn_info);
         }
@@ -575,6 +685,10 @@ static int internalGapCb(struct ble_gap_event *event, void *arg)
 
 static iot_err_t nimble_startScan(uint32_t intervalTime)
 {
+    iot_err_t hostErr = nimble_ensureHostStartedImplicit("startScan");
+    if (hostErr != IOT_OK)
+        return hostErr;
+
     struct ble_gap_disc_params disc_params = {
         .itvl = 0x0010,
         .window = 0x0010,
@@ -610,8 +724,426 @@ static iot_err_t nimble_setDeviceName(const char *name)
     }
     return IOT_OK;
 }
+/* ── Advertising API compatibility shim ────────────────────────────────────────
+ *
+ * CONFIG_BLE_MESH_USE_BLE_50 selects CONFIG_BT_NIMBLE_EXT_ADV, and NimBLE then
+ * compiles ble_gap_adv_set_fields / _rsp_set_fields / _start / _stop down to stubs
+ * that return BLE_HS_ENOTSUP. Nothing fails to build and nothing crashes — the
+ * device simply never advertises. So once mesh asks for BLE 5.0 the extended API
+ * is mandatory, not optional.
+ *
+ * These two helpers hide that fork. Under EXT_ADV they drive an advertising set
+ * with legacy_pdu = 1, so what leaves the antenna is the same ADV_IND /
+ * ADV_NONCONN_IND as before and phones see no difference. Without EXT_ADV they
+ * are a thin pass-through to the legacy calls.
+ *
+ * They also close a leak the legacy code carried: ble_gap_adv_set_fields() keeps
+ * pointers into the caller's uuid16/mfg buffers, so those had to outlive the
+ * advert and were never freed. Serialising into a flat 31-byte payload copies the
+ * bytes up front, which lets every caller free immediately.
+ *
+ * Both return a NimBLE rc (0 = success), not an iot_err_t, so callers keep their
+ * existing error handling and logging.
+ */
+
+#if MYNEWT_VAL(BLE_EXT_ADV)
+/**
+ * @brief Serialize adv fields and hand them to one extended advertising set.
+ *
+ * ble_gap_ext_adv_set_data()/_rsp_set_data() take ownership of the mbuf on every
+ * path, success or failure — freeing it here would be a double free.
+ */
+static int iotAdvSetData(uint8_t instance, const struct ble_hs_adv_fields *fields, bool isScanRsp)
+{
+    uint8_t buf[BLE_HS_ADV_MAX_SZ];
+    uint8_t len = 0;
+
+    int rc = ble_hs_adv_set_fields(fields, buf, &len, sizeof(buf));
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to serialize %s fields: %d", isScanRsp ? "scan response" : "advertising", rc);
+        return rc;
+    }
+
+    /* The exact bytes handed to the controller. BlueZ merges every report from one
+     * address into a single device, so a device advertising on two sets (ours plus
+     * BLE Mesh's) cannot be read back field-by-field from a scan — this is the only
+     * place the payload is unambiguous. */
+    IOT_LOGD(TAG, "%s payload, %u bytes on instance %u:", isScanRsp ? "Scan-response" : "Advertising", len,
+             instance);
+    LOG_HEX_INLINE(LOG_LEVEL_DEBUG, buf, len, TAG);
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, len);
+    if (om == NULL)
+    {
+        IOT_LOGE(TAG, "Out of mbufs for %s data", isScanRsp ? "scan response" : "advertising");
+        return BLE_HS_ENOMEM;
+    }
+
+    rc = isScanRsp ? ble_gap_ext_adv_rsp_set_data(instance, om) : ble_gap_ext_adv_set_data(instance, om);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to set %s data on instance %u: %d", isScanRsp ? "scan response" : "advertising",
+                 instance, rc);
+    }
+    return rc;
+}
+#endif /* MYNEWT_VAL(BLE_EXT_ADV) */
+
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+/* BLE 4.x mesh hub, advertiser time-sharing, on stock IDF.
+ *
+ * On BLE 4.x there is one legacy advertising set. ESP-BLE-MESH takes it for EVERY packet
+ * it sends (core/adv.c: bt_le_adv_start ... bt_le_adv_stop), preempting whatever we had on
+ * air -- its own start stops a running advert on BLE_HS_EALREADY and retries -- and it
+ * overwrites the advert DATA as well. Stock IDF has no hook to put our advert back, but core/adv.c and nimble_host/adapter.c are
+ * separate objects, so `-Wl,--wrap=bt_le_adv_stop` intercepts the same call with no IDF
+ * edit. The price is that the advert is absent for the length of each mesh packet; the
+ * gain is that mesh never has to be silenced to protect it. */
+static MeshAdvRestore_t s_advRestore;
+#define ADV_RC_SLOT_TAKEN (-1)    /* NimBLE codes are >= 0, so this cannot collide */
+#define ADV_RC_NOT_ON_RECORD (-2) /* a stop for the instance NOT holding the one BLE 4.x slot */
+static portMUX_TYPE s_advRestoreLock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_advRestoreCount;
+
+/* Serialises the three "apply" sequences below (mesh's post-stop restore, our own start,
+ * our own stop) against EACH OTHER -- the portMUX above only makes each individual
+ * s_advRestore read/write atomic, not a whole record-then-apply sequence. Without this,
+ * two interleavings were observed:
+ *   1. A stop can race a restore: the wrapper takes its snapshot (wanted=true) right
+ *      before iotAdvStop() forgets the record and finds the radio already idle (mesh had
+ *      just stopped it) -- iotAdvStop() returns success having touched nothing, and the
+ *      wrapper then puts the just-stopped advert back on air.
+ *   2. A start can race a restore: the wrapper reads its snapshot before iotAdvStart()
+ *      records the NEW advert, so the wrapper's legacyAdvApply() reapplies the OLD
+ *      payload after the start already applied the new one -- leaving the stale advert on
+ *      air with nothing pointing at it, and the start call itself sees EALREADY and
+ *      reports failure.
+ * Lock order: this mutex first, then (implicitly) NimBLE's own host lock inside the
+ * ble_gap_* calls made while it is held. It must never be taken while s_advRestoreLock is
+ * held, and no NimBLE call is ever made while s_advRestoreLock is held either. */
+static StaticSemaphore_t s_advRestoreApplyMutexBuf;
+static SemaphoreHandle_t s_advRestoreApplyMutex = NULL;
+
+static int legacyAdvApply(bool connectable, uint8_t ownAddrType, const uint8_t *adv, uint8_t advLen,
+                          const uint8_t *rsp, uint8_t rspLen)
+{
+    int rc = ble_gap_adv_set_data(adv, advLen);
+    if (rc != 0)
+        return rc;
+    if (rspLen > 0)
+    {
+        rc = ble_gap_adv_rsp_set_data(rsp, rspLen);
+        if (rc != 0)
+            return rc;
+    }
+    struct ble_gap_adv_params p;
+    memset(&p, 0, sizeof(p));
+    p.conn_mode = connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON;
+    p.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    return ble_gap_adv_start(ownAddrType, NULL, BLE_HS_FOREVER, &p, internalGapCb, NULL);
+}
+
+static void advRestoreOnConnect(void)
+{
+    portENTER_CRITICAL(&s_advRestoreLock);
+    meshAdvRestoreOnConnect(&s_advRestore);
+    portEXIT_CRITICAL(&s_advRestoreLock);
+}
+
+int __real_bt_le_adv_stop(void);
+
+/* Normally runs on the mesh advertising task (any other caller of bt_le_adv_stop is
+ * wrapped too). */
+int __wrap_bt_le_adv_stop(void)
+{
+    int err = __real_bt_le_adv_stop();
+
+    /* Not yet created (driver not initialised): nothing to restore against, and no
+     * mutex to serialise with -- skip silently rather than race an uninitialised driver.
+     * Likewise once the host is disabled (mid-teardown, e.g. nimble_deinit()'s
+     * nimble_port_stop()): mesh can still emit a stray stop while the host is going down,
+     * and every ble_gap_* call below would just fail and log noise for a restore nobody
+     * needs any more. */
+    if (s_advRestoreApplyMutex != NULL && ble_hs_is_enabled() &&
+        xSemaphoreTake(s_advRestoreApplyMutex, portMAX_DELAY) == pdTRUE)
+    {
+        MeshAdvRestore_t snap;
+        portENTER_CRITICAL(&s_advRestoreLock);
+        snap = s_advRestore;
+        portEXIT_CRITICAL(&s_advRestoreLock);
+
+        /* Nothing active is the only safe moment: if mesh's stop was a no-op our advert may
+         * still be up, and a second start would just fail with EALREADY. */
+        if (meshAdvRestoreShouldApply(&snap, ble_gap_adv_active(), ble_gap_conn_active() != 0))
+        {
+            int rc = legacyAdvApply(snap.connectable, snap.ownAddrType, snap.adv, snap.advLen, snap.rsp,
+                                    snap.rspLen);
+            if (rc == 0)
+            {
+                /* A connection can complete between the snapshot above and the apply just
+                 * done, clearing the record via advRestoreOnConnect() -- the advert we just
+                 * put back is then stale (the app will re-advertise if it wants to). Take it
+                 * back down rather than leave an advert on air with nothing pointing at it. */
+                bool stillWanted;
+                portENTER_CRITICAL(&s_advRestoreLock);
+                stillWanted = s_advRestore.wanted;
+                portEXIT_CRITICAL(&s_advRestoreLock);
+                if (!stillWanted)
+                {
+                    (void) ble_gap_adv_stop();
+                }
+                else if ((++s_advRestoreCount % 50) == 1)
+                {
+                    IOT_LOGI(TAG, "advert restored after mesh TX (%lu so far)", (unsigned long) s_advRestoreCount);
+                }
+            }
+            else
+            {
+                IOT_LOGW(TAG, "advert restore after mesh TX failed: %d", rc);
+            }
+        }
+        xSemaphoreGive(s_advRestoreApplyMutex);
+    }
+    return err;
+}
+#endif /* CONFIG_IOT_MESH_ADV_RESTORE && !BLE_EXT_ADV */
+
+/**
+ * @brief Put one advert on air, over whichever advertising API this build has.
+ *
+ * @param instance    advertising set id; ignored on a legacy build, which has only one.
+ * @param connectable true for ADV_IND, false for ADV_NONCONN_IND.
+ * @param fields      advertising payload.
+ * @param rspFields   scan-response payload, or NULL. Connectable adverts only —
+ *                    a non-connectable legacy PDU is not scannable.
+ * @return NimBLE rc, 0 on success.
+ */
+static int iotAdvStart(uint8_t instance, bool connectable, const struct ble_hs_adv_fields *fields,
+                       const struct ble_hs_adv_fields *rspFields)
+{
+    uint8_t own_addr_type;
+    int rc = ble_hs_id_infer_auto(0, &own_addr_type);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to infer address type: %d", rc);
+        return rc;
+    }
+
+    IOT_BleExtAdvShape_t shape;
+    IOT_BleExtAdvShapeFromConnectable(connectable, &shape);
+
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    /* A running instance cannot be reconfigured; EALREADY just means it was idle. */
+    (void) ble_gap_ext_adv_stop(instance);
+
+    struct ble_gap_ext_adv_params params;
+    memset(&params, 0, sizeof(params));
+    params.legacy_pdu = shape.legacyPdu;
+    params.connectable = shape.connectable;
+    params.scannable = shape.scannable;
+    params.own_addr_type = own_addr_type;
+    params.primary_phy = BLE_HCI_LE_PHY_1M;
+    params.secondary_phy = BLE_HCI_LE_PHY_1M;
+    params.sid = instance;
+    params.tx_power = 127; /* 127 = no preference, let the controller choose */
+
+    rc = ble_gap_ext_adv_configure(instance, &params, NULL, internalGapCb, NULL);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to configure advertising instance %u: %d", instance, rc);
+        return rc;
+    }
+    IOT_BleExtAdvMarkConfigured(instance);
+
+    rc = iotAdvSetData(instance, fields, false);
+    if (rc != 0)
+    {
+        return rc;
+    }
+
+    if (rspFields != NULL)
+    {
+        rc = iotAdvSetData(instance, rspFields, true);
+        if (rc != 0)
+        {
+            return rc;
+        }
+    }
+
+    rc = ble_gap_ext_adv_start(instance, 0 /* no duration limit */, 0 /* no event limit */);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to start advertising instance %u: %d", instance, rc);
+    }
+    return rc;
+#else
+#if CONFIG_IOT_MESH_ADV_RESTORE
+    {
+        uint8_t adv[BLE_HS_ADV_MAX_SZ];
+        uint8_t advLen = 0;
+        uint8_t rsp[BLE_HS_ADV_MAX_SZ];
+        uint8_t rspLen = 0;
+        rc = ble_hs_adv_set_fields(fields, adv, &advLen, sizeof(adv));
+        if (rc == 0 && rspFields != NULL)
+            rc = ble_hs_adv_set_fields(rspFields, rsp, &rspLen, sizeof(rsp));
+        if (rc != 0)
+        {
+            IOT_LOGE(TAG, "Failed to serialise advertising fields: %d", rc);
+            return rc;
+        }
+
+        /* Record before starting: mesh can preempt the very first advert. Held across the
+         * whole record-apply-(forget on failure) sequence -- see s_advRestoreApplyMutex's
+         * comment for the interleaving this closes if it is not. */
+        bool advRestoreHeld = (s_advRestoreApplyMutex != NULL) &&
+                              (xSemaphoreTake(s_advRestoreApplyMutex, portMAX_DELAY) == pdTRUE);
+
+        MeshAdvRestoreResult_t res;
+        uint8_t holder;
+        portENTER_CRITICAL(&s_advRestoreLock);
+        holder = s_advRestore.instance;
+        res = meshAdvRestoreRecord(&s_advRestore, instance, shape.connectable, own_addr_type, adv, advLen, rsp,
+                                   rspLen);
+        portEXIT_CRITICAL(&s_advRestoreLock);
+        if (res == MESH_ADV_RESTORE_SLOT_TAKEN)
+        {
+            if (advRestoreHeld)
+                xSemaphoreGive(s_advRestoreApplyMutex);
+            IOT_LOGW(TAG, "Advert instance %u refused: instance %u holds the only BLE 4.x advertising slot",
+                     instance, holder);
+            return ADV_RC_SLOT_TAKEN;
+        }
+        if (res != MESH_ADV_RESTORE_OK)
+        {
+            if (advRestoreHeld)
+                xSemaphoreGive(s_advRestoreApplyMutex);
+            IOT_LOGE(TAG, "Advert instance %u not recorded: bad payload", instance);
+            return BLE_HS_EINVAL;
+        }
+
+        (void) ble_gap_adv_stop(); /* ours or mesh's -- either way the set is being replaced */
+        rc = legacyAdvApply(shape.connectable, own_addr_type, adv, advLen, rsp, rspLen);
+        if (rc == BLE_HS_EALREADY)
+        {
+            /* Mesh's own (unwrapped) bt_le_adv_start won the race between our stop above and
+             * our start here -- while we hold s_advRestoreApplyMutex, only mesh can have taken
+             * the set. The record just written is still correct, so keep it: mesh's next stop
+             * restores it through the wrapper, and reporting failure here would make the caller
+             * (e.g. the one-shot recovery-advert restart after a phone disconnect) give up on an
+             * advert that is about to come back on its own. */
+            IOT_LOGD(TAG, "Advert instance %u start raced mesh's own start (EALREADY); record kept, "
+                          "mesh's next stop will restore it",
+                     instance);
+            rc = 0;
+        }
+        else if (rc != 0)
+        {
+            IOT_LOGE(TAG, "Failed to start advertising: %d", rc);
+            portENTER_CRITICAL(&s_advRestoreLock);
+            (void) meshAdvRestoreForget(&s_advRestore, instance);
+            portEXIT_CRITICAL(&s_advRestoreLock);
+        }
+        if (advRestoreHeld)
+            xSemaphoreGive(s_advRestoreApplyMutex);
+        return rc;
+    }
+#else
+    (void) instance;
+#endif
+
+    rc = ble_gap_adv_set_fields(fields);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to set advertising fields: %d", rc);
+        return rc;
+    }
+
+    if (rspFields != NULL)
+    {
+        rc = ble_gap_adv_rsp_set_fields(rspFields);
+        if (rc != 0)
+        {
+            IOT_LOGE(TAG, "Failed to set scan response fields: %d", rc);
+            return rc;
+        }
+    }
+
+    struct ble_gap_adv_params adv_params;
+    memset(&adv_params, 0, sizeof(adv_params));
+    adv_params.conn_mode = shape.connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+
+    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, internalGapCb, NULL);
+    if (rc != 0)
+    {
+        IOT_LOGE(TAG, "Failed to start advertising: %d", rc);
+    }
+    return rc;
+#endif
+}
+
+/**
+ * @brief Take one advert off air.
+ * @return NimBLE rc; BLE_HS_EALREADY if it was not advertising. Under
+ *         CONFIG_IOT_MESH_ADV_RESTORE, a stop for the instance NOT holding the one BLE 4.x
+ *         slot returns ADV_RC_NOT_ON_RECORD instead -- same "already stopped" meaning, so
+ *         callers still map it to success, but it is routine (one advert at a time is the
+ *         rule) rather than a WARN-worthy surprise.
+ */
+static int iotAdvStop(uint8_t instance)
+{
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    /* Keep the legacy contract for "there was nothing to stop". ble_gap_adv_stop()
+     * answered BLE_HS_EALREADY, which callers treat as success; the extended API
+     * answers BLE_HS_EINVAL for an instance it never configured, which they treat as
+     * a failure. Reachable on any provisioned boot whose WiFi stayed up: nothing ever
+     * advertised, and an OTA still tears BLE down and stops advertising on the way. */
+    if (!IOT_BleExtAdvIsConfigured(instance))
+    {
+        return BLE_HS_EALREADY;
+    }
+    return ble_gap_ext_adv_stop(instance);
+#else
+#if CONFIG_IOT_MESH_ADV_RESTORE
+    /* Held from the forget through the actual stop -- see s_advRestoreApplyMutex's
+     * comment for the interleaving this closes if it is not. */
+    bool advRestoreHeld = (s_advRestoreApplyMutex != NULL) &&
+                          (xSemaphoreTake(s_advRestoreApplyMutex, portMAX_DELAY) == pdTRUE);
+    bool wasOurs;
+    portENTER_CRITICAL(&s_advRestoreLock);
+    wasOurs = meshAdvRestoreForget(&s_advRestore, instance);
+    portEXIT_CRITICAL(&s_advRestoreLock);
+    if (!wasOurs)
+    {
+        if (advRestoreHeld)
+            xSemaphoreGive(s_advRestoreApplyMutex);
+        /* Not ours on air: leave whatever is (our other advert, or mesh's packet) alone. This
+         * is the ordinary shape of "stop the beacon while the connectable advert holds the
+         * slot" (or vice versa) -- not a surprise worth a WARN every time, unlike a genuine
+         * EALREADY from the radio. Callers still see the legacy BLE_HS_EALREADY-is-success
+         * contract; only the log level differs. */
+        return ADV_RC_NOT_ON_RECORD;
+    }
+    {
+        int rc = ble_gap_adv_stop();
+        if (advRestoreHeld)
+            xSemaphoreGive(s_advRestoreApplyMutex);
+        return rc;
+    }
+#else
+    (void) instance;
+    return ble_gap_adv_stop();
+#endif
+#endif
+}
+
 static iot_err_t nimble_startBeaconAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
 {
+    iot_err_t hostErr = nimble_ensureHostStartedImplicit("startBeaconAdvertising");
+    if (hostErr != IOT_OK)
+        return hostErr;
+
     struct ble_hs_adv_fields fields;
     memset(&fields, 0, sizeof(fields));
 
@@ -654,45 +1186,42 @@ static iot_err_t nimble_startBeaconAdvertising(IOT_BleMgmtAdvData_t *adv_require
         fields.mfg_data_len = adv_requirements->manufactureDataLen + 2;
     }
 
-    int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0)
-    {
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
+    int rc = iotAdvStart(IOT_BLE_ADV_INST_BEACON, false /* non-connectable */, &fields, NULL);
 
-    // Start advertising
-    struct ble_gap_adv_params adv_params;
-    memset(&adv_params, 0, sizeof(adv_params));
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_NON; // Non-connectable advertising
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN; // General discoverable mode
+    /* iotAdvStart() serialises the payload, so the source buffers are dead either way. */
+    SAFE_FREE(uuid16);
+    SAFE_FREE(mfg);
 
-    uint8_t own_addr_type;
-    rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc != 0)
-    {
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
-
-    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, internalGapCb, NULL);
-    if (rc != 0)
-    {
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
-
-    /* uuid16 and mfg must remain valid while advertising is active */
-    return IOT_OK;
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+    if (rc == ADV_RC_SLOT_TAKEN)
+        return IOT_ERR_INVALID_STATE;
+#endif
+    return (rc == 0) ? IOT_OK : IOT_ERR_FAIL;
 }
 static iot_err_t nimble_stopBeaconAdvertising(void)
 {
-    int rc = ble_gap_adv_stop();
+    int rc = iotAdvStop(IOT_BLE_ADV_INST_BEACON);
     if (rc != 0)
     {
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+        if (rc == ADV_RC_NOT_ON_RECORD)
+        {
+            /* Routine under time-sharing: the connectable advert holds the one slot, not
+             * the beacon. Still the requested end state, so it is success -- just not
+             * worth a WARN every time it happens. */
+            IOT_LOGD(TAG, "BLE beacon advertising already stopped (not the one time-shared with mesh)");
+            return IOT_OK;
+        }
+#endif
+        if (rc == BLE_HS_EALREADY)
+        {
+            /* Nothing was advertising. That is the requested end state, so it is
+             * success — and it is what nimble_stopAdvertising() has always answered.
+             * This path used to disagree, which made a stop that had already happened
+             * (or never needed to) look like a driver failure. */
+            IOT_LOGW(TAG, "BLE beacon advertising already stopped");
+            return IOT_OK;
+        }
         return IOT_ERR_FAIL;
     }
     return IOT_OK;
@@ -707,6 +1236,31 @@ static void blecent_host_task(void *param)
 
 static iot_err_t nimble_init(void)
 {
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+    /* Created once, before anything can advertise, and never destroyed -- deinit/reinit
+     * (e.g. around an OTA) reuses the same mutex rather than recreating it. */
+    if (s_advRestoreApplyMutex == NULL)
+    {
+        s_advRestoreApplyMutex = xSemaphoreCreateMutexStatic(&s_advRestoreApplyMutexBuf);
+    }
+
+    /* Link-time guard: without -Wl,--wrap=bt_le_adv_stop (mesh_adv_restore.cmake) this is
+     * an undefined reference, so a board that forgot the include fails to link instead of
+     * silently shipping a hub whose advert is never restored.
+     *
+     * This has to be a `volatile` STORE done as an ordinary statement inside nimble_init()
+     * itself, not a separate (even `static`+`used`) variable: a separate variable gets its
+     * own section under -fdata-sections, and if the compiler proves nothing ever reads it
+     * (a plain `(void)x;` cast on an optimised build proves exactly that and elides the
+     * load entirely) nimble_init's own machine code never actually references it, so
+     * --gc-sections drops that unreferenced section -- taking the guard's reference to
+     * __real_bt_le_adv_stop with it. A `volatile` local forces a real store instruction,
+     * in nimble_init's own function body, that the optimiser cannot remove; nimble_init is
+     * reached through the registered driver struct, so its own code is always linked in. */
+    void *volatile wrapGuard = (void *) __real_bt_le_adv_stop;
+    (void) wrapGuard;
+#endif
+
     callbackMgmt = Mem_SafeMalloc(BLE_MGMT_EVENT_STATUS_TYPE_MAX * sizeof(ble_cb_mgmt_t), TAG, "callback mgmt");
     if (callbackMgmt == NULL)
     {
@@ -728,13 +1282,179 @@ static iot_err_t nimble_init(void)
     }
 
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    /* Register the sync callback HERE, not when an application asks for INIT_DONE.
+     * The driver needs to know the host has synced for its own sake -- until then the
+     * controller has given it no identity address and every advertise/scan fails with
+     * BLE_HS_ENOADDR. Forwarding that event on to an application callback is a separate,
+     * optional concern, handled inside internalSyncCb().
+     *
+     * Until 2026-09-15 this line lived ONLY in nimble_registerEventCallback()'s
+     * INIT_DONE case, so on any path where nothing registered that callback,
+     * ble_hs_cfg.sync_cb stayed NULL and the driver never learned the host was up. */
+    ble_hs_cfg.sync_cb = internalSyncCb;
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_ans_init();
 
-    nimble_port_freertos_init(blecent_host_task);
+    /* The host is deliberately NOT started here — see nimble_ensureHostStarted(). */
     s_nimbleInitialized = true;
     return IOT_OK;
+}
+
+/**
+ * @brief Start the NimBLE host task, once, on first use.
+ *
+ * NimBLE's documented lifecycle is: init -> register every GATT service ->
+ * START THE HOST. ble_hs_start() calls ble_gatts_start(), which registers all
+ * pending service definitions and then frees the pending list. Starting the
+ * host inside nimble_init() broke that order: services registered afterwards
+ * (ours arrive during IOT_CoreInit, well after IOT_InitPlatform) had missed the
+ * only ble_gatts_start(), so the driver had to fall back on
+ * ble_gatts_add_dynamic_svcs() and CONFIG_BT_NIMBLE_DYNAMIC_SERVICE.
+ *
+ * That fallback is what made BLE Mesh unusable on NimBLE. esp_ble_mesh_init()
+ * calls ble_gatts_start() itself, and with BLE_DYNAMIC_SERVICE enabled a second
+ * call re-mallocs ble_gatts_svc_entry_mem and re-inits ble_gatts_svc_entry_pool
+ * onto the new buffer — orphaning every entry already allocated, so ATT entries
+ * point at dead memory and ble_uuid_cmp faults on garbage (observed constant:
+ * 0x00020001). Verified on hardware: with DYNAMIC_SERVICE off,
+ * esp_ble_mesh_init() returns 0 and the device keeps advertising. That crash was
+ * recorded for a year as "mesh requires Bluedroid"; it was this instead.
+ *
+ * Deferring the host start restores the documented order, lets services register
+ * statically, and leaves a second ble_gatts_start() from mesh harmless.
+ *
+ * Every entry point that needs a running host calls this first. Registering
+ * services does not, which is exactly the point.
+ */
+
+/**
+ * @brief Block until the controller reports sync, or give up.
+ *
+ * Factored out of nimble_ensureHostStarted() so a first start and a retry of a stuck
+ * start share one wait loop rather than two copies drifting apart.
+ *
+ * Found 2026-09-15: on ESP32 classic the first advert ran ~20 ms after the host start
+ * and failed, which aborted SDK init entirely — so a factory-reset device could never be
+ * re-provisioned. The C3 happened to win the race, which is why it went unseen. Sync is
+ * typically tens of ms; the budget is deliberately far larger, because a slow sync must
+ * not be fatal.
+ *
+ * Safe to block here: the host runs on its OWN task (nimble_port_freertos_init()), so
+ * this never waits on itself.
+ */
+static iot_err_t nimble_waitForHostSync(void)
+{
+    for (uint32_t waitedMs = 0; !s_hostSynced && waitedMs < NIMBLE_SYNC_TIMEOUT_MS;
+         waitedMs += NIMBLE_SYNC_POLL_MS)
+    {
+        IOT_OsalDelay(NIMBLE_SYNC_POLL_MS);
+    }
+    if (!s_hostSynced)
+    {
+        IOT_LOGE(TAG, "BLE host did not synchronize within %u ms", (unsigned) NIMBLE_SYNC_TIMEOUT_MS);
+        return IOT_ERR_TIMEOUT;
+    }
+    return IOT_OK;
+}
+
+static iot_err_t nimble_ensureHostStarted(void)
+{
+    if (!s_nimbleInitialized)
+    {
+        IOT_LOGE(TAG, "BLE host requested before init");
+        return IOT_ERR_INVALID_STATE;
+    }
+    if (s_hostStarted)
+    {
+        if (s_hostSynced)
+        {
+            return IOT_OK;
+        }
+        /* s_hostStarted only records that a start was ATTEMPTED, not that it worked.
+         * esp_nimble_enable() (inside nimble_port_freertos_init()) does not surface
+         * xTaskCreate()'s return value, so a heap-starved first attempt can leave no
+         * host task running at all while still having set s_hostStarted — and a
+         * genuinely slow (but alive) sync also lands here. Treating "started" as
+         * "ready" without checking s_hostSynced was exactly the bug: every later
+         * IOT_BleStart() returned IOT_OK regardless, and the mesh hub reported READY
+         * over a radio that was never listening (found 2026-09-17, review of the
+         * deferred mesh radio start). Retry the wait rather than declare success. */
+        if (xTaskGetHandle("nimble_host") == NULL)
+        {
+            /* The host task itself was never created — the earlier start could not
+             * have succeeded no matter how long we wait. Clear the flag so this call
+             * falls through to a real nimble_port_freertos_init() retry below instead
+             * of polling for a sync that will never come. */
+            IOT_LOGW(TAG, "BLE host task missing after a previous start — retrying");
+            s_hostStarted = false;
+        }
+        else
+        {
+            return nimble_waitForHostSync();
+        }
+    }
+
+    nimble_port_freertos_init(blecent_host_task);
+    s_hostStarted = true;
+
+    /* esp_nimble_enable() (inside nimble_port_freertos_init()) does not surface
+     * xTaskCreate()'s return value, so a heap-starved boot can silently leave no host
+     * task running at all. Checking right here -- instead of only after
+     * NIMBLE_SYNC_TIMEOUT_MS of polling for a sync that can never arrive -- is what
+     * turns that into a fast, diagnosable failure.
+     *
+     * Measured on hardware: the mesh hub
+     * started the host from the core work task at the cloud's worst heap moment
+     * (subscriptions still confirming), the task was never created, and the caller
+     * still blocked the core work task for the full 3022 ms sync wait before giving
+     * up -- every queued cloud message queued behind it. Failing immediately here
+     * means a caller on that task is blocked only for as long as the failed
+     * xTaskCreate() itself took, not the sync timeout on top of it. */
+    if (xTaskGetHandle("nimble_host") == NULL)
+    {
+        IOT_LOGE(TAG, "BLE host task could not be created (free heap %u, largest free block %u) "
+                      "-- not waiting for a sync that can never arrive",
+                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        s_hostStarted = false;
+        return IOT_ERR_NO_MEM;
+    }
+
+    IOT_LOGI(TAG, "NimBLE host started (services registered first)");
+
+    /* Wait for the controller to sync before returning. Callers treat this function as
+     * "the host is ready"; without the wait they advertise into BLE_HS_ENOADDR. */
+    return nimble_waitForHostSync();
+}
+
+/**
+ * @brief IOT_BleStart() — explicit host activation. See IOT_BleMgmt.h.
+ *
+ * The same work nimble_ensureHostStarted() does, under a name that says so.
+ * Idempotent.
+ */
+static iot_err_t nimble_start(void)
+{
+    return nimble_ensureHostStarted();
+}
+
+/**
+ * @brief Fallback for callers that advertise or scan without calling IOT_BleStart().
+ *
+ * Starts the host anyway so older integrations keep working, but says so: a
+ * lifecycle transition happening inside startAdvertising()/startScan() is exactly
+ * the kind of hidden side effect that makes a host failure look like an
+ * advertising failure.
+ */
+static iot_err_t nimble_ensureHostStartedImplicit(const char *caller)
+{
+    if (!s_hostStarted && s_nimbleInitialized)
+    {
+        IOT_LOGW(TAG, "%s started the BLE host implicitly — call IOT_BleStart() after "
+                      "IOT_BleAddServices() instead", caller);
+    }
+    return nimble_ensureHostStarted();
 }
 
 /* Deep-frees the nested characteristic/descriptor UUID allocations owned by our
@@ -820,6 +1540,21 @@ static void freePersistentServiceArray(struct ble_gatt_svc_def *services_local, 
 static iot_err_t nimble_deinit(void)
 {
     s_nimbleInitialized = false;
+    s_hostStarted = false;
+    s_hostSynced = false;
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+    /* A stack brought back up is a new session with nothing on air -- a record that
+     * survived here would make the wrapper try to restore an advert whose payload,
+     * connection state and even instance id may no longer mean anything. Mirrors the
+     * IOT_BleExtAdvForgetAll() call below for the extended-advertising latches. */
+    if (s_advRestoreApplyMutex != NULL && xSemaphoreTake(s_advRestoreApplyMutex, portMAX_DELAY) == pdTRUE)
+    {
+        portENTER_CRITICAL(&s_advRestoreLock);
+        memset(&s_advRestore, 0, sizeof(s_advRestore));
+        portEXIT_CRITICAL(&s_advRestoreLock);
+        xSemaphoreGive(s_advRestoreApplyMutex);
+    }
+#endif
     nimble_port_stop();
     esp_err_t err = nimble_port_deinit();
     iot_err_t ret = IOT_OK;
@@ -838,6 +1573,10 @@ static iot_err_t nimble_deinit(void)
     SAFE_FREE(callbackMgmt);
     freeGattSvcAccessDiff();
     SAFE_FREE(gatt_svc_access_diff);
+    /* The advertising sets went with the host. A stack brought back up is a new
+     * session with nothing configured on it, so a latch that survived here would make
+     * the driver skip ble_gap_ext_adv_configure() and advertise nothing at all. */
+    IOT_BleExtAdvForgetAll();
     numberOfGattServices = 0;
     currConnectionHandle = 0;
     isBleConnected = false;
@@ -1102,9 +1841,13 @@ static iot_err_t nimble_addServices(const IOT_BleMgmtGattServ_t *service)
        Now call NimBLE to register only these new services. */
     numberOfGattServices = (uint8_t) total_count;
 
+    /* No ble_svc_gatt_init()/ble_svc_ans_init() here: nimble_init() already did both,
+     * and a second call is now fatal. They are sysinit functions — ble_svc_gatt_init()
+     * opens with SYSINIT_ASSERT_ACTIVE(), which panics once the host is running. That
+     * became reachable when BLE Mesh started the host during its own init: the next
+     * IOT_BleAddServices() (the change-WiFi recovery advert bringing up its GATT
+     * service) landed here with the host already up and paniced the device. */
     int rc;
-    ble_svc_gatt_init();
-    ble_svc_ans_init();
 
     rc = ble_gatts_count_cfg(services_local);
     if (rc != 0)
@@ -1113,7 +1856,12 @@ static iot_err_t nimble_addServices(const IOT_BleMgmtGattServ_t *service)
         goto fail_cleanup;
     }
 
-    rc = ble_gatts_add_dynamic_svcs(services_local);
+    /* Static registration, NOT ble_gatts_add_dynamic_svcs(). These go on the
+     * pending list and are registered by the next ble_gatts_start(), which
+     * nimble_ensureHostStarted() triggers once every service is in. That keeps
+     * CONFIG_BT_NIMBLE_DYNAMIC_SERVICE off, which is what makes BLE Mesh
+     * survivable — see the comment on nimble_ensureHostStarted(). */
+    rc = ble_gatts_add_svcs(services_local);
     if (rc != 0)
     {
         rc = IOT_ERR_FAIL;
@@ -1236,6 +1984,10 @@ static iot_err_t nimble_stopScan(void)
 
 static iot_err_t nimble_startAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
 {
+    iot_err_t hostErr = nimble_ensureHostStartedImplicit("startAdvertising");
+    if (hostErr != IOT_OK)
+        return hostErr;
+
     if (!s_nimbleInitialized)
     {
         IOT_LOGE(TAG, "startAdvertising called while NimBLE is deinitialized — refusing");
@@ -1285,69 +2037,48 @@ static iot_err_t nimble_startAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
         fields.mfg_data_len = adv_requirements->manufactureDataLen + 2;
     }
 
-    int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0)
-    {
-        IOT_LOGE(TAG, "Failed to set advertising fields: %d", rc);
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
-
     /* The advert packet is full (21-26 of 31 bytes), so the device name goes in the
-     * scan response instead. BLE_GAP_CONN_MODE_UND advertising is scannable. */
+     * scan response instead. A connectable undirected advert is scannable. */
+    struct ble_hs_adv_fields rsp_fields;
+    struct ble_hs_adv_fields *rsp = NULL;
     if (adv_requirements->name != NULL && adv_requirements->nameLen > 0)
     {
-        struct ble_hs_adv_fields rsp_fields;
         memset(&rsp_fields, 0, sizeof(rsp_fields));
         rsp_fields.name             = (const uint8_t *) adv_requirements->name;
         rsp_fields.name_len         = adv_requirements->nameLen;
         rsp_fields.name_is_complete = 1;
+        rsp                         = &rsp_fields;
 
         IOT_LOGI(TAG, "Adv scan-response name: %.*s", adv_requirements->nameLen, adv_requirements->name);
-
-        rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
-        if (rc != 0)
-        {
-            IOT_LOGE(TAG, "Failed to set scan response fields: %d", rc);
-            SAFE_FREE(uuid16);
-            SAFE_FREE(mfg);
-            return IOT_ERR_FAIL;
-        }
     }
 
-    struct ble_gap_adv_params adv_params;
-    memset(&adv_params, 0, sizeof(adv_params));
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    int rc = iotAdvStart(IOT_BLE_ADV_INST_CONN, true /* connectable */, &fields, rsp);
 
-    uint8_t own_addr_type;
-    rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc != 0)
-    {
-        IOT_LOGE(TAG, "Failed to infer address type: %d", rc);
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
+    /* iotAdvStart() serialises the payload, so the source buffers are dead either way. */
+    SAFE_FREE(uuid16);
+    SAFE_FREE(mfg);
 
-    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, internalGapCb, NULL);
-    if (rc != 0)
-    {
-        SAFE_FREE(uuid16);
-        SAFE_FREE(mfg);
-        return IOT_ERR_FAIL;
-    }
-
-    /* Note: uuid16 and mfg must remain valid while advertising is active.
-     * They will be freed when advertising stops or new fields are set. */
-    return IOT_OK;
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+    if (rc == ADV_RC_SLOT_TAKEN)
+        return IOT_ERR_INVALID_STATE;
+#endif
+    return (rc == 0) ? IOT_OK : IOT_ERR_FAIL;
 }
 static iot_err_t nimble_stopAdvertising(void)
 {
-    int rc = ble_gap_adv_stop();
+    int rc = iotAdvStop(IOT_BLE_ADV_INST_CONN);
     if (rc != 0)
     {
+#if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
+        if (rc == ADV_RC_NOT_ON_RECORD)
+        {
+            /* Routine under time-sharing: the beacon holds the one slot, not the
+             * connectable advert. Still the requested end state, so it is success -- just
+             * not worth a WARN every time it happens. */
+            IOT_LOGD(TAG, "BLE advertising already stopped (not the one time-shared with mesh)");
+            return IOT_OK;
+        }
+#endif
         if (rc == BLE_HS_EALREADY)
         {
             IOT_LOGW(TAG, "BLE advertising already stopped");
@@ -1387,15 +2118,9 @@ static iot_err_t nimble_notifyToCharacteristic(const char *addr, const uint8_t *
         return IOT_ERR_INVALID_ARG;
     }
 
-    struct ble_hs_adv_fields fields;
-    memset(&fields, 0, sizeof(fields));
-    int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0)
-    {
-        IOT_LOGE(TAG, "Failed to set advertising fields: %d", rc);
-        return IOT_ERR_FAIL;
-    }
-
+    /* This used to clear the advertising payload before every notification — a
+     * leftover that had nothing to do with notifying, and that would wipe the
+     * provisioning advert of a device the app is still talking to. */
     uint16_t char_handle = 0;
     iot_err_t res = searchAttrhandleByUuid(charUuid, &char_handle);
     if (res != IOT_OK)
@@ -1411,7 +2136,7 @@ static iot_err_t nimble_notifyToCharacteristic(const char *addr, const uint8_t *
         return IOT_ERR_NO_MEM;
     }
 
-    rc = ble_gattc_notify_custom(currConnectionHandle, char_handle, om);
+    int rc = ble_gattc_notify_custom(currConnectionHandle, char_handle, om);
     if (rc != 0)
     {
         IOT_LOGE(TAG, "Failed to send notification: %d", rc);
@@ -1421,6 +2146,7 @@ static iot_err_t nimble_notifyToCharacteristic(const char *addr, const uint8_t *
 }
 static void internalSyncCb(void)
 {
+    s_hostSynced = true;
     IOT_LOGI(TAG, "BLE host synchronized");
     if (callbackMgmt[BLE_MGMT_EVENT_STATUS_TYPE_INIT_DONE].isRegistered)
     {
@@ -1476,7 +2202,8 @@ static iot_err_t nimble_registerEventCallback(IOT_BleMgmtEventStatusType_t event
     switch (event)
     {
     case BLE_MGMT_EVENT_STATUS_TYPE_INIT_DONE:
-        ble_hs_cfg.sync_cb = internalSyncCb;
+        /* ble_hs_cfg.sync_cb is wired in nimble_init() -- the driver needs it whether or
+         * not anyone registers here. This only records who to forward the event to. */
         callbackMgmt[event].cb = cb;
         callbackMgmt[event].isRegistered = true;
         callbackMgmt[event].arg = arg;
@@ -1538,6 +2265,7 @@ static const IOT_BleDriver_t s_nimbleDriver = {
     .init                    = nimble_init,
     .deinit                  = nimble_deinit,
     .addServices             = nimble_addServices,
+    .start                   = nimble_start,
     .startAdvertising        = nimble_startAdvertising,
     .stopAdvertising         = nimble_stopAdvertising,
     .startBeaconAdvertising  = nimble_startBeaconAdvertising,

@@ -25,14 +25,14 @@ void* Mem_SafeMalloc(size_t size, const char* tag, const char* desc)
     }
 
     if (size > COMMON_MAX_ALLOC_SIZE) {
-        COMMON_LOGE(logTag, "Allocation size %zu exceeds maximum %d for %s",
-                    size, COMMON_MAX_ALLOC_SIZE, logDesc);
+        COMMON_LOGE(logTag, "Allocation size %lu exceeds maximum %d for %s",
+                    (unsigned long)size, COMMON_MAX_ALLOC_SIZE, logDesc);
         return NULL;
     }
 
     void* ptr = malloc(size);
     if (ptr == NULL) {
-        COMMON_LOGE(logTag, "Failed to allocate %zu bytes for %s", size, logDesc);
+        COMMON_LOGE(logTag, "Failed to allocate %lu bytes for %s", (unsigned long)size, logDesc);
     }
 
     return ptr;
@@ -51,20 +51,20 @@ void* Mem_SafeCalloc(size_t count, size_t size, const char* tag, const char* des
     // Check for multiplication overflow
     size_t totalSize = count * size;
     if (totalSize / count != size) {
-        COMMON_LOGE(logTag, "Allocation overflow for %s (count=%zu, size=%zu)",
-                    logDesc, count, size);
+        COMMON_LOGE(logTag, "Allocation overflow for %s (count=%lu, size=%lu)",
+                    logDesc, (unsigned long)count, (unsigned long)size);
         return NULL;
     }
 
     if (totalSize > COMMON_MAX_ALLOC_SIZE) {
-        COMMON_LOGE(logTag, "Allocation size %zu exceeds maximum %d for %s",
-                    totalSize, COMMON_MAX_ALLOC_SIZE, logDesc);
+        COMMON_LOGE(logTag, "Allocation size %lu exceeds maximum %d for %s",
+                    (unsigned long)totalSize, COMMON_MAX_ALLOC_SIZE, logDesc);
         return NULL;
     }
 
     void* ptr = calloc(count, size);
     if (ptr == NULL) {
-        COMMON_LOGE(logTag, "Failed to allocate %zu bytes for %s", totalSize, logDesc);
+        COMMON_LOGE(logTag, "Failed to allocate %lu bytes for %s", (unsigned long)totalSize, logDesc);
     }
 
     return ptr;
@@ -82,14 +82,14 @@ void* Mem_SafeRealloc(void* ptr, size_t size, const char* tag, const char* desc)
     }
 
     if (size > COMMON_MAX_ALLOC_SIZE) {
-        COMMON_LOGE(logTag, "Realloc size %zu exceeds maximum %d for %s",
-                    size, COMMON_MAX_ALLOC_SIZE, logDesc);
+        COMMON_LOGE(logTag, "Realloc size %lu exceeds maximum %d for %s",
+                    (unsigned long)size, COMMON_MAX_ALLOC_SIZE, logDesc);
         return NULL;
     }
 
     void* newPtr = realloc(ptr, size);
     if (newPtr == NULL) {
-        COMMON_LOGE(logTag, "Failed to reallocate to %zu bytes for %s", size, logDesc);
+        COMMON_LOGE(logTag, "Failed to reallocate to %lu bytes for %s", (unsigned long)size, logDesc);
         // Note: original ptr is NOT freed on failure - caller must handle
     }
 
@@ -112,14 +112,14 @@ char* Mem_SafeStrdup(const char* src, const char* tag, const char* desc)
 
     size_t len = strlen(src);
     if (len > COMMON_MAX_STRING_LEN) {
-        COMMON_LOGE(logTag, "String length %zu exceeds maximum %d for %s",
-                    len, COMMON_MAX_STRING_LEN, logDesc);
+        COMMON_LOGE(logTag, "String length %lu exceeds maximum %d for %s",
+                    (unsigned long)len, COMMON_MAX_STRING_LEN, logDesc);
         return NULL;
     }
 
     char* dup = (char*)malloc(len + 1);
     if (dup == NULL) {
-        COMMON_LOGE(logTag, "Failed to duplicate string of length %zu for %s", len, logDesc);
+        COMMON_LOGE(logTag, "Failed to duplicate string of length %lu for %s", (unsigned long)len, logDesc);
         return NULL;
     }
 
@@ -145,7 +145,7 @@ char* Mem_SafeStrndup(const char* src, size_t maxLen, const char* tag, const cha
 
     char* dup = (char*)malloc(len + 1);
     if (dup == NULL) {
-        COMMON_LOGE(logTag, "Failed to duplicate string of length %zu for %s", len, logDesc);
+        COMMON_LOGE(logTag, "Failed to duplicate string of length %lu for %s", (unsigned long)len, logDesc);
         return NULL;
     }
 

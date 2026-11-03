@@ -3,7 +3,11 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include "IOT_ErrorManager.h"
-#include "IOT_ProvisionTypes.h"
+#include "IOT_CoreEventHandler.h"
+/* OTA moved to its own header on 2026-10-06; included here so IOT_Core.h callers keep
+ * compiling unchanged. Prefer including IOT_CoreOta.h directly in new code. It sits with the
+ * other includes, above the C-linkage block, rather than mid-file where it used to be. */
+#include "IOT_CoreOta.h"
 #include <stdbool.h>
 
 /**
@@ -50,17 +54,37 @@
  *
  * On a storage-bootstrap or network-start failure (the OTA path's not-provisioned
  * case included), core is left partially initialised: the work queue/task and
- * encryption are already up, and `s_coreInitialized` is already true, so a
+ * encryption are already up, and core already counts as initialised, so a
  * subsequent call to IOT_CoreInit() will itself fail with IOT_ERR_INVALID_STATE
  * instead of retrying from a clean state. A caller that wants to retry after such
  * a failure must reboot the device or call IOT_CoreDeinit() first. This does NOT
  * apply to a failure in the earlier work-queue or crypto-init steps: those return
- * before `s_coreInitialized` is set, leaving core in a clean, uninitialised state
+ * before core counts as initialised, leaving core in a clean, uninitialised state
  * that a retry can start from directly.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 iot_err_t IOT_CoreInit(const char *modelId);
 
 iot_err_t IOT_CoreDeinit(void);
+
+/**
+ * @brief Provisioning mode selection.
+ *
+ * Controls how the device enters provisioning when not yet provisioned.
+ * Default is IOT_PROVISION_BLE_LAN (BLE config + LAN discovery).
+ * Call IOT_CoreSetProvisionMode() before IOT_CoreStartProvision() to override.
+ *
+ * Lived in IOT_ProvisionTypes.h until 2026-10-14; that header now forwards here.
+ */
+typedef enum
+{
+    IOT_PROVISION_BLE_LAN = 0, ///< BLE config + LAN discovery (default)
+    IOT_PROVISION_LAN_ONLY,    ///< LAN config only, no BLE (not yet implemented)
+    IOT_PROVISION_AP_MODE,     ///< Device as WiFi AP (not yet implemented)
+} IOT_ProvisionMode_t;
 
 /**
  * @brief Set the provisioning mode.
@@ -110,17 +134,6 @@ iot_err_t IOT_CoreGetTimeZone(char *outTimeZone, size_t outSize);
 iot_err_t IOT_CoreFactoryReset(void);
 
 /**
- * @brief Load mesh credentials from config DAO and join the mesh network.
- *
- * Loads network key and app key from config DAO, decrypts them, builds
- * the root device key (from devId + EID), and calls IOT_MeshJoinNetwork().
- *
- * Called by SDK during init if device is already provisioned, or internally
- * by the MESH handler after the last app key is received from cloud.
- *
- * @return IOT_OK on success, IOT_ERR_DATA_NOT_FOUND if keys not yet stored
- */
-/**
  * @brief Run @p handler on the core service task.
  *
  * Driver callbacks — a BLE-mesh or Zigbee stack task, a timer — run on stacks too
@@ -134,6 +147,44 @@ iot_err_t IOT_CoreFactoryReset(void);
  *         free it rather than leak it.
  */
 iot_err_t IOT_CoreDeferWork(void (*handler)(void *), void *arg);
+
+/**
+ * @brief Counters for the core work queue behind IOT_CoreDeferWork().
+ *
+ * Every inbound BLE/LAN/MQTT message and every deferred job runs on one core task,
+ * fed by a fixed-size queue that drops work when full. These counters show whether
+ * that is happening and why: how deep bursts go, how long each item takes, and
+ * which handler was slowest.
+ *
+ * Reading them costs nothing on the device; log them next to your heap numbers
+ * when diagnosing dropped commands.
+ */
+typedef struct
+{
+    uint32_t enqueued;                    /**< items accepted since boot */
+    uint32_t dropped;                     /**< items rejected because the queue was full, since boot */
+    uint32_t handled;                     /**< items that finished running */
+    uint32_t totalHandlerMs;              /**< summed run time; divide by `handled` for the average */
+    uint32_t maxHandlerMs;                /**< longest single item */
+    void (*slowestHandler)(void *);       /**< the handler behind `maxHandlerMs` (resolve with addr2line) */
+    uint16_t queueLen;                    /**< queue capacity */
+    uint16_t pending;                     /**< items queued plus the one running, right now */
+    uint16_t peakPending;                 /**< highest `pending` seen since boot */
+    uint16_t burstDrops;                  /**< drops since the queue was last empty */
+    uint32_t publishCount;                /**< MQTT publishes since boot, from any task */
+    uint32_t publishTotalMs;              /**< summed publish time: lock wait plus TLS write */
+    uint32_t publishMaxMs;                /**< longest single publish */
+} IOT_CoreWorkStats_t;
+
+/**
+ * @brief Snapshot the core work queue counters.
+ *
+ * Safe to call from any task.
+ *
+ * @return IOT_ERR_INVALID_ARG if @p out is NULL, IOT_ERR_INVALID_STATE before
+ *         IOT_CoreInit() has created the queue.
+ */
+iot_err_t IOT_CoreGetWorkStats(IOT_CoreWorkStats_t *out);
 
 /**
  * @brief Root device mesh unicast address, as assigned at provisioning.
@@ -190,9 +241,7 @@ iot_err_t IOT_CoreGetRootEid(uint16_t *eid);
  * @brief Check whether the cloud channel is genuinely usable right now.
  *
  * "Connected" here means the MQTT session is up AND every standard topic
- * subscription has been confirmed — the same bar
- * IOT_LAN_EVENT_MQTT_ALL_SUBSCRIBED already gates elsewhere, not the earlier,
- * weaker "TCP session open" moment. Anything published before this point (a
+ * subscription has been confirmed — not the earlier, weaker "TCP session open" moment. Anything published before this point (a
  * status NOTIFY, for example) has no subscriber yet and is silently lost.
  *
  * Non-blocking; reflects a flag maintained by the MQTT event callbacks, so it
@@ -205,16 +254,56 @@ iot_err_t IOT_CoreGetRootEid(uint16_t *eid);
 bool IOT_CoreIsCloudConnected(void);
 
 /**
- * @brief Start BLE advertisement in "change WiFi" mode (provisioned device only).
+ * @brief Set the device's WiFi credentials and (re)connect.
  *
- * Advertises with WILEDIRECT PROV UUID (00007269) and the device's own obfuscated
- * deviceId in manufacturer data, so a paired app can reconnect and update WiFi
- * credentials via SETTING_WIFI_SCAN / SETTING_WIFI_SSID_PWD without a factory reset.
+ * Routes through the change-WiFi service, which tears the cloud session down before
+ * switching networks rather than leaving it to fail — so this is safe to call on a
+ * device that is currently online.
  *
- * Only valid when the device is provisioned.
+ * Intended for callers outside the protocol path, such as a service console. The
+ * protocol path reaches the same service directly from the app's set-credentials command and does
+ * not use this. No message-layer acknowledgement is sent, because there is no
+ * originating message to acknowledge.
  *
- * @return IOT_OK on success, IOT_ERR_INVALID_STATE if not provisioned or core not init
+ * @param ssid  network name, NUL-terminated
+ * @param pwd   passphrase, NUL-terminated
+ * @return IOT_OK if the change was accepted; the connection result arrives later as a
+ *         device event, not as this return value.
  */
+iot_err_t IOT_CoreSetWifiCredentials(const char *ssid, const char *pwd);
+
+/**
+ * @brief Connect the cloud (MQTT) session using stored configuration.
+ *
+ * Pairs with IOT_CoreIsCloudConnected(), which reports when the session is up AND every
+ * topic subscription is confirmed. This returns as soon as the attempt is started.
+ *
+ * @return IOT_OK if the attempt was started, IOT_ERR_FAIL if there is no MQTT client.
+ */
+iot_err_t IOT_CoreCloudConnect(void);
+
+/**
+ * @brief Disconnect the cloud (MQTT) session, leaving the client allocated.
+ *
+ * Disconnecting when nothing is connected is a harmless no-op.
+ *
+ * @return IOT_OK on success.
+ */
+iot_err_t IOT_CoreCloudDisconnect(void);
+
+
+/**
+ * @brief Raise a core event to whatever handlers are registered for its category.
+ *
+ * The supported way for SDK-side services to emit events that application handlers see,
+ * without reaching into core's internal dispatch. `IOT_CoreEvent_t` is declared in
+ * IOT_CoreEventHandler.h.
+ *
+ * @param event  the event to dispatch; must not be NULL
+ * @return IOT_OK if the event was accepted for dispatch.
+ */
+iot_err_t IOT_CoreDispatchEvent(const IOT_CoreEvent_t *event);
+
 /**
  * @brief Connect WiFi using the credentials already in storage.
  *
@@ -231,6 +320,17 @@ bool IOT_CoreIsCloudConnected(void);
  */
 iot_err_t IOT_CoreConnectStoredWifi(void);
 
+/**
+ * @brief Start BLE advertisement in "change WiFi" mode (provisioned device only).
+ *
+ * Advertises the provisioning service with the device's own obfuscated deviceId in
+ * manufacturer data, so a paired app can reconnect, scan, and send new WiFi
+ * credentials without a factory reset.
+ *
+ * Only valid when the device is provisioned.
+ *
+ * @return IOT_OK on success, IOT_ERR_INVALID_STATE if not provisioned or core not init
+ */
 iot_err_t IOT_CoreStartChangeWifiBle(void);
 
 /**
@@ -252,14 +352,33 @@ iot_err_t IOT_CoreStopChangeWifiBle(void);
  */
 typedef struct {
     bool     bleFallbackEnabled;  /**< Auto-start BLE when WiFi is down. Default: true  */
-    uint32_t bleFallbackDelayMs;  /**< ms to wait after WiFi drop before BLE. Default: 30000 */
+    /** Extra delay before the fallback advert starts, once an outage is confirmed.
+     *
+     * NOT the debounce. Transient drops are filtered by counting consecutive failed
+     * reconnect attempts (the platform re-fires its disconnect event on every one),
+     * so by the time this delay is applied the AP is already known to be gone.
+     * Leave at the default unless you want the advert held back further.
+     *
+     * Default: 0 */
+    uint32_t bleFallbackDelayMs;
 } IOT_CoreChangeWifiConfig_t;
+
+/**
+ * @brief The defaults that apply when IOT_CoreConfigureChangeWifi() is never called.
+ *
+ * Defined here, beside the documentation that describes it, and used as the
+ * initializer inside core — one definition, so the documented default and the
+ * shipped default cannot drift apart. They had: the header said 30000 while the
+ * initializer said 0, for as long as both existed.
+ */
+#define IOT_CORE_CHANGE_WIFI_CONFIG_DEFAULT \
+    { .bleFallbackEnabled = true, .bleFallbackDelayMs = 0u }
 
 /**
  * @brief Configure the change-WiFi service (optional).
  *
  * Must be called before IOT_CoreInit(). If not called, defaults apply
- * (BLE fallback enabled, 30 s delay).
+ * (BLE fallback enabled, no extra delay once an outage is confirmed).
  *
  * @param config Pointer to config struct. Must not be NULL.
  * @return IOT_OK, IOT_ERR_INVALID_ARG if config is NULL,
@@ -288,167 +407,6 @@ iot_err_t IOT_CoreSetBootCounter(uint8_t count);
  * @return IOT_OK if queued successfully
  */
 iot_err_t IOT_CoreSetBootCounterAsync(uint8_t count);
-
-/* ============================================================================
- *  OTA — the SDK owns the download, iotcore owns the protocol
- * ==========================================================================*/
-
-/**
- * @brief An OTA request iotcore has accepted and is holding for the SDK.
- *
- * Retrieved with IOT_CoreOtaGetPending(), which is the way to act on a request
- * AFTER the dispatch that announced it — typically on the next boot, when the
- * SDK has deliberately rebooted into a stripped-down mode to free contiguous
- * heap for the TLS download. Release with IOT_CoreOtaFreePending().
- *
- * `cert` is re-read from storage on every call, so the SDK never has to persist
- * it (and could not: it lives in an internal config namespace).
- */
-typedef struct
-{
-    char *url;             /**< Full URL including scheme. */
-    char *authToken;       /**< Bearer token, or NULL. May have expired if the
-                                request sat across a long reboot — a 401 should be
-                                reported as a failure so the cloud reissues. */
-    uint16_t authTokenLen;
-    char *cert;            /**< CA cert PEM, or NULL when none is provisioned. */
-    uint16_t certLen;
-    char targetVersion[32];/**< Empty until the download reaches the writing stage. */
-    uint8_t autoUpdate;
-} IOT_CoreOtaRequest_t;
-
-/**
- * @brief True only while a download is still owed — never merely "core has an
- *        OTA record to report".
- *
- * Reads only the pending record — not the encrypted URL — so it is safe to call
- * before IOT_EncryptInit(), i.e. before core has been initialised. Use it to
- * decide whether this boot is an OTA boot before committing to a boot mode.
- *
- * Bootstraps the config DAO itself if it is not already up (the bootstrap call
- * is idempotent, so this is safe to call unconditionally, every time). This
- * makes the predicate self-sufficient: a caller does not need to know or
- * replicate core's own init order just to ask this question before it runs.
- *
- * True only for IOT_OTA_PENDING_HANDED_OFF. APPLIED (a successful download,
- * verified on the very next boot — the one running the new image), FAILED and
- * DECLINED (both awaiting only a status report on a normal boot with
- * connectivity) all return false: none of them means this boot exists to
- * download.
- */
-bool IOT_CoreOtaIsPending(void);
-
-/**
- * @brief Fetch the OTA request iotcore is holding.
- * @param out Filled on success. Free with IOT_CoreOtaFreePending().
- * @return IOT_OK, IOT_ERR_NOT_FOUND when no request is pending,
- *         IOT_ERR_INVALID_ARG when out is NULL.
- */
-iot_err_t IOT_CoreOtaGetPending(IOT_CoreOtaRequest_t *out);
-
-/**
- * @brief Release the buffers in a request returned by IOT_CoreOtaGetPending().
- */
-void IOT_CoreOtaFreePending(IOT_CoreOtaRequest_t *req);
-
-/**
- * @brief Decline the pending OTA and drop it.
- *
- * Also tells the cloud the device will not update, so the request is answered
- * rather than left hanging. Call this when the SDK decides not to update at all; do
- * NOT call it merely to defer, or the request is lost.
- *
- * When the request is actually dropped, this also resets the SDK's OTA-boot
- * attempt counter (the retry budget your SDK enforces across reboots) — the
- * counter belongs to the transaction this call just closed,
- * and must not carry into whatever OTA request comes next. If the decline
- * notice cannot be sent (no connectivity), the request is deferred rather
- * than dropped — the record and the counter are BOTH left in place, to be
- * retried together on a later boot with connectivity.
- *
- * @return IOT_OK when the request was genuinely resolved -- either dropped
- *         (both keys erased) or deferred (rewritten IOT_OTA_PENDING_DECLINED
- *         and persisted); IOT_ERR_NOT_FOUND when nothing was pending; otherwise
- *         the underlying erase or persist failure, propagated. On anything
- *         other than IOT_OK the on-flash record is UNCHANGED -- still
- *         IOT_OTA_PENDING_HANDED_OFF with its counter untouched. A caller that
- *         means to reboot afterward MUST check this for IOT_OK specifically: an
- *         SDK's give-up path calls this and must not reboot on anything else, or
- *         it repeats the same give-up forever on a record that never actually
- *         changed.
- */
-iot_err_t IOT_CoreOtaClearPending(void);
-
-/**
- * @brief Discard the pending OTA record and its attempt counter, without ever
- *        trying to notify the cloud.
- *
- * This is NOT a quieter IOT_CoreOtaClearPending(): that one always tries to
- * answer the cloud first and, if the send fails, DEFERS instead of erasing —
- * it rewrites the record IOT_OTA_PENDING_DECLINED and keeps both the record
- * and the counter for a retry on a later boot with connectivity.
- * IOT_CoreOtaDiscardPending() never attempts a send at all, so it always
- * erases both keys unconditionally, whether or not the network is up.
- *
- * Call this ONLY when a notify attempt is known to be pointless — e.g. when
- * core's own init failed early enough that the network can never be up on
- * this boot. Using IOT_CoreOtaClearPending() there would always fail its send
- * and leave the record deferred rather than gone, re-entering the same
- * failure on every subsequent boot.
- *
- * @return IOT_OK only if the record existed AND both underlying erases
- *         (the record and the attempt counter) reported success;
- *         IOT_ERR_NOT_FOUND when nothing was pending; otherwise the first
- *         erase failure, propagated. A caller that means to reboot afterward
- *         MUST check this for IOT_OK specifically -- on anything else the
- *         record may still be HANDED_OFF with its counter untouched, and
- *         rebooting anyway re-enters whatever put it there. IOT_CoreInit()'s
- *         own OTA path does exactly this check before its own reboot.
- */
-iot_err_t IOT_CoreOtaDiscardPending(void);
-
-/**
- * @brief Lean-boot attempts already spent on the current pending OTA request.
- *
- * Core only stores this counter — it persists it and hands back what is
- * stored. The retry BUDGET it is compared against is a caller policy core has
- * no opinion on — your SDK owns it.
- *
- * @return 0 when no counter is stored yet (a fresh transaction), else the
- *         stored count.
- */
-uint8_t IOT_CoreOtaGetAttempts(void);
-
-/**
- * @brief Increment and persist the lean-boot attempt counter.
- *
- * Call this before starting a download attempt, not after: a crash mid-
- * download must still leave the count advanced, or a device that dies on
- * every attempt would re-enter OTA mode forever instead of ever hitting the
- * caller's give-up budget.
- *
- * @return IOT_OK, or an error if the counter could not be persisted.
- */
-iot_err_t IOT_CoreOtaRecordAttempt(void);
-
-/**
- * @brief Progress callback that emits every OTA protocol message for you.
- *
- * Hand this straight to the platform downloader and the SDK has no message
- * bookkeeping at all — iotcore maps each platform status to the right
- * notification, records the target version, marks the request applied so the
- * next boot verifies it, and drops the request on failure:
- *
- *     IOT_AppManagerStartUpdateProcess(req.url, req.cert, req.certLen,
- *                                      req.authToken, req.authTokenLen,
- *                                      NULL, IOT_CoreOtaPlatformProgressCb);
- *
- * Sending is best-effort: with MQTT down (an OTA-only boot, say) the durable
- * state is still updated and the outcome is reported after the next boot.
- * There is no "success" call — success is proven by the running version after
- * the reboot, not claimed by the downloader.
- */
-void IOT_CoreOtaPlatformProgressCb(uint8_t status, uint8_t progress, void *user_data);
 
 /**
  * @brief Pause/resume the change-WiFi BLE fallback around a download.
@@ -507,3 +465,6 @@ typedef void (*IOT_CoreConfigDumpCb_t)(const char *name, const void *data, uint1
  * @return IOT_OK, or IOT_ERR_INVALID_ARG when @p cb is NULL.
  */
 iot_err_t IOT_CoreConfigDumpSafe(IOT_CoreConfigDumpCb_t cb, void *user);
+#ifdef __cplusplus
+}
+#endif

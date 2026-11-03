@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <IOT_ErrorManager.h>
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct {
     char *name;
     char *type;
@@ -25,9 +29,15 @@ typedef void (*mdns_event_callback_t)(void *arg, mdns_event_status_type_t eventT
 iot_err_t IOT_MdnsStartService(const char *hostname, const char *domain);
 iot_err_t IOT_MdnsStopService(void);
 iot_err_t IOT_MdnsAddAdvertisement(char *serviceName, char *serviceType, uint16_t port);
-iot_err_t IOT_MdnsRemoveAdvertisement(const char *serviceName);
+/* Remove one advertised service by its TYPE (e.g. "_wiledirectcfg"), not by its
+ * instance name. ESP32 removes exactly that type; the Linux backend currently
+ * clears all advertisements. */
+iot_err_t IOT_MdnsRemoveAdvertisement(const char *serviceType);
 iot_err_t IOT_MdnsRemoveAllAdvertisements(void);
 iot_err_t IOT_MdnsStartDiscovery(char *serviceType);
 iot_err_t IOT_MdnsStopDiscovery(void);
 iot_err_t IOT_MdnsRegisterEventCallback(mdns_event_status_type_t eventType, mdns_event_callback_t cb, void *arg);
 iot_err_t IOT_MdnsUnregisterEventCallback(mdns_event_status_type_t eventType);
+#ifdef __cplusplus
+}
+#endif

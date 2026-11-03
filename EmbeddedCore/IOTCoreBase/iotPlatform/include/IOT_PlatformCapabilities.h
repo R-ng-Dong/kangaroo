@@ -37,6 +37,10 @@
  *            slow to answer). Answer the cloud, but log it.
  * UP       — present and responding.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef enum
 {
     IOT_SERVICE_DOWN     = 0,
@@ -61,3 +65,6 @@ typedef enum
  * @return IOT_SERVICE_UP, IOT_SERVICE_DEGRADED, or IOT_SERVICE_DOWN.
  */
 IOT_ServiceHealth_t IOT_PlatformGetServiceHealth(IOT_PlatformService_t service);
+#ifdef __cplusplus
+}
+#endif

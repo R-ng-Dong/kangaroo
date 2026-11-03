@@ -10,6 +10,7 @@ static gpio_num_t pump_pin = GPIO_NUM_NC;
 static PumpActiveLevel pump_active_level = PUMP_ACTIVE_LOW;
 
 static UI32 s_pump_active_start_ms = 0U;
+static UI32 s_pump_active_start_ms_temp = 0U;
 static UI32 s_pump_active_total_s = 0U;
 
 static UI8 s_pump_active = 0;
@@ -41,8 +42,13 @@ _bool PumpIsActive(void)
     }
 }
 
-UI32 PumpGetActiveTotalSeconds(void)
+UI32 PumpGetActiveTotalSeconds(UI32 now_ms)
 {
+    if(s_pump_active)
+    {
+        s_pump_active_total_s += (now_ms - s_pump_active_start_ms) / 1000U;
+        s_pump_active_start_ms = now_ms;
+    }
     return s_pump_active_total_s;
 }
 
@@ -103,6 +109,7 @@ void PumpUpdateRuntime(UI32 now_ms)
     }
     s_pump_active_total_s += (now_ms - s_pump_active_start_ms) / 1000U;
     s_pump_active_start_ms = now_ms;
+    s_pump_active_start_ms_temp = s_pump_active_start_ms;
     s_pump_active = 0;
     PumpSaveRuntimeToFlash();
 }
@@ -114,6 +121,7 @@ void PumpStartRuntime(UI32 now_ms)
         return;
     }
     s_pump_active_start_ms = now_ms;
+    s_pump_active_start_ms_temp = s_pump_active_start_ms;
     s_pump_active = 1;
 }
 
@@ -121,7 +129,7 @@ UI32 PumpGetElapsedTimeSeconds(UI32 now_ms)
 {
     if(s_pump_active)
     {
-        return (now_ms - s_pump_active_start_ms) / 1000U;
+        return (now_ms - s_pump_active_start_ms_temp) / 1000U;
     }
     return 0;
 }

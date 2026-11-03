@@ -18,7 +18,7 @@ static DeviceElementAttributeInfo s_element_2_attributes[] = {
     ATTRIBUTE(45568, "filter_lifetime", 24),
     ATTRIBUTE(160, "tds_input", 2),
     ATTRIBUTE(ATTR_ENERGY_SAVING_SCHEDULE, "saving_schedule", 6),
-    ATTRIBUTE(ATTR_ENERGY, "energy", 8),
+    ATTRIBUTE(ATTR_ENERGY, "energy", 4),
     ATTRIBUTE(ATTR_RO_FLUSHING, "ro_flushing", 2),
 };
 
@@ -26,6 +26,7 @@ static DeviceElementAttributeInfo s_element_3_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
     ATTRIBUTE(160, "tds_output", 2),
+    // ATTRIBUTE(ATTR_ENERGY, "energy_saving", 4),
 };
 
 static DeviceElementAttributeInfo s_element_4_attributes[] = {
@@ -115,6 +116,8 @@ _bool DeviceElementSetAttributeValue(UI16 element_id, UI16 attribute_id, const u
             }
             memcpy(entry->value, value, value_length);
             entry->has_value = D_TRUE;
+            if(ATTR_ENERGY_SAVING_SCHEDULE == attribute_id || ATTR_FILTER_SETTING == attribute_id)
+                entry->has_value = D_FALSE;
             return D_TRUE;
         }
     }

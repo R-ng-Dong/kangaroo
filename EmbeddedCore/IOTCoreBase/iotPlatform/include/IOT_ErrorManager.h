@@ -1,5 +1,9 @@
 #pragma once
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef int iot_err_t;
 
 #define IOT_OK 0        // No error
@@ -28,6 +32,7 @@ typedef int iot_err_t;
 #define IOT_ERR_WIFI_SET_MAX_TX_POWER_FAILED 0x115 /*!< Failed to set maximum WiFi transmit power */
 #define IOT_ERR_WIFI_GET_AP_RSSI_FAILED 0x116      /*!< Failed to get RSSI of connected AP */
 #define IOT_ERR_ALREADY_EXISTS 0x117               /*!< Resource already exists */
+#define IOT_ERR_BUSY 0x118                         /*!< Resource is in use; retry later */
 #define IOT_ERR_WIFI_BASE 0x3000                   /*!< Starting number of WiFi error codes */
 #define IOT_ERR_MESH_BASE 0x4000                   /*!< Starting number of MESH error codes */
 #define IOT_ERR_FLASH_BASE 0x6000                  /*!< Starting number of flash error codes */
@@ -37,6 +42,7 @@ typedef int iot_err_t;
 #define IOT_ERR_TYPE_MISMATCH 0xe01
 #define IOT_ERR_DATA_NOT_FOUND 0xe02
 #define IOT_ERR_ALREADY_INIT 0xe03
+#define IOT_ERR_NOT_PROVISIONED 0xe04 /*!< Device has never been onboarded; wait for provisioning */
 #define IOT_ERR_NOT_INITIALIZED 0x1004               /*!< Not initialized */
 #define IOT_ERR_OTA_BOOT_DEGRADED 0x1005             /*!< IOT_CoreInit()'s OTA boot could neither hand the
                                                            download off to an SDK nor discard the unclaimed
@@ -55,3 +61,6 @@ const char *iot_err_to_name(iot_err_t code);
             exit(err_rc_);                                                                                             \
         }                                                                                                              \
     } while (0)
+#ifdef __cplusplus
+}
+#endif

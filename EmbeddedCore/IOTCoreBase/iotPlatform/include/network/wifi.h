@@ -5,6 +5,10 @@
 #include <stdbool.h>
 // WiFi interface management
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_WIFI_EVENT "wifi_event"
 #define _WIFI_EVENT_ALL NULL  /**< register handler for any event base */
 #define _WIFI_EVENT_ALL_ID -1 /**< register handler for any event id */
@@ -147,6 +151,22 @@ iot_err_t IOT_WifiGetMac(uint8_t *mac);
 iot_err_t IOT_WifiConnect(uint8_t iface_num, const char *target_ssid, const char *target_password, uint8_t retryTimes);
 iot_err_t IOT_WifiDisconnect(uint8_t iface_num);
 iot_ap_info_t *IOT_WifiScan(uint8_t iface_num, uint8_t *maxDevice, uint8_t timeout_sec);
+
+/**
+ * @brief Delivers the result of IOT_WifiScanAsync(). Runs on the WiFi event task.
+ *
+ * OWNERSHIP: `aps` passes to the callee, which frees it on every path (NULL on error).
+ */
+typedef void (*iot_wifi_scan_done_cb_t)(iot_err_t err, iot_ap_info_t *aps, uint8_t count, void *arg);
+
+/**
+ * @brief Start a scan and return immediately; `cb` fires on WIFI_EVENT_SCAN_DONE.
+ *
+ * @return IOT_OK on start (cb will fire exactly once), IOT_ERR_BUSY if one is already
+ *         running, other errors if it could not start (cb will NOT fire).
+ */
+iot_err_t IOT_WifiScanAsync(uint8_t iface_num, uint8_t maxDevice, uint8_t timeout_sec,
+                            iot_wifi_scan_done_cb_t cb, void *arg);
 wifi_event_status_t IOT_WifiGetConnectionStatus(uint8_t iface_num);
 iot_err_t IOT_WifiRegisterEventCb(uint8_t iface_num, wifi_event_status_t eventType,
                                   IOT_WifiEventCb callback, void *arg);
@@ -157,3 +177,6 @@ bool IOT_WifiGetAutoReconnect(void);
 iot_wifi_auth_mode_t IOT_WifiGetAuth(void);
 int8_t IOT_WifiGetRssi(void);
 iot_err_t IOT_WifiGetIpInfo(uint8_t iface_num, IOT_WifiIpInfo_t *ipInfo);
+#ifdef __cplusplus
+}
+#endif

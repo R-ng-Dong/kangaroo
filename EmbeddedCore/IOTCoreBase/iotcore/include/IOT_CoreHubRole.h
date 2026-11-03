@@ -35,6 +35,10 @@
  * @return IOT_OK on success, IOT_ERR_NOT_SUPPORTED if no driver, or an
  *         error code from coordinator initialisation.
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 iot_err_t IOT_CoreHubZigbeeStart(void);
 
 /**
@@ -54,3 +58,6 @@ bool IOT_CoreHubZigbeeIsActive(void);
  * action if the Zigbee hub was never started.
  */
 void IOT_CoreHubZigbeeStop(void);
+#ifdef __cplusplus
+}
+#endif

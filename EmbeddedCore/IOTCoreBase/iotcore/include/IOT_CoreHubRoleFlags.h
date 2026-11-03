@@ -20,6 +20,10 @@
 
 #include <stdbool.h>
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef enum
 {
     IOT_HUB_ROLE_MESH = 0,
@@ -40,3 +44,6 @@ void IOT_CoreSetHubRole(IOT_HubRole_t role, bool active);
  * @brief Does the SDK currently claim this hub role?
  */
 bool IOT_CoreHasHubRole(IOT_HubRole_t role);
+#ifdef __cplusplus
+}
+#endif

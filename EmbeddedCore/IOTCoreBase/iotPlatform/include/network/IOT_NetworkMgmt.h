@@ -3,6 +3,10 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct
 {
     int status;    // Status of the interface (e.g., connected, disconnected)
@@ -28,6 +32,22 @@ typedef struct
     IOT_NetworkIfaceType type;
     uint8_t number;
 } IOT_NetworkIface;
+
+/**
+ * @brief Maximum interfaces an implementation will walk in one `IOT_NetworkIface *` array.
+ *
+ * Every function here that takes `IOT_NetworkIface *ifaces` takes an ARRAY and no count:
+ * the walk stops at the first entry whose `type` is NETWORK_TYPE_NONE, and nothing else
+ * stops it. Pass a terminated array — never the address of a single struct:
+ *
+ *     IOT_NetworkIface ifaces[2] = {{.type = WIFI, .number = 0},
+ *                                   {.type = NETWORK_TYPE_NONE, .number = 0}};
+ *     IOT_NwkConnectWifi(ifaces, ssid, pwd, 5);
+ *
+ * Implementations must also stop after IOT_NWK_MAX_IFACES entries so a caller's mistake
+ * costs a truncated walk rather than a read past the end of their stack frame.
+ */
+#define IOT_NWK_MAX_IFACES 4
 
 // typedef struct
 // {
@@ -161,6 +181,50 @@ iot_err_t IOT_NwkDeinit(IOT_NetworkIface *ifaces);
  *  - Others: Fail
  */
 iot_err_t IOT_NwkScanWifi(IOT_NetworkIface iface, uint8_t interval, wifi_scan_res_require_t *res, uint8_t *numOfResults);
+
+/**
+ * @brief Delivers the result of IOT_NwkScanWifiAsync().
+ *
+ * Called EXACTLY ONCE for a scan that started, on the PLATFORM's own network task --
+ * on ESP32 the WiFi event task, never the caller's. A platform with no asynchronous
+ * scan may call this BEFORE IOT_NwkScanWifiAsync() returns, so a caller must tolerate
+ * both orders.
+ *
+ * Keep the body short and non-blocking: take what you need and defer the real work.
+ * Building and sending protocol messages from here is NOT safe.
+ *
+ * OWNERSHIP: `results`, and every `results[i].ssid`, pass to the callee. It must free
+ * them on every path, including when `err != IOT_OK` (where results is NULL, count 0).
+ *
+ * @param iface    interface that was scanned
+ * @param err      IOT_OK, or why the scan failed
+ * @param results  heap array of `count` entries; ownership passes to the callee
+ * @param count    number of valid entries
+ * @param arg      the `arg` given to IOT_NwkScanWifiAsync()
+ */
+typedef void (*IOT_NwkScanDoneCb_t)(IOT_NetworkIface iface, iot_err_t err,
+                                    wifi_scan_res_require_t *results, uint8_t count,
+                                    void *arg);
+
+/**
+ * @brief Start a WiFi scan and return without waiting for it to finish.
+ *
+ * A scan takes seconds. IOT_NwkScanWifi() blocks its caller for that whole time, which
+ * on the device meant the core work queue stalled ~5.8 s per scan while cloud commands
+ * queued behind it. Prefer this.
+ *
+ * @param iface       interface to scan (must be WIFI)
+ * @param interval    scan dwell hint, seconds
+ * @param maxResults  capacity hint; 0 means "platform default"
+ * @param cb          result callback, required
+ * @param arg         passed back to `cb`
+ *
+ * @return IOT_OK           scan started; `cb` WILL be called exactly once
+ *         IOT_ERR_BUSY     a scan is already in flight; `cb` will NOT be called
+ *         IOT_ERR_*        did not start; `cb` will NOT be called
+ */
+iot_err_t IOT_NwkScanWifiAsync(IOT_NetworkIface iface, uint8_t interval, uint8_t maxResults,
+                               IOT_NwkScanDoneCb_t cb, void *arg);
 iot_err_t IOT_NwkConnectWifi(IOT_NetworkIface *ifaces, char *ssid, char *pwd, uint8_t retryTimes);
 
 /**
@@ -190,3 +254,6 @@ iot_err_t IOT_NwkGetIpInfo(IOT_NetworkIface iface, IOT_NwkEventConnectedData_t *
 // iot_err_t _IFACE_GET_IP_INFO(IOT_NetworkIface iface, ip_info_t *ip_info);
 // iot_err_t _IFACE_SET_MAC_ADDR(IOT_NetworkIface iface, const mac_addr_t mac);
 // iot_err_t _IFACE_GET_MAC_ADDR(IOT_NetworkIface iface, mac_addr_t *out_mac);
+#ifdef __cplusplus
+}
+#endif

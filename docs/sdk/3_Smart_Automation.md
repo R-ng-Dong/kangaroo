@@ -2,6 +2,11 @@
 
 **SDK Writer Guide concepts:** Core Event Contract, SDK-Owned Responsibilities.
 
+> **Path B only.** On `sdkcontract/` (path A) the contract stores and runs automations itself and you handle none of
+> these events; your `apply` receives an automation's actions like any command. **The rules are in
+> [8_Smart_Contract.md](8_Smart_Contract.md)**, for both paths. This guide walks through the events and one way to
+> store and run automations yourself; where it and the rulebook differ, the rulebook is right.
+
 Smart automation lets the cloud (and your SDK) coordinate conditional control across devices. A **smid** (Smart ID,
 `uint16_t`) is the primary key that ties together a trigger or schedule, a set of bind commands, and an optional time
 window. This document covers the data model, every smart event your SDK must handle, how to execute bind commands, local
@@ -243,9 +248,9 @@ For each command starting at offset 2:
 
 **Step 3 — Dispatch each command:**
 
-Take the same code path as a normal SET: update device DAO state → actuate hardware / dispatch protocol → build and send a state change report via `IOT_CoreRequestReportStateChanged()`.
+Take the same code path as a normal SET: dispatch each command as an `IOT_EVENT_STATE` event of type `IOT_EVENT_TYPE_STATE_SET` with `IOT_CoreDispatchEvent()` (`IOT_Core.h`), so it reaches your own STATE_SET handler, which updates device DAO state → actuates hardware / dispatches to the sub-device → sends a state change report via `IOT_CoreRequestReportStateChanged()` (rule 2 of the Smart rulebook).
 
-Set `senderFrom = IOT_SENDER_AUTOMATION` (0x14) in the context when dispatching automation commands so trigger evaluation in Step 4 can detect and skip re-evaluation (loop prevention).
+Set `senderFrom = IOT_SENDER_AUTOMATION` (0x14) in the request context when dispatching automation commands (`IOT_SENDER_SCHEDULE` for a schedule) so trigger evaluation can detect and skip re-evaluation (loop prevention, Section 5).
 
 **Step 4 — Notify cloud (trigger-sourced only):**
 
@@ -273,7 +278,7 @@ free(keyList); free(dataList); free(dataSizes);
 
 ## 4. Trigger Evaluation
 
-After every successful SET command, evaluate whether any stored triggers should fire. Call the deferred version (scheduled on a timer thread with ~10 ms delay) — **never** call it synchronously from the MQTT/BLE receive task, as this blocks the receive queue.
+After every element-state change — from a SET, from your own hardware, or from a sub-device — and **after storing it**, evaluate whether any stored triggers should fire (rule 3: condition groups re-read stored state, so the other order evaluates the old value). Use the cloud's element ids. Run the evaluation deferred (for example scheduled on a timer with ~10 ms delay) — **never** synchronously on core's event task, as this blocks every other incoming command.
 
 **Evaluation steps:**
 
@@ -283,7 +288,7 @@ After every successful SET command, evaluate whether any stored triggers should 
    - `trigger.attrId` matches the attribute that was just set.
    - `trigger.elmId` matches the element ID that changed (or `elmId == 0` for any element).
    - Condition met (see below).
-   - Time window valid: if `timeStart != 0 || timeStop != 0`, check current UTC time is within `[timeStart, timeStop]` and that `weekDay` bitmask includes today (`bit0=Sun..bit6=Sat`, `0x00 = all days`).
+   - Time window valid: if `timeStart != 0 || timeStop != 0`, check the device's **local wall-clock time** is within `[timeStart, timeStop]` and that `weekDay` bitmask includes today (`bit0=Sun..bit6=Sat`, `0x00 = all days`). A trigger with a window never fires before the clock is synced; one without a window always fires (rule 7). Schedule times, by contrast, are UTC0 (Section 6).
 
 3. **Condition types:**
 
@@ -312,15 +317,17 @@ After every successful SET command, evaluate whether any stored triggers should 
 
 ## 5. Loop Prevention
 
-**Sender-based filter:** Before evaluating triggers after a SET, check `ctx.senderFrom`. Skip trigger evaluation entirely if sender is:
+**Sender-based filter (rule 4):** Before evaluating triggers after a state change, check the sender of the request that caused it. Skip trigger evaluation entirely when `senderFrom >= IOT_SENDER_SCENARIO_UUID_V4` — a scenario, automation, schedule, countdown or voice sender. That change is Smart's own output, and feeding it back re-fires triggers and chains automations. Pass the causing request's sender through unchanged; a change the device made itself passes `IOT_SENDER_DEVICE`.
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
+| `IOT_SENDER_SCENARIO_UUID_V4` | 0x13 | Scenario |
 | `IOT_SENDER_AUTOMATION` | 0x14 | Automation (plain) |
 | `IOT_SENDER_AUTOMATION_UUID_V4` | 0x15 | Automation (UUID v4 tagged) |
 | `IOT_SENDER_SCHEDULE` | 0x16 | Schedule (plain) |
 | `IOT_SENDER_SCHEDULE_UUID_V4` | 0x17 | Schedule (UUID v4 tagged) |
 | `IOT_SENDER_COUNTDOWN` | 0x18 | Countdown timer |
+| `IOT_SENDER_GOOGLE_VOICE` and above | 0x20+ | Voice assistants and third parties |
 
 **Cloud echo dedup:** For `SMART_EVENT_ACTIVE_BY_TRIGGER`, the cloud broadcasts a trigger activation back to all devices in the location. If your device already executed the automation locally (in Section 4), skip local execution to avoid running commands twice. Track this with a small recently-executed table keyed by smid (a small ring buffer of `{smid, timestamp}` is sufficient — clear entries older than a few seconds).
 
@@ -352,7 +359,9 @@ for (uint16_t i = 0; i < smidCount; i++) {
 // free all allocated memory
 ```
 
-Compare with a one-minute tolerance if your tick interval is not perfectly aligned.
+Compare with a one-minute tolerance if your tick interval is not perfectly aligned — but **run each slot once** (rule 8): the cloud's `SMART_EVENT_ACTIVE_BY_SCHEDULE` and your own tick can see the same minute, so both must go through one claim keyed on (smid, minute of week), or a non-idempotent action runs twice.
+
+On every `DEV_EVENT_CLOUD_CONNECTED`, (re)start the tick and ask condition-group peers for their seats with `IOT_CoreRequestSmartSyncCondRequest()` (rule 11).
 
 ---
 
@@ -372,4 +381,4 @@ Compare with a one-minute tolerance if your tick interval is not perfectly align
 | `TRIGGER_UPDATE_ANNOUNCE` | Reload trigger from event fields and overwrite in DAO |
 | `SCHEDULE_UPDATE_ANNOUNCE` | Remove old schedule times, store new ones from `scheduleTimes` array |
 | Delayed command timer alloc fails | Log error, skip that command, continue executing remaining commands |
-| Loop: sender is AUTOMATION/SCHEDULE/COUNTDOWN | Skip trigger evaluation; return after dispatch |
+| Loop: `senderFrom >= IOT_SENDER_SCENARIO_UUID_V4` | Skip trigger evaluation; return after dispatch |

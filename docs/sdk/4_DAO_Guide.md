@@ -5,6 +5,26 @@
 Data Access Objects (DAOs) are your SDK's persistence layer. This guide covers what to store, which interfaces to use,
 how to apply caching, ownership boundaries, and the correct factory reset sequence.
 
+> **Which path are you on?** This guide is for **path B**, an SDK that keeps its own stores on the public `iotcore`
+> API. On **path A** (`sdkcontract/`) the contract owns the Device, Group, IR, Smart and Record stores and every write
+> to them:
+>
+> - **Read only.** Read the Device store through `sdkcontract/include/dao/IOT_DaoDeviceMgmt.h` and the IR store
+>   through `IOT_DaoIRMgmt.h`. Never write them, and never keep a second copy you write yourself: the contract stores
+>   joins, groups, removals and every state change, and a parallel write reports changes twice. There is no public
+>   Group read; the contract resolves groups itself.
+> - **Your element ids.** Find your own element in the Device store with `IOT_ContractElementStoreId()`. To find a
+>   sub-device by MAC or device id, loop over `IOT_DaoDeviceGetAllEids()` with `IOT_DaoDeviceGetIdentityInfo()`.
+> - **Mesh key.** `IOT_DaoDeviceGetMeshKey()` takes the output buffer's size; size it with
+>   `IOT_DAO_DEVICE_MESH_KEY_MAX_LEN`. Device ids are `IOT_DAO_DEVICE_ID_LEN` bytes.
+> - **Data of your own** (calibration, a product setting) goes in a store of your own, on the storage and cache
+>   interfaces below (§2, §4), in namespaces of your own.
+> - **Factory reset** is `IOT_CoreFactoryReset()`; the contract wipes its stores and calls your `onDeviceRemoved`
+>   hook with `root` true, where you reset your own data and restart. §5 below does not apply.
+>
+> The copy-and-adapt Device and Group DAOs that used to ship in `reference/dao/` are retired. A path-B SDK that
+> compiled them from this repository keeps its own copy in its own tree. Full details: `sdkcontract/README.md`.
+
 ---
 
 ## 1. What to Store and Where
@@ -83,11 +103,11 @@ char key[24];
 
 // Device identity record, keyed by EID
 snprintf(key, sizeof(key), "dev:%04x", eid);          // e.g. "dev:0001"
-IOT_DaoStorageSet("mydev", key, IOT_DAO_TYPE_BLOB, &info, sizeof(info));
+IOT_DaoStorageSet("mydev", key, IOT_DAO_BLOB, &info, sizeof(info));
 
 // Element state, keyed by EID + elemId + attrId
 snprintf(key, sizeof(key), "%04x:%04x:%04x", eid, elemId, attrId);
-IOT_DaoStorageSet("mydev_st", key, IOT_DAO_TYPE_BLOB, &val, valLen);
+IOT_DaoStorageSet("mydev_st", key, IOT_DAO_BLOB, &val, valLen);
 ```
 
 Keys within a namespace also have an NVS limit of 15 characters. If your formatted key could exceed that, use a hash or shorter encoding.
@@ -152,7 +172,7 @@ Register your cache namespace inside your DAO init function, after `IOT_InitPlat
 iot_err_t MyDeviceDao_Init(void)
 {
     IOT_CacheConfig_t cfg = {
-        .namespace       = "mydev_st",
+        .nsName          = "mydev_st",    // was .namespace (a C++ keyword) before 10/2026
         .maxEntries      = 32,
         .flushIntervalMs = 0,                    // manual flush only
         .policy          = IOT_CACHE_WRITE_THROUGH,
@@ -170,7 +190,7 @@ iot_err_t MyDeviceDao_SetElemState(uint16_t eid, uint16_t elemId,
 {
     char key[16];
     snprintf(key, sizeof(key), "%04x:%04x:%04x", eid, elemId, attrId);
-    return IOT_CacheSet("mydev_st", key, IOT_DAO_TYPE_BLOB, value, len);
+    return IOT_CacheSet("mydev_st", key, IOT_DAO_BLOB, value, len);
 }
 
 // Read: cache returns hit immediately; on miss, falls back to NVS automatically
@@ -179,7 +199,7 @@ iot_err_t MyDeviceDao_GetElemState(uint16_t eid, uint16_t elemId,
 {
     char key[16];
     snprintf(key, sizeof(key), "%04x:%04x:%04x", eid, elemId, attrId);
-    return IOT_CacheGet("mydev_st", key, IOT_DAO_TYPE_BLOB, outValue, outLen);
+    return IOT_CacheGet("mydev_st", key, IOT_DAO_BLOB, outValue, outLen);
 }
 ```
 
@@ -191,7 +211,7 @@ iot_err_t MyDeviceDao_GetElemState(uint16_t eid, uint16_t elemId,
 
 **Config DAO** (provision state, WiFi credentials, MQTT broker, mesh keys) is owned by iotcore. It is internal — never access it directly or attempt to read its NVS namespace. iotcore exposes `IOT_CoreIsProvisioned()`, `IOT_CoreGetRootEid()`, and `IOT_CoreFactoryReset()` as the only config access points available to your SDK.
 
-**Device, Group, Smart, IR, and SensorLog DAOs** are SDK-owned. You implement and own these. The reference implementations shipped in `sdk/` are fully working starting points — read them, understand the key layout, then modify them to fit your storage design. iotcore never calls into these DAOs directly; it dispatches events to your SDK handlers, which in turn call your DAOs.
+**Device, Group, Smart, IR, and Record/SensorLog DAOs** are SDK-owned on path B. You implement and own these; this guide and the per-domain guides describe their shape. iotcore never calls into these DAOs directly; it dispatches events to your SDK handlers, which in turn call your DAOs. On path A they are `sdkcontract`'s (see the note at the top).
 
 **`IOT_DaoInit()`** is platform-only. It initializes NVS flash and the in-memory cache system. Your SDK must call its own DAO init functions (for example `IOT_DaoSmartTriggerInit()`, `IOT_DaoSmartScheduleInit()`, and any device/group DAO inits you implement) separately, inside your SDK init function, after `IOT_InitPlatform()` has returned successfully.
 

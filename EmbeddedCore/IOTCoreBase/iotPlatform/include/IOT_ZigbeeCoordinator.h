@@ -8,6 +8,10 @@
 // Constants
 // ============================================================================
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_ZIGBEE_IEEE_SIZE    8   ///< EUI-64 address length in bytes
 #define IOT_ZIGBEE_MODEL_SIZE  32   ///< Max length for model/friendly-name strings
 #define IOT_ZIGBEE_VENDOR_SIZE 32   ///< Max length for vendor string
@@ -123,3 +127,6 @@ iot_err_t IOT_ZigbeeCoordinatorOpenPairing(uint16_t gatewayEid, uint8_t timeSec,
  * @return IOT_OK on success, IOT_ERR_INVALID_STATE if not initialised.
  */
 iot_err_t IOT_ZigbeeCoordinatorClosePairing(uint16_t gatewayEid);
+#ifdef __cplusplus
+}
+#endif

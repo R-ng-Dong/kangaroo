@@ -21,6 +21,10 @@
 #include <stdint.h>
 
 /** Maximum length of a legacy BLE advertising or scan-response payload */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_BLE_ADV_MAX_LEN 31
 
 /** AD types used by the builder */
@@ -60,3 +64,6 @@ iot_err_t IOT_BleAdvBuildPayload(const IOT_BleMgmtAdvData_t *adv, uint8_t *buf, 
  * @return IOT_ERR_INVALID_ARG if any pointer is NULL, or the name does not fit
  */
 iot_err_t IOT_BleAdvBuildScanRsp(const IOT_BleMgmtAdvData_t *adv, uint8_t *buf, uint8_t bufSize, uint8_t *outLen);
+#ifdef __cplusplus
+}
+#endif

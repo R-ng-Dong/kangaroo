@@ -58,12 +58,12 @@ _bool WaterControllerSetFeatureHot(UI8 enabled, UI8 temperature)
     request.value1 = enabled ? 1 : 0;
     request.expected1 = enabled ? HOT_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
-    if (enabled)
-    {
-        request.value2 = temperature * 2;
-        request.expected2 = (UI32)(temperature * 2); // target temperature
+    // if (enabled)
+    // {
+        request.value2 = temperature;
+        request.expected2 = (UI32)(temperature); // target temperature
         request.verify2 = WATER_CONTROL_VERIFY_HOT_TEMPERATURE;
-    }
+    // }
     return WaterControllerTaskEnqueue(&request);
 }
 
@@ -81,12 +81,12 @@ _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature)
     request.value1 = (UI32)enabled ? 1 : 0;
     request.expected1 = enabled ? COLD_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
-    if (enabled)
-    {
-        request.value2 = temperature * 2;
-        request.expected2 = (UI32)(temperature * 2); // target temperature
+    // if (enabled)
+    // {
+        request.value2 = temperature ;
+        request.expected2 = (UI32)(temperature); // target temperature
         request.verify2 = WATER_CONTROL_VERIFY_COLD_TEMPERATURE;
-    }
+    // }
     return WaterControllerTaskEnqueue(&request);
 }
 

@@ -8,7 +8,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
-#define TDS_TASK_PERIOD_MS 5000U
+#define TDS_TASK_PERIOD_MS 3000U
 #define TDS_WARNING_CHECK_INTERVAL_MS 120000U
 
 static const char *TAG = "TDS_TASK";
@@ -22,16 +22,20 @@ static void TdsPollingTask(void *arg)
     // UI32 sample_count = 0U;
     // UI32 warning_window_start_ms = 0U;
     // bool warning_window_started = false;
+
+    UI16 inlet_ppm = 0;
+    UI16 ro_ppm = 0;
     ESP_LOGW(TAG, "===>>> TdsPollingTask created sucessfully");
 
     while (1)
     {
-        UI16 inlet_ppm = TdsGetValue(TDS_SENSOR_0);
-        UI16 ro_ppm = TdsGetValue(TDS_SENSOR_1);
+        inlet_ppm = TdsGetValue(TDS_SENSOR_0);
+        ro_ppm = TdsGetValue(TDS_SENSOR_1);
         UI32 now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
 
         TdsManagerHandleSample(inlet_ppm, ro_ppm, now_ms);
         TdsManagerCheckWarnings(inlet_ppm, ro_ppm);
+
 #if 0        
         if (!warning_window_started)
         {
@@ -104,6 +108,7 @@ void TdsTaskStart(void)
 
 void TdsTaskStop(void)
 {
+    printf("===>>> TDS task stop\n");
     if(s_tds_task_handle)
     {
         vTaskDelete(s_tds_task_handle);
@@ -114,6 +119,7 @@ void TdsTaskStop(void)
 
 void TdsTaskContinue(void)
 {
+    printf("===>>> TDS task continue\n");
     if (s_tds_task_handle != NULL)
     {
         return;

@@ -1,5 +1,5 @@
 #include "energy_saving_manager.h"
-
+#include "water_profile.h"
 #include "water_controller.h"
 #include "esp_err.h"
 #include "nvs.h"
@@ -46,12 +46,12 @@ static struct
 } s_policy;
 
 // for test
-__attribute__((weak)) void AppResponseTankStateToCloud(EnergySavingTank_t tank, UI8 enable)
-{
-    (void)tank;
-    (void)enable;
-    printf("[Dummy] AppResponseTankStateToCloud\n");
-}
+// __attribute__((weak)) void AppResponseTankStateToCloud(EnergySavingTank_t tank, UI8 enable)
+// {
+//     (void)tank;
+//     (void)enable;
+//     printf("[Dummy] AppResponseTankStateToCloud\n");
+// }
 
 static EnergySavingConfig GetConfig(void)
 {
@@ -146,7 +146,7 @@ static _bool ApplyTank(EnergySavingTank_t tank, UI8 enabled, UI8 temperature)
     }
     if(ret != D_TRUE) 
         return D_FALSE;
-    AppResponseTankStateToCloud(tank, enabled);
+    // AppResponseTankStateToCloud(tank, enabled);
     return D_TRUE;
 }
 
@@ -176,12 +176,13 @@ static void AccountSavedTimeUntil(UI64 now_seconds)
 void EnergySavingManagerInit(void)
 {
     memset(&s_policy, 0, sizeof(s_policy));
-    s_policy.tanks[ENERGY_SAVING_TANK_HOT].temperature = MAX_TEMPERATURE_HOT_TANK; // default
-    s_policy.tanks[ENERGY_SAVING_TANK_COLD].temperature = MIN_TEMPERATURE_COLD_TANK; // default
-    s_policy.tanks[ENERGY_SAVING_TANK_HOT].enabled = D_TRUE;
-    s_policy.tanks[ENERGY_SAVING_TANK_COLD].enabled = D_TRUE;
-    s_policy.tanks[ENERGY_SAVING_TANK_HOT].base_enabled = D_TRUE;
-    s_policy.tanks[ENERGY_SAVING_TANK_COLD].base_enabled = D_TRUE;
+    UI8 setting = WaterProfileGetSetting();
+    s_policy.tanks[ENERGY_SAVING_TANK_HOT].temperature = WaterProfileGetHotTargetTemperature(); // default
+    s_policy.tanks[ENERGY_SAVING_TANK_COLD].temperature = WaterProfileGetColdTargetTemperature(); // default
+    s_policy.tanks[ENERGY_SAVING_TANK_HOT].enabled = setting & HOT_SWITCH_BIT ? D_TRUE : D_FALSE;
+    s_policy.tanks[ENERGY_SAVING_TANK_COLD].enabled = setting & COLD_SWITCH_BIT ? D_TRUE : D_FALSE;
+    s_policy.tanks[ENERGY_SAVING_TANK_HOT].base_enabled = setting & HOT_SWITCH_BIT ? D_TRUE : D_FALSE;
+    s_policy.tanks[ENERGY_SAVING_TANK_COLD].base_enabled = setting & COLD_SWITCH_BIT ? D_TRUE : D_FALSE;;
     LoadPersistentSettings();
 }
 

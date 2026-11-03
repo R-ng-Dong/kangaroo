@@ -36,6 +36,24 @@ iot_err_t IOT_MeshDeinit(void)
     return s_meshDriver->deinit();
 }
 
+iot_err_t IOT_MeshRegisterGattServices(void)
+{
+    /* Nothing to register is success, not IOT_ERR_NOT_SUPPORTED: platform init
+     * treats a non-OK result as a failed boot, and a build without mesh is fine. */
+    if (s_meshDriver == NULL || s_meshDriver->registerGattServices == NULL)
+        return IOT_OK;
+    return s_meshDriver->registerGattServices();
+}
+
+iot_err_t IOT_MeshRadioStarted(void)
+{
+    /* Same reasoning as registerGattServices: a platform with nothing to re-arm
+     * has not failed. The caller starts the radio either way. */
+    if (s_meshDriver == NULL || s_meshDriver->radioStarted == NULL)
+        return IOT_OK;
+    return s_meshDriver->radioStarted();
+}
+
 bool IOT_MeshIsProvisioned(void)
 {
     if (s_meshDriver == NULL || s_meshDriver->isProvisioned == NULL)

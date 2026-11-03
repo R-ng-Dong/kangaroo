@@ -7,9 +7,8 @@
 # INCLUDE_DIRS points at reference/ itself, so headers resolve as
 # "dao/IOT_DaoDeviceMgmt.h" — the same include paths as before this repo renamed
 # the directory from sdk/ to reference/.
-file(GLOB_RECURSE SRCS "${SDK_PATH}/reference/dao/*.c"
-                       "${SDK_PATH}/reference/defines/*.c")
+file(GLOB_RECURSE SRCS "${SDK_PATH}/reference/defines/*.c")
 
 idf_component_register(SRCS ${SRCS}
                        INCLUDE_DIRS "${SDK_PATH}/reference"
-                       REQUIRES iotplatform iotcommon iotcore)
+                       REQUIRES iotplatform iotcommon)

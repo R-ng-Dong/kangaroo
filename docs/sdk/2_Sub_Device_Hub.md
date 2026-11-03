@@ -2,6 +2,12 @@
 
 **SDK Writer Guide concepts:** Core Event Contract, SDK-Owned Responsibilities, SDK Integration Model.
 
+> **Path B.** This guide is for an SDK written directly on `iotcore` with its own storage. On `sdkcontract/` (path A)
+> the contract stores joins, binds and unbinds groups, wipes removed devices and answers the cloud; you add your own
+> duties in the `onDeviceJoined` / `onDeviceRemoving` / `onDeviceRemoved` hooks, drive sub-devices from `apply`, and
+> pass every sub-device state report to `IOT_ContractSubDeviceReport()`. See
+> [../../sdkcontract/README.md](../../sdkcontract/README.md), *Hooks* and *Hub notes*.
+
 > **Only relevant for hub-role devices (mesh gateways, bridge devices). Single-device products can skip this section.**
 
 Hub-role devices manage a registry of sub-devices and relay cloud commands to them. iotcore dispatches `IOT_EVENT_DEVICE` events to your SDK for all lifecycle operations — device join, removal, and group management. Your SDK owns the device and group DAOs; iotcore never touches them directly.

@@ -24,6 +24,10 @@
 /** @defgroup GATT_Service_Types GATT Service Types
  *  @{
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define IOT_GATT_SERVICE_TYPE_PRIMARY 0x01   /**< Primary GATT service */
 #define IOT_GATT_SERVICE_TYPE_SECONDARY 0x02 /**< Secondary GATT service */
 /** @} */
@@ -390,6 +394,54 @@ iot_err_t IOT_BleDeinit(void);
  */
 iot_err_t IOT_BleAddServices(const IOT_BleMgmtGattServ_t *service);
 
+/**
+ * @brief Activate the BLE host, after every GATT service has been registered.
+ *
+ * The lifecycle is:  IOT_BleInit() -> IOT_BleAddServices() -> IOT_BleStart()
+ * -> IOT_BleStartAdvertising() / IOT_BleStartScan().
+ *
+ * On NimBLE this starts the host task, and starting the host is what registers
+ * every pending GATT service (ble_hs_start() calls ble_gatts_start(), which
+ * consumes the pending list and frees it). A service added AFTER this point goes
+ * on a new pending list that nothing starts, so it is silently never registered —
+ * the device advertises normally and simply has no service behind it. Register
+ * first, then start.
+ *
+ * On Bluedroid there is no separate activation step; the driver leaves this
+ * unimplemented and the call returns IOT_OK.
+ *
+ * Idempotent: safe to call more than once, and only the first call activates.
+ *
+ * Calling IOT_BleStartAdvertising() or IOT_BleStartScan() without having called
+ * this still works — the driver activates the host itself and logs a warning —
+ * but that hides a lifecycle step inside a function that does not name it, and
+ * gives you an advertising error for a host failure. Call it explicitly.
+ *
+ * BLOCKS on the first call, while the controller synchronises, for at most
+ * IOT_BLE_START_MAX_BLOCK_MS. Later calls return immediately.
+ *
+ * @return IOT_OK on success (including when the stack needs no activation),
+ *         IOT_ERR_INVALID_STATE if called before IOT_BleInit(),
+ *         IOT_ERR_NOT_SUPPORTED if no BLE driver is registered,
+ *         IOT_ERR_TIMEOUT if the host did not synchronise in time,
+ *         IOT_ERR_NO_MEM if the host task could not be created.
+ */
+iot_err_t IOT_BleStart(void);
+
+/**
+ * @brief The longest IOT_BleStart() may block before it returns, in milliseconds.
+ *
+ * A contract on the driver, not a suggestion: a driver whose activation can take longer
+ * than this must raise the value here rather than exceed it quietly. It exists because
+ * callers have to size their own waits against it -- the advertiser arbiter holds its
+ * lock across a mesh enable that calls IOT_BleStart(), and a lock timeout shorter than
+ * this turns the normal first-start path into a lock timeout on another task.
+ *
+ * The NimBLE driver's controller-sync ceiling is defined FROM this symbol, so the two
+ * cannot drift apart.
+ */
+#define IOT_BLE_START_MAX_BLOCK_MS 3000u
+
 /** @} */
 
 /** @defgroup BLE_Scan Scanning Operations
@@ -692,3 +744,6 @@ iot_err_t IOT_BleRegisterEventCallback(IOT_BleMgmtEventStatusType_t event, IOT_B
 iot_err_t IOT_BleUnregisterEventCallback(IOT_BleMgmtEventStatusType_t event);
 
 /** @} */
+#ifdef __cplusplus
+}
+#endif

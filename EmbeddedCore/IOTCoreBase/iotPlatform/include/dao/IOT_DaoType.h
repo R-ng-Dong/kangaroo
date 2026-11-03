@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef enum
 {
     IOT_DAO_U8,
@@ -26,3 +30,6 @@ typedef struct
     const void *data;  ///< Pointer to the value (u8..u64 point at the scalar; blob/string at the bytes)
     uint16_t len;      ///< Byte length (used for BLOB)
 } IOT_DaoBatchEntry_t;
+#ifdef __cplusplus
+}
+#endif

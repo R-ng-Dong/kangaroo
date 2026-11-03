@@ -13,14 +13,14 @@
 static const char *TAG = "WATER_CONTROL_TASK";
 static QueueHandle_t s_water_control_queue;
 
-__attribute__((weak)) void AppReportHotTankTemperatureToCloud(const UI8 temperature)
+__attribute__((weak)) void AppReportHotTankTemperatureToCloud(const UI8 state, const UI8 temperature)
 {
-    printf("[Dummy] AppReportHotTankTemperatureToCloud %d\n", temperature);
+    printf("[Dummy] AppReportHotTankTemperatureToCloud: %d %d/2 *C\n", state, temperature);
 }
 
-__attribute__((weak)) void AppReportColdTankTemperatureToCloud(const UI8 temperature)
+__attribute__((weak)) void AppReportColdTankTemperatureToCloud(const UI8 state, const UI8 temperature)
 {
-    printf("[Dummy] AppReportColdTankTemperatureToCloud %d\n", temperature);
+    printf("[Dummy] AppReportColdTankTemperatureToCloud %d %d/2 *C\n", state, temperature);
 }
 
 
@@ -85,17 +85,17 @@ static _bool WaterControllerTaskIsConfirmed(const WaterControlRequest_t *request
     {
     case WATER_CONTROL_VERIFY_HOT_TEMPERATURE:
     {
-        // _bool check = WaterProfileGetHotTargetTemperature() == (UI8)request->expected2;
-        // printf("[Hot tank] check %d, target temp: %d - %d\n", check, WaterProfileGetHotTargetTemperature(), (UI8)request->expected2);
-        // return check;
-        return D_TRUE;
+        _bool check = WaterProfileGetHotTargetTemperature() == (UI8)request->expected2;
+        printf("[Hot tank] check %d, target temp: %d - %d\n", check, WaterProfileGetHotTargetTemperature(), (UI8)request->expected2);
+        return check;
+        // return D_TRUE;
     }
     case WATER_CONTROL_VERIFY_COLD_TEMPERATURE:
     {
-        // _bool check = WaterProfileGetColdTargetTemperature() == (UI8)request->expected2;
-        // printf("[Cold tank] check %d, target temp: %d - %d\n", check, WaterProfileGetColdTargetTemperature(), (UI8)request->expected2);
-        // return check;
-        return D_TRUE;
+        _bool check = WaterProfileGetColdTargetTemperature() == (UI8)request->expected2;
+        printf("[Cold tank] check %d, target temp: %d - %d\n", check, WaterProfileGetColdTargetTemperature(), (UI8)request->expected2);
+        return check;
+        // return D_TRUE;
     }
     case WATER_CONTROL_VERIFY_FILTER_TIME:
         return WaterProfileGetFilterRuntimeSeconds((FilterTimeIndex)request->value1) == request->expected2;
@@ -177,11 +177,11 @@ static void WaterControllerTask(void *arg)
                          (unsigned)request.command, retries);
                 if(request.verify2 == WATER_CONTROL_VERIFY_HOT_TEMPERATURE)
                 {
-                    AppReportHotTankTemperatureToCloud((UI8)request.value2/2);
+                    AppReportHotTankTemperatureToCloud((UI8)request.value1, (UI8)request.value2);
                 }
                 else if(request.verify2 == WATER_CONTROL_VERIFY_COLD_TEMPERATURE)
                 {
-                    AppReportColdTankTemperatureToCloud((UI8)request.value2/2);
+                    AppReportColdTankTemperatureToCloud((UI8)request.value1, (UI8)request.value2);
                 }
                 break;
             }

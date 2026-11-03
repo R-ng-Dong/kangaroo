@@ -11,7 +11,7 @@ typedef enum{
 
 void PumpInit(gpio_num_t pin, PumpActiveLevel level);
 bool PumpIsActive(void);
-UI32 PumpGetActiveTotalSeconds(void);
+UI32 PumpGetActiveTotalSeconds(UI32 now_ms);
 void PumpUpdateRuntime(UI32 now_ms);
 void PumpStartRuntime(UI32 now_ms);
 UI32 PumpGetElapsedTimeSeconds(UI32 now_ms);

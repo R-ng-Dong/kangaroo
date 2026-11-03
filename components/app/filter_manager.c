@@ -1,6 +1,7 @@
 #include "filter_manager.h"
 #include <stdio.h>
 #include <string.h>
+#include "esp_timer.h"
 #include "system_runtime.h"
 #include "filter_runtime.h"
 #include "water_runtime.h"
@@ -284,7 +285,7 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI32 max_pump_runtime_seconds = GetMaxSecondsByPump((FilterTimeIndex)idx);
         UI8 filter_lifetime_by_pump = GetRemainingPercent((FilterTimeIndex)idx, pump_runtime_seconds, max_pump_runtime_seconds);
 
-        UI32 system_runtime_seconds = SystemRuntimeGetSeconds(now_ms);
+        UI32 system_runtime_seconds = SystemRuntimeGetSeconds(idx, now_ms);
         UI64 max_systemruntime_seconds = GetMaxSecondsBySystem((FilterTimeIndex)idx);
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
@@ -367,15 +368,34 @@ static void FilterManagerReportCurrentPercent(const UI8 *percent_values,
 
 _bool FilterManagerUpdateFromPump(UI32 now_ms)
 {
+    static UI8 scan = 0;
+    static _bool is_active = D_FALSE;
     _bool pump_active = PumpIsActive();
+
     if (pump_active)
     {
-        PumpStartRuntime(now_ms);
+        scan++;
+        if(scan == 5)
+        {
+            if(is_active) 
+                return D_TRUE;
+            
+            is_active = D_TRUE;
+            PumpStartRuntime(now_ms);
+            return FilterRuntimeUpdateLocal(D_TRUE, now_ms);
+        }
     }else
     {
-        PumpUpdateRuntime(now_ms);
+        scan = 0;
+        if(is_active == D_TRUE)
+        {
+            PumpUpdateRuntime(now_ms);
+            is_active = D_FALSE;
+            return FilterRuntimeUpdateLocal(D_FALSE, now_ms);
+        }
+        is_active = D_FALSE;
     }
-    return FilterRuntimeUpdateLocal(pump_active, now_ms);
+    return D_TRUE;
 }
 
 _bool FilterManagerShouldReport(UI32 now_ms)
@@ -442,7 +462,7 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
 
     FilterManagerCheckWarning(now_ms, remaining_percent);
 
-    printf("remaining: %d %d %d %d %d\n", remaining_percent[0], remaining_percent[1], remaining_percent[2], remaining_percent[3], remaining_percent[4]);
+    // printf("remaining: %d %d %d %d %d\n", remaining_percent[0], remaining_percent[1], remaining_percent[2], remaining_percent[3], remaining_percent[4]);
     // Report immediately when any filter's remaining life drops by at least 5 points.
     _bool has_significant_decrease = FilterManagerHasSignificantDecrease(remaining_percent);
     if (has_significant_decrease)
@@ -473,8 +493,7 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
     UI32 pump_active_total_seconds = 0;
     if(WATER_PURIFIER_TYPE_STANDARD == model)
     {
-        //PumpUpdateRuntime()
-        pump_active_total_seconds = PumpGetActiveTotalSeconds();
+        pump_active_total_seconds = PumpGetActiveTotalSeconds(esp_timer_get_time() / 1000U);
     }
     else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
