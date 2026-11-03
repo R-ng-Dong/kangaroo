@@ -2,7 +2,7 @@ set(ROOT_DIR ${CMAKE_SOURCE_DIR}) # chỉ gán biến, không hiểu j về path
 get_filename_component(ROOT_DIR ${ROOT_DIR} REALPATH) # xử lý đường dẫn, ROOT_DIR = CMAKE_SOURCE_DIR = .../FW_SDK
 
 # Keep sources explicit so a newly added factory module is compiled on the next build.
-set(SRCS "main.c" "factory_test_udp.c" "factory_test_ble.c")
+set(SRCS "main.c" "factory_test_udp.c")
 
 # Collect all include directories
 file(GLOB_RECURSE ALL_HEADERS "${ROOT_DIR}/main/*.h") 
