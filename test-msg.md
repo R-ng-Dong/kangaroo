@@ -32,7 +32,7 @@ Tham chiếu: [ThingsBoard MQTT RPC](https://thingsboard.io/docs/reference/mqtt-
 | `setFilterTime` | `filterIdx` 0–4, `time` 0–65535 phút | Echo `filterIdx`, `time`                            |
 | `testMode`      | Không                                | `mode: 1` khi gửi thành công                        |
 | `setDevId`      | `devId` 0–4294967295                 | Echo `devId`                                        |
-| `getAllStatus`  | Không                                | Các trường trạng thái từ khung UART                 |
+| `getAllState`   | Không                                | Dữ liệu mới nhất từ khung UART loại 1 và A          |
 
 ## Ví dụ từng lệnh
 
@@ -282,7 +282,7 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
 
 ```json
 {
-  "method": "getAllStatus",
+  "method": "getAllState",
   "params": {
     "mac": "..."
   }
@@ -291,14 +291,31 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
 
 ```json
 {
-  "method": "getAllStatusRsp",
+  "method": "getAllStateRsp",
   "params": {
     "code": 0,
     "data": {
       "mac": "aabbccddeeff",
+      "uartReceived": true,
+      "frameType1Seen": true,
+      "frameTypeASeen": true,
+      "productId": "00000101C0040003",
+      "firmwareVersion": "2.0.0.0",
+      "mainboardVersion": "1.0.0",
+      "frameType1Sequence": 10,
+      "frameTypeASequence": 3,
+      "profileSource": "uart_profile",
       "system_run": 100,
       "system_time": 200,
+      "ro_status": 0,
+      "ply_status": 0,
+      "hot_tank_status": 1,
+      "cold_tank_status": 1,
       "setting": 3,
+      "hot_tank_temperature": 26,
+      "cold_tank_temperature": 26,
+      "hot_target_temperature": 90,
+      "cold_target_temperature": 12,
       "filter_time_1": 10,
       "filter_time_2": 20,
       "filter_time_3": 30,
@@ -316,15 +333,9 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
 }
 ```
 
-`getAllStatus` lấy dữ liệu MLN qua các API trong `water_profile.h`; điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây là giá trị bo UART gửi về, khác với `raw1`/`raw2` ADC cục bộ của method `testAdc`.
+`getAllState` đọc dữ liệu MLN đã được luồng UART1 chính giải mã qua `water_profile.h`; các lệnh điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây là giá trị bo UART gửi về, khác với ADC TDS cục bộ của `testAdc`. `productId` là ID được dùng khi khởi tạo IoT Core theo model (`...0004` cho STANDARD, `...0003` cho HOT_COLD); `firmwareVersion` lấy từ `CONFIG_APP_PROJECT_VER` của bản firmware đang biên dịch. `mainboardVersion` ghép ba byte đầu của `fw_build_ver` trong khung UART A theo dạng `major.minor.patch`; giá trị `1.0.0` phía trên chỉ minh họa. `getAllStatus` và `getAll` vẫn được chấp nhận như tên lệnh cũ, với cùng nội dung dữ liệu và tên phản hồi tương ứng.
 
-Khi UART1 đang ở luồng test echo, `getAllStatus` kiểm tra đã nhận dữ liệu UART hay chưa: một khung hợp lệ loại 1 hoặc A trước khi chuyển luồng, hoặc ít nhất một byte do task test nhận sau khi chuyển luồng. Khi có dữ liệu, `params.code: 0` và `params.data.uartReceived: true`. Nếu đã nhận khung loại 1 hoặc A trước khi vào test, phản hồi còn có `profileSource: "before_test"` và các giá trị đã giải mã từ khung đó. Đây là **ảnh chụp trước khi chuyển sang echo**, không phải trạng thái trực tiếp. `uartRxBytes` chỉ đếm byte task test nhận sau khi chuyển luồng, nên có thể bằng 0 dù đã nhận khung trước đó. Ví dụ:
-
-```json
-{"method":"getAllStatusRsp","params":{"code":0,"data":{"mac":"aabbccddeeff","uartReceived":true,"frameType1Seen":true,"frameTypeASeen":false,"uartRxBytes":0,"profileSource":"before_test","system_run":949,"system_time":99306,"ro_status":0,"ply_status":0,"hot_tank_status":4,"cold_tank_status":15,"setting":1,"hot_tank_temperature":27,"cold_tank_temperature":27,"hot_target_temperature":90,"cold_target_temperature":12,"filter_time_1":880,"filter_time_2":880,"filter_time_3":880,"filter_time_ro":0,"filter_time_post":0}}}
-```
-
-Các trường trạng thái và thời gian ở trên đến từ khung UART loại 1. Nếu đã nhận thêm khung loại A, phản hồi có thêm `dev_id`, `input_stt`, `output_stt`, `switch_stt`, `led_stt`, `raw1`, `raw2`. Nếu chưa nhận khung hợp lệ lẫn byte UART test, trả `no_uart_data`. Khi không ở luồng echo, phản hồi đầy đủ chỉ có sau khi nhận cả khung loại 1 và A.
+UART1 tiếp tục chạy trong chế độ test. Mỗi lần gọi trả giá trị từ **khung hợp lệ gần nhất**, không đợi một khung mới. `frameType1Sequence` và `frameTypeASequence` tăng khi nhận khung tương ứng; tool có thể gọi lại để xác nhận dữ liệu còn cập nhật. Có ít nhất một loại khung thì `code: 0`; nếu chưa có loại nào, trả `no_uart_data` nhưng vẫn có `productId` và `firmwareVersion`. Trường của loại 1 chỉ xuất hiện sau khi đã nhận khung loại 1; `mainboardVersion`, `dev_id`, `input_stt`, `output_stt`, `switch_stt`, `led_stt`, `raw1`, `raw2` chỉ xuất hiện sau khung loại A.
 
 ## Phản hồi lỗi
 
@@ -341,7 +352,7 @@ Các trường trạng thái và thời gian ở trên đến từ khung UART lo
 
 ```json
 {
-  "method": "getAllStatusRsp",
+  "method": "getAllStateRsp",
   "params": {
     "code": -1,
     "error": "no_uart_data",
@@ -374,10 +385,9 @@ Các lỗi khác: `wifi_not_connected`, `ble_advertise_failed`, `adc_init_failed
 
 ### 2. UART
 
-- Khi bắt đầu luồng test, `TestUartInit()` hủy UART1 của luồng chính, cấu hình lại UART1 và chạy task nhận riêng cho test. Luồng UART chính không xử lý dữ liệu test.
-- Tool PC gửi byte trực tiếp vào UART1 của thiết bị (115200 baud, 8N1). Mỗi byte nhận được được gửi lại qua UART1 theo đúng thứ tự; dữ liệu có thể được chia thành nhiều lần ghi nếu đến theo nhiều đợt.
-- Echo UART là dữ liệu nhị phân nguyên gốc, không đóng gói JSON và không đi qua UDP. Nối TX của tool với RX của thiết bị, RX của tool với TX của thiết bị và nối chung GND.
-- `getAllStatusRsp` trong luồng test báo PASS khi UART1 đã nhận dữ liệu; điều này xác nhận đường RX, chưa xác nhận PC đã nhận được byte echo ở đường TX.
+- UART1 giữ nguyên luồng nhận và giải mã khung của `water_profile.c`; chế độ test không hủy hoặc cấu hình lại UART1.
+- Tool gửi `getAllState` qua UDP để đọc dữ liệu từ các khung UART hợp lệ gần nhất. `frameType1Sequence` và `frameTypeASequence` giúp kiểm tra có khung mới giữa các lần đọc.
+- UART1 không còn echo byte thô; tool không gửi dữ liệu tùy ý trực tiếp vào UART1 để chờ phản hồi echo.
 
 ### 3. RGB
 

@@ -93,6 +93,7 @@ UI8 WaterProfileGetInputStatus(WaterPurifyInputStatus input_type, UI8 index);
 SI8 WaterProfileGetHotTankTemperature(void);
 SI8 WaterProfileGetColdTankTemperature(void);
 UI16 WaterProfileGetVersionFirmware(void);
+UI8 WaterProfileGetFirmwareVersionByte(UI8 index);
 _bool HasMessageTypeA(void);
 _bool HasMessageType1(void);
 

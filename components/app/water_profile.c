@@ -195,6 +195,15 @@ UI16 WaterProfileGetVersionFirmware(void)
     return s_frame_type_A.fw_build_ver[0] << 8 | s_frame_type_A.fw_build_ver[1];
 }
 
+UI8 WaterProfileGetFirmwareVersionByte(UI8 index)
+{
+    if (index >= sizeof(s_frame_type_A.fw_build_ver))
+    {
+        return 0U;
+    }
+    return s_frame_type_A.fw_build_ver[index];
+}
+
 static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
 {
     if (data == NULL)

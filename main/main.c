@@ -67,12 +67,12 @@ void app_main(void)
     WaterPurifierType model = AppCheckModel();
     if (WATER_PURIFIER_TYPE_STANDARD == model)
     {
-        static const char *MODEL_ID = "00000101C0040004";
+        static const char *MODEL_ID = APP_PRODUCT_ID_STANDARD;
         err = IOT_CoreInit(MODEL_ID);
     }
     else if (WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
-        static const char *MODEL_ID = "00000101C0040003";
+        static const char *MODEL_ID = APP_PRODUCT_ID_HOT_COLD;
         err = IOT_CoreInit(MODEL_ID);
     }
     if (err != IOT_OK)

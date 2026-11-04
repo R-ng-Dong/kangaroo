@@ -20,7 +20,7 @@ Một cửa sổ có năm vùng rõ ràng:
 4. **Test UART:** nút bật test mode; các form Reset, Set Mode, Set Filter Time, Set Device ID; nút Get All và bảng dữ liệu trả về. Các nút có tác động lên thiết bị phải cho người vận hành xem tham số trước khi gửi; Reset cần hộp xác nhận.
 5. **Nhật ký và kết quả:** bảng thời gian, IP/MAC, method yêu cầu/phản hồi, trạng thái, thời gian phản hồi; ô xem JSON gửi/nhận nguyên văn; nút sao chép, xóa log và xuất CSV/JSON. Có ô mã ca test hoặc mã sản phẩm và tên người vận hành để đưa vào báo cáo.
 
-Trạng thái hiển thị thống nhất: `Chưa chạy`, `Đang chờ`, `Thành công`, `Lỗi`, `Không phản hồi`, `Chờ xác nhận thực tế`. Không tô xanh “đạt” cho lệnh UART chỉ vì nhận phản hồi thành công; cho phép kỹ thuật viên đánh dấu đạt sau khi quan sát thiết bị hoặc đối chiếu `getAllStatus`.
+Trạng thái hiển thị thống nhất: `Chưa chạy`, `Đang chờ`, `Thành công`, `Lỗi`, `Không phản hồi`, `Chờ xác nhận thực tế`. Không tô xanh “đạt” cho lệnh UART chỉ vì nhận phản hồi thành công; cho phép kỹ thuật viên đánh dấu đạt sau khi quan sát thiết bị hoặc đối chiếu `getAllState`.
 
 ## 3. Wi-Fi mặc định của firmware test
 
@@ -42,21 +42,21 @@ Tool dùng adapter BLE của PC để quét tên `KGTEST_<MAC Wi-Fi STA>` (ví d
 
 ## 5. Form và dữ liệu từng lệnh
 
-| Nhóm UI | RPC method | Đầu vào trong `params` | Hiển thị `params.data` |
-| --- | --- | --- | --- |
-| Wi-Fi | `scanDevWifi` | Không | `connected`, `ssid`, `rssi` dBm, `channel`, `ip`; `ip` có thể vắng mặt |
-| Loại thiết bị | `getTypeDev` | Không | `type`: 0 máy tiêu chuẩn, 1 máy nóng/lạnh |
-| BLE | Quét trực tiếp bằng adapter PC | Không | PC hiển thị tên và RSSI BLE; không có phản hồi UDP |
-| ADC | `testAdc` | Không | `raw1`, `raw2` (0–4095) từ hai kênh ADC TDS trên bo ESP32-C3 |
-| Input | `testInput` | Nút Đọc trạng thái bơm | `pumpActive` true/false từ `PumpIsActive()` |
-| Output | `output` | Chọn một `index` nguyên 0–7 và `state` 0/1 | Echo `index`, `state`; xem `params.code` |
-| LED RGB | `testLed` | `color`: `R`, `G` hoặc `B` | Xem `params.code` trong `testLedRsp` |
-| Reset | `reset` | Hộp xác nhận | Xem `params.code`; cảnh báo kết nối có thể gián đoạn sau khi gửi |
-| Chế độ | `setMode` | `mode`: 0 nóng 100°C, 1 lạnh 20°C, 2 tiết kiệm điện | Echo `mode`; xem `params.code` |
-| Thời gian lọc | `setFilterTime` | `filterIdx`: 0 lõi 1, 1 lõi 2, 2 lõi 3, 3 RO, 4 Post; `time`: số phút nguyên 0–65535 | Echo `filterIdx`, `time`; xem `params.code` |
-| Test mode | `testMode` | Không | Xem `params.code`; có thể cần trước lệnh Output |
-| Device ID | `setDevId` | `devId`: số nguyên 0–4294967295 | Echo `devId`; lỗi xem `params.code` |
-| Trạng thái tổng / UART | `getAllStatus` | Không | Trong luồng test: trạng thái nhận UART và ảnh chụp các thông số đã giải mã trước khi vào test (nếu có); ngoài luồng test: các trường trạng thái MLN |
+| Nhóm UI                | RPC method                     | Đầu vào trong `params`                                                               | Hiển thị `params.data`                                                                                                                    |
+| ---------------------- | ------------------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Wi-Fi                  | `scanDevWifi`                  | Không                                                                                | `connected`, `ssid`, `rssi` dBm, `channel`, `ip`; `ip` có thể vắng mặt                                                                    |
+| Loại thiết bị          | `getTypeDev`                   | Không                                                                                | `type`: 0 máy tiêu chuẩn, 1 máy nóng/lạnh                                                                                                 |
+| BLE                    | Quét trực tiếp bằng adapter PC | Không                                                                                | PC hiển thị tên và RSSI BLE; không có phản hồi UDP                                                                                        |
+| ADC                    | `testAdc`                      | Không                                                                                | `raw1`, `raw2` (0–4095) từ hai kênh ADC TDS trên bo ESP32-C3                                                                              |
+| Input                  | `testInput`                    | Nút Đọc trạng thái bơm                                                               | `pumpActive` true/false từ `PumpIsActive()`                                                                                               |
+| Output                 | `output`                       | Chọn một `index` nguyên 0–7 và `state` 0/1                                           | Echo `index`, `state`; xem `params.code`                                                                                                  |
+| LED RGB                | `testLed`                      | `color`: `R`, `G` hoặc `B`                                                           | Xem `params.code` trong `testLedRsp`                                                                                                      |
+| Reset                  | `reset`                        | Hộp xác nhận                                                                         | Xem `params.code`; cảnh báo kết nối có thể gián đoạn sau khi gửi                                                                          |
+| Chế độ                 | `setMode`                      | `mode`: 0 nóng 100°C, 1 lạnh 20°C, 2 tiết kiệm điện                                  | Echo `mode`; xem `params.code`                                                                                                            |
+| Thời gian lọc          | `setFilterTime`                | `filterIdx`: 0 lõi 1, 1 lõi 2, 2 lõi 3, 3 RO, 4 Post; `time`: số phút nguyên 0–65535 | Echo `filterIdx`, `time`; xem `params.code`                                                                                               |
+| Test mode              | `testMode`                     | Không                                                                                | Xem `params.code`; có thể cần trước lệnh Output                                                                                           |
+| Device ID              | `setDevId`                     | `devId`: số nguyên 0–4294967295                                                      | Echo `devId`; lỗi xem `params.code`                                                                                                       |
+| Trạng thái tổng / UART | `getAllState`                  | Không                                                                                | `productId`, `firmwareVersion`, `mainboardVersion` nếu có khung A; khung UART hợp lệ gần nhất, trạng thái từng loại khung và bộ đếm khung |
 
 Không hardcode ngưỡng đạt của RSSI/ADC. Cho phép nhập ngưỡng trong phần cài đặt ca test; nếu chưa có ngưỡng, chỉ hiển thị số đo và để kỹ thuật viên xác nhận. RSSI BLE là số đo của adapter PC; `advertising:true` từ UDP chỉ xác nhận firmware đã gọi phát quảng bá, chưa chứng minh PC thu được tín hiệu.
 
@@ -67,8 +67,8 @@ ADC trả một giá trị raw cho mỗi TDS sau khi firmware dừng tác vụ T
 1. PC quét BLE provisioning và ghi RSSI đo tại PC. Nếu không thấy, báo không tìm thấy BLE và cho phép quét lại. Dùng MAC trong tên `KGTEST_<MAC>` để phân biệt các thiết bị; xác nhận lại MAC qua UDP sau đó.
 2. Kết nối PC vào cùng mạng Wi-Fi `TTS`, đợi thiết bị nhận IP; chọn card mạng, tìm hoặc nhập IP thiết bị và chạy `scanDevWifi` để xác nhận IP/MAC. So MAC trả về với MAC trong tên BLE.
 3. Chạy `testAdc`, đọc `testInput`; cho phép người vận hành thao tác vật lý và đánh dấu kết quả.
-   Trong luồng test, `getAllStatusRsp.params.code: 0` khi UART1 đã nhận ít nhất một khung hợp lệ trước khi chuyển sang echo hoặc một byte trong task echo. Tool hiển thị bốn trường kiểm tra UART; nếu có `profileSource: "before_test"`, hiển thị thêm các thông số UART đã lưu và ghi rõ chúng không cập nhật trực tiếp. Đây là phép kiểm tra nhận dữ liệu UART, không xác nhận byte echo đã đến PC.
-4. Khi cần test bo điều khiển, gửi `testMode`, sau đó thử Output, Set Mode, Set Filter Time hoặc Set Device ID. Đọc `getAllStatus` sau lệnh ghi và so sánh trường liên quan nếu phản hồi UART hỗ trợ. Không tự gửi Reset trong chuỗi test.
+   `getAllStateRsp.params.code: 0` khi UART1 đã nhận ít nhất một khung hợp lệ loại 1 hoặc A. Tool hiển thị các trường của từng loại khung đã nhận và hai bộ đếm sequence; đọc lại để xác nhận khung UART tiếp tục cập nhật. Không còn phép thử echo byte thô.
+4. Khi cần test bo điều khiển, gửi `testMode`, sau đó thử Output, Set Mode, Set Filter Time hoặc Set Device ID. Đọc `getAllState` sau lệnh ghi và so sánh trường liên quan nếu phản hồi UART hỗ trợ. Không tự gửi Reset trong chuỗi test.
 5. Kết thúc phiên, xuất báo cáo gồm thời gian, mã ca, người vận hành, IP/MAC, từng bản tin, số đo, kết quả tự động và xác nhận thủ công. Không lưu mật khẩu Wi-Fi trong báo cáo.
 
 ## 7. Xử lý lỗi và chế độ demo

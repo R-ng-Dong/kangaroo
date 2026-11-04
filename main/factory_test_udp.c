@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_rom_sys.h"
 #include "esp_wifi.h"
+#include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,7 +27,6 @@
 #include "tds_task.h"
 #include "water_controller.h"
 #include "water_profile.h"
-#include "uart_driver.h"
 #include "network/wifi.h"
 #include "factory_test_ble.h"
 
@@ -38,8 +38,6 @@
 #define FACTORY_WIFI_SSID "TTS"
 #define FACTORY_WIFI_PASSWORD "TTS123456"
 
-#define UART_TEST_BUFFER_SIZE 1024
-#define UART_TEST_CHUNK_SIZE 256
 /* Use the same TDS wiring as production; each request samples one pulse polarity. */
 #define FACTORY_ADC_SETTLE_US 100U
 #define FACTORY_TDS_0_PULSE_1 GPIO_NUM_0
@@ -52,8 +50,6 @@
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
 static esp_event_handler_instance_t s_factory_wifi_ip_handler;
-static TaskHandle_t s_uart_test_task;
-static volatile UI32 s_uart_test_rx_bytes;
 /* ADC and pulse pins are configured once, on the first factory ADC request. */
 static UI8 s_adc_ready;
 
@@ -275,73 +271,6 @@ static void TestAdc(cJSON *data)
     SetResult(data, 1U, NULL);
 }
 
-static void TestUartTask(void *arg)
-{
-    (void)arg;
-    UI8 bytes[UART_TEST_CHUNK_SIZE];
-    for (;;)
-    {
-        int received = uart_read_bytes(UART_NUM_1, bytes, sizeof(bytes), portMAX_DELAY);
-        if (received < 0)
-        {
-            ESP_LOGE(s_tag, "Factory UART read failed");
-            break;
-        }
-        if (received > 0)
-            s_uart_test_rx_bytes += (UI32)received;
-        int offset = 0;
-        while (offset < received)
-        {
-            int written = uart_write_bytes(UART_NUM_1, bytes + offset, received - offset);
-            if (written <= 0)
-            {
-                ESP_LOGE(s_tag, "Factory UART echo failed");
-                break;
-            }
-            offset += written;
-        }
-    }
-    s_uart_test_task = NULL;
-    vTaskDelete(NULL);
-}
-
-static esp_err_t TestUartInit(void)
-{
-    if (NULL != s_uart_test_task)
-        return ESP_OK;
-
-    s_uart_test_rx_bytes = 0U;
-
-    /* Factory test owns UART1: stop the normal receiver before installing a raw port. */
-    esp_err_t err = ESP_OK;
-    if (uart_is_driver_installed(UART_NUM_1))
-    {
-        err = UartDeinit(UART_NUM_1);
-        if (ESP_OK != err)
-            return err;
-    }
-
-    const uart_config_t config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB,
-    };
-    err = uart_driver_install(UART_NUM_1, UART_TEST_BUFFER_SIZE, UART_TEST_BUFFER_SIZE, 0, NULL, 0);
-    if (ESP_OK != err)
-        return err;
-    err = uart_param_config(UART_NUM_1, &config);
-    if (ESP_OK == err)
-        err = uart_set_pin(UART_NUM_1, PIN_UART_TX, PIN_UART_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    if (ESP_OK == err && pdPASS != xTaskCreate(TestUartTask, "factory_uart", 2048, NULL, 5, &s_uart_test_task))
-        err = ESP_ERR_NO_MEM;
-    if (ESP_OK != err)
-        uart_driver_delete(UART_NUM_1);
-    return err;
-}
-
 // static void TestBle(cJSON *data)
 // {
 //     if (!FactoryTestBleIsAdvertising())
@@ -475,9 +404,9 @@ static UI8 ReadUartBitmask(WaterPurifyInputStatus type)
     return mask;
 }
 
-static void AddUartProfileSnapshot(cJSON *data)
+static void AddUartProfileData(cJSON *data)
 {
-    /* Profile values were decoded before factory test took ownership of UART1. */
+    /* Return the latest frames decoded by the normal UART1 receiver. */
     if (D_TRUE == HasMessageType1())
     {
         cJSON_AddNumberToObject(data, "system_run", WaterProfileGetSystemRunSeconds());
@@ -506,6 +435,25 @@ static void AddUartProfileSnapshot(cJSON *data)
         cJSON_AddNumberToObject(data, "led_stt", ReadUartBitmask(LED_STATUS));
         cJSON_AddNumberToObject(data, "raw1", WaterProfileGetAdcRaw1());
         cJSON_AddNumberToObject(data, "raw2", WaterProfileGetAdcRaw2());
+    }
+}
+
+static void AddDeviceVersionData(cJSON *data, UI8 frame_type_A_seen)
+{
+    const char *product_id = WATER_PURIFIER_TYPE_HOT_COLD == AppGetModel()
+                                 ? APP_PRODUCT_ID_HOT_COLD
+                                 : APP_PRODUCT_ID_STANDARD;
+    cJSON_AddStringToObject(data, "productId", product_id);
+    cJSON_AddStringToObject(data, "firmwareVersion", CONFIG_APP_PROJECT_VER);
+
+    if (frame_type_A_seen)
+    {
+        char version[sizeof("255.255.255")];
+        snprintf(version, sizeof(version), "%u.%u.%u",
+                 (unsigned int)WaterProfileGetFirmwareVersionByte(0U),
+                 (unsigned int)WaterProfileGetFirmwareVersionByte(1U),
+                 (unsigned int)WaterProfileGetFirmwareVersionByte(2U));
+        cJSON_AddStringToObject(data, "mainboardVersion", version);
     }
 }
 
@@ -562,69 +510,24 @@ static void HandleUartTestCommand(const char *method, const cJSON *params, cJSON
         cJSON_AddNumberToObject(data, "devId", device_id);
         SetResult(data, D_TRUE == WaterControllerSetDeviceId(device_id), "uart_send_failed");
     }
-    else if (0 == strcmp(method, "getAllStatus") || 0 == strcmp(method, "getAll"))
+    else if (0 == strcmp(method, "getAllState") || 0 == strcmp(method, "getAllStatus") ||
+             0 == strcmp(method, "getAll"))
     {
-        if (NULL != s_uart_test_task)
+        UI8 frame_type_1_seen = D_TRUE == HasMessageType1();
+        UI8 frame_type_A_seen = D_TRUE == HasMessageTypeA();
+        UI8 received = frame_type_1_seen || frame_type_A_seen;
+        AddDeviceVersionData(data, frame_type_A_seen);
+        cJSON_AddBoolToObject(data, "uartReceived", received);
+        cJSON_AddBoolToObject(data, "frameType1Seen", frame_type_1_seen);
+        cJSON_AddBoolToObject(data, "frameTypeASeen", frame_type_A_seen);
+        cJSON_AddNumberToObject(data, "frameType1Sequence", WaterProfileGetFrameType1Sequence());
+        cJSON_AddNumberToObject(data, "frameTypeASequence", WaterProfileGetFrameTypeASequence());
+        if (received)
         {
-            UI8 frame_type_1_seen = D_TRUE == HasMessageType1();
-            UI8 frame_type_A_seen = D_TRUE == HasMessageTypeA();
-            UI32 rx_bytes = s_uart_test_rx_bytes;
-            UI8 received = frame_type_1_seen || frame_type_A_seen || 0U < rx_bytes;
-            cJSON_AddBoolToObject(data, "uartReceived", received);
-            cJSON_AddBoolToObject(data, "frameType1Seen", frame_type_1_seen);
-            cJSON_AddBoolToObject(data, "frameTypeASeen", frame_type_A_seen);
-            cJSON_AddNumberToObject(data, "uartRxBytes", rx_bytes);
-            if (frame_type_1_seen || frame_type_A_seen)
-            {
-                cJSON_AddStringToObject(data, "profileSource", "before_test");
-                AddUartProfileSnapshot(data);
-            }
-            SetResult(data, received, "no_uart_data");
-            return;
+            cJSON_AddStringToObject(data, "profileSource", "uart_profile");
+            AddUartProfileData(data);
         }
-        /* The response combines fields from MLN UART frames 1 and A. */
-        if (D_TRUE != HasMessageType1() || D_TRUE != HasMessageTypeA())
-        {
-            SetResult(data, 0U, "no_uart_data");
-            return;
-        }
-        cJSON_AddNumberToObject(data, "system_run", WaterProfileGetSystemRunSeconds());
-        cJSON_AddNumberToObject(data, "system_time", WaterProfileGetSystemTimeSeconds());
-        cJSON_AddNumberToObject(data, "setting", WaterProfileGetSetting());
-        cJSON_AddNumberToObject(data, "filter_time_1",
-                                WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_1ST));
-        cJSON_AddNumberToObject(data, "filter_time_2",
-                                WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_2ND));
-        cJSON_AddNumberToObject(data, "filter_time_3",
-                                WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_3RD));
-        cJSON_AddNumberToObject(data, "filter_time_ro",
-                                WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_RO));
-        cJSON_AddNumberToObject(data, "filter_time_post",
-                                WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_POST));
-        cJSON_AddNumberToObject(data, "dev_id", WaterProfileGetDeviceId());
-        cJSON_AddNumberToObject(data, "input_stt", ReadUartBitmask(INPUT_STATUS));
-        cJSON_AddNumberToObject(data, "output_stt", ReadUartBitmask(OUTPUT_STATUS));
-        cJSON_AddNumberToObject(data, "switch_stt", ReadUartBitmask(SWITCH_STATUS));
-        cJSON_AddNumberToObject(data, "led_stt", ReadUartBitmask(LED_STATUS));
-        /* These ADC values come from the MLN UART frame; method adc reads local TDS pins. */
-        cJSON_AddNumberToObject(data, "raw1", WaterProfileGetAdcRaw1());
-        cJSON_AddNumberToObject(data, "raw2", WaterProfileGetAdcRaw2());
-        printf("getAllStatus: system_run=%lu, system_time=%lu, setting=%lu, filter_time_1=%lu, "
-               "filter_time_2=%lu, filter_time_3=%lu, filter_time_ro=%lu, filter_time_post=%lu, "
-               "dev_id=%lu, input_stt=0x%02x, output_stt=0x%02x, switch_stt=0x%02x, led_stt=0x%02x, "
-               "raw1=%lu, raw2=%lu\n",
-               WaterProfileGetSystemRunSeconds(), WaterProfileGetSystemTimeSeconds(),
-               (unsigned long)WaterProfileGetSetting(),
-               WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_1ST),
-               WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_2ND),
-               WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_3RD),
-               WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_RO),
-               WaterProfileGetFilterRuntimeSeconds(FILTER_TIME_INDEX_POST),
-               WaterProfileGetDeviceId(), ReadUartBitmask(INPUT_STATUS),
-               ReadUartBitmask(OUTPUT_STATUS), ReadUartBitmask(SWITCH_STATUS),
-               ReadUartBitmask(LED_STATUS), (unsigned long)WaterProfileGetAdcRaw1(),
-               (unsigned long)WaterProfileGetAdcRaw2());
-        SetResult(data, 1U, NULL);
+        SetResult(data, received, "no_uart_data");
     }
     else
     {
@@ -720,7 +623,8 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
     UI8 success = NULL != code && 0 == code->valueint;
     UI8 include_code = !success || 0 == strcmp(method_name, "output") ||
                        0 == strcmp(method_name, "testLed") || 0 == strcmp(method_name, "lc8823") ||
-                       0 == strcmp(method_name, "reset") || 0 == strcmp(method_name, "getAllStatus") ||
+                       0 == strcmp(method_name, "reset") || 0 == strcmp(method_name, "getAllState") ||
+                       0 == strcmp(method_name, "getAllStatus") ||
                        0 == strcmp(method_name, "getAll");
     if (include_code)
         cJSON_AddItemToObject(reply_params, "code", NULL != code ? code : cJSON_CreateNumber(-1));
@@ -806,10 +710,6 @@ esp_err_t FactoryTestUdpStart(void)
     esp_err_t err = FactoryWifiConnect();
     if (ESP_OK != err)
         return err;
-    /* Factory UART runs independently of UDP and echoes bytes on the same port. */
-    err = TestUartInit();
-    if (ESP_OK != err)
-        ESP_LOGE(s_tag, "Factory UART init failed: %s; UDP test will still start", esp_err_to_name(err));
     PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
     if (pdPASS != xTaskCreate(FactoryTestUdpTask, "factory_test_udp", 4096, NULL, 5, &s_task))
     {
