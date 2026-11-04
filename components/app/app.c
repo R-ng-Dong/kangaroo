@@ -403,7 +403,7 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
                 if(!FilterManagerSetPid((FilterTimeIndex)filter_idx, Pid))
                     return;
             }
-            SystemRuntimeReconfig(filter_idx, 0, esp_timer_get_time()/1000);
+            // SystemRuntimeReconfig(filter_idx, 0, esp_timer_get_time()/1000);
             
             (void)DeviceElementSetAttributeValueOffset(elemId, ATTR_INFOMATION_PRODUCT_USAGE_TIME, 0, Pid, FILTER_PID_SIZE);
         }
@@ -1006,6 +1006,7 @@ void AppPushWarningToCloud(void)
     if (DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_INFO_CURRENT_ISSUES_STATUS,
                                     value, 4) == D_TRUE)
     {
+        ESP_LOGW(TAG, "App report warning to cloud: mask: 0x%08lx", warning_mask);
         AppRspToCloud(ELEMENT_ID_1, ATTR_INFO_CURRENT_ISSUES_STATUS);
     }    
 }

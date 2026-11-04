@@ -15,6 +15,7 @@
 #include "iot_smart.h"
 #include "tds_task.h"
 #include "report_alert.h"
+#include "app.h"
 
 #include "IOT_Record.h"
 #include "IOT_ContractStateQuery.h"
@@ -923,6 +924,8 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         // TODO: Sync device state to cloud if needed
         g_cloud_is_connected = 1;
         LedManagerSetNormal();
+
+        AppPushWarningToCloud();
 
         IOT_ContractOnCloudConnected();
         IOT_ContractStateSyncSchedule();

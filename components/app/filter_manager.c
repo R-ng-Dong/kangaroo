@@ -289,8 +289,14 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI64 max_systemruntime_seconds = GetMaxSecondsBySystem((FilterTimeIndex)idx);
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
-        percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
-        if(percent_values[idx] >= 99) percent_values[idx] = 100;  
+        if(filter_lifetime_by_pump >= 80)
+        {
+            percent_values[idx] = filter_lifetime_by_pump ;
+        }else
+        {
+            percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
+        }
+        // if(percent_values[idx] >= 99) percent_values[idx] = 100;  
     }
 }
 

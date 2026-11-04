@@ -125,7 +125,7 @@ static void config_load(void)
 
 static bool config_apply(const cJSON *root)
 {
-    const cJSON *scope = cJSON_GetObjectItemCaseSensitive(root, "scope");
+    const cJSON *scope = cJSON_GetObjectItemCaseSensitive(root, "scope"); //cJSON_GetObjectItem
     const cJSON *ver = cJSON_GetObjectItemCaseSensitive(root, "configVersion");
     const cJSON *values = cJSON_GetObjectItemCaseSensitive(root, "values");
     uint8_t si = SCOPE_CORE;
@@ -137,7 +137,10 @@ static bool config_apply(const cJSON *root)
         {
         }
         if (si == 4)
-            return false;
+        {
+            si = SCOPE_CORE;
+            // return false;
+        }
     }
     if (!cJSON_IsNumber(ver) || ver->valuedouble < 0 || ver->valuedouble > UINT32_MAX || ver->valuedouble != (double)(uint32_t)ver->valuedouble || !cJSON_IsObject(values))
         return false;

@@ -24,5 +24,6 @@ WaterPurifierType AppGetModel(void);
 void AppSetModel(WaterPurifierType model);
 void AppRspToCloud(UI8 elem_id, UI16 attr_id);
 void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm);
+void AppPushWarningToCloud(void);
 
 #endif
