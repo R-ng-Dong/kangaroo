@@ -14,6 +14,7 @@
 #include "group.h"
 #include "iot_smart.h"
 #include "tds_task.h"
+#include "report_alert.h"
 
 #include "IOT_Record.h"
 #include "IOT_ContractStateQuery.h"
@@ -766,6 +767,13 @@ static iot_err_t IOT_ExCoreEventHandleSmart(IOT_CoreSmartEvent_t *smartEvent)
 // DEVICE Event Handler
 // ============================================================================
 
+static void app_deinit_ble_timer_cb(void *userData)
+{
+    (void) userData;
+    IOT_LOGI(TAG, "Deinit BLE ...");
+    RAL_DeinitBle();
+    TdsTaskContinue();
+}
 extern void RAL_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event);
 
 static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
@@ -805,6 +813,12 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     }
     case DEV_EVENT_NEW_DEVICE_JOINED:
     {
+        IOT_LOGW(TAG, "DEINIT BLE after 3000 ms");
+        if (IOT_TimerInsertCb(app_deinit_ble_timer_cb, NULL, 3000) == IOT_TIMER_HANDLE_INVALID)
+        {
+            IOT_LOGE(TAG, "Failed to schedule deinit BLE timer");
+            return IOT_ERR_NO_MEM;
+        }
     }
     case DEV_EVENT_DEVICE_REMOVED:
     {
@@ -1140,6 +1154,9 @@ void EventCallback(void *arg, const IOT_CoreEvent_t *event)
             IOT_LOGE(TAG, "OS event handler failed: %s", iot_err_to_name(iot_err));
         }
         break;
+    case IOT_EVENT_SERVICE:
+        ReportAlertHandleServiceEvent((IOT_CoreServiceEvent_t *)&event->evt.service);
+        break;
     default:
         IOT_LOGW(TAG, "Unknown event category: %d", event->category);
         break;
@@ -1168,6 +1185,11 @@ iot_err_t DeviceRegisterEvent(void)
     if (err != IOT_OK)
     {
         IOT_LOGE(TAG, "Failed to register OS callback");
+    }
+    err = IOT_DevCoreRegisterEventCb(IOT_EVENT_SERVICE, EventCallback, NULL);
+    if (err != IOT_OK)
+    {
+        IOT_LOGE(TAG, "Failed to register service callback");
     }
     return err;
 }

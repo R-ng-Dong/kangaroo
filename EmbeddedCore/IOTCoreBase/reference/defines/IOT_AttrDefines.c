@@ -269,6 +269,8 @@ uint8_t IOT_AttrRecordValueCount(uint16_t attrId)
 {
     switch (attrId)
     {
+    case IOT_ATTR_APP_TDS_STATUS:
+        return 1;
     /* These product attributes carry 32-bit cumulative counters. The record format
      * stores at most two 16-bit fields, which preserves the leading 4 bytes. */
     case IOT_ATTR_APP_WATER_CONSUMPTION:

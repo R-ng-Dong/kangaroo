@@ -17,14 +17,32 @@ __attribute__((weak)) void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm)
     printf("[Dummy] AppPushTdsReportToCloud\n");
 }
 
-static float TdsDeltaPercent(UI16 old_value, UI16 new_value)
+__attribute__((weak)) void TdsInputUpdateRecord(UI16 inlet_ppm)
 {
-    if (old_value == 0U)
+    (void)inlet_ppm;
+    //TODO
+    printf("[Dummy] TdsInputUpdateRecord\n");
+}
+
+__attribute__((weak)) void TdsOutputUpdateRecord(UI16 outlet_ppm)
+{
+    (void)outlet_ppm;
+    //TODO
+    printf("[Dummy] TdsOutputUpdateRecord\n");
+}
+
+static UI16 TdsDeltaPpm(UI16 old_value, UI16 new_value)
+{
+    if (old_value == 0)
     {
-        return (new_value == 0U) ? 0.0f : 100.0f;
+        return (new_value == 0) ? 0 : TDS_REPORT_DELTA_PERCENT;
     }
 
-    return fabsf((float)new_value - (float)old_value) / (float)old_value * 100.0f;
+    if(old_value >= new_value)
+    {
+        return old_value - new_value;
+    }
+    return new_value - old_value;
 }
 
 void TdsManagerInit(void)
@@ -50,16 +68,24 @@ bool TdsManagerShouldReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
     if ((now_ms - previous.last_sent_ms) >= TDS_REPORT_INTERVAL_MS)
     {
         printf("TDS report interval reached: %lu ms\n", (unsigned long)(now_ms - previous.last_sent_ms));
+        AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
         return true;
     }
 
-    float inlet_delta = TdsDeltaPercent(previous.last_reported_inlet_ppm, inlet_ppm);
-    float ro_delta = TdsDeltaPercent(previous.last_reported_ro_ppm, ro_ppm);
+    UI16 inlet_delta = TdsDeltaPpm(previous.last_reported_inlet_ppm, inlet_ppm);
+    UI16 ro_delta = TdsDeltaPpm(previous.last_reported_ro_ppm, ro_ppm);
 
     // trigger-based response (delta = 5%)
-    if ((inlet_delta >= TDS_REPORT_DELTA_PERCENT) || (ro_delta >= TDS_REPORT_DELTA_PERCENT))
+    if ((inlet_delta >= TDS_REPORT_DELTA_PERCENT))
     {
-        printf("TDS report triggered by delta: inlet=%.2f%%, ro=%.2f%%\n", inlet_delta, ro_delta);
+        printf("TDS input report triggered by delta: inlet=%u ppm\n", inlet_delta);
+        TdsInputUpdateRecord(inlet_ppm);
+        return true;
+    }
+    if (ro_delta >= TDS_REPORT_DELTA_PERCENT)
+    {
+        printf("TDS output report triggered by delta: ro=%u ppm\n", ro_delta);
+        TdsOutputUpdateRecord(ro_ppm);
         return true;
     }
 
@@ -87,13 +113,14 @@ void TdsManagerHandleSample(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
     if (!has_previous)
     {
         AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
+        TdsInputUpdateRecord(inlet_ppm);
+        TdsOutputUpdateRecord(ro_ppm);
         AppContextMarkTdsReported(inlet_ppm, ro_ppm, now_ms);
         return;
     }
 
     if (TdsManagerShouldReport(inlet_ppm, ro_ppm, now_ms))
     {
-        AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
         AppContextMarkTdsReported(inlet_ppm, ro_ppm, now_ms);
         return;
     }

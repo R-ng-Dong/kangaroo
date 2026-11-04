@@ -117,6 +117,7 @@ extern "C" {
 #define IOT_ATTR_POWER_CURRENT_INSTANCE 78   /* 0x004E — electrical current */
 
 /* Product attributes: Record keeps the leading 32-bit cumulative counter. */
+#define IOT_ATTR_APP_TDS_STATUS        160
 #define IOT_ATTR_APP_WATER_CONSUMPTION 45569
 #define IOT_ATTR_APP_ENERGY            63233
 

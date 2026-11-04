@@ -306,7 +306,7 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         }
         else
         {
-            desired_enabled = tank->base_enabled; // On
+            desired_enabled = D_TRUE; //tank->base_enabled; // On
         }
 
         if (desired_enabled != tank->enabled)

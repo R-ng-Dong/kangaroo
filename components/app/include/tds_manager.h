@@ -4,7 +4,7 @@
 #include "common.h"
 
 #define TDS_REPORT_INTERVAL_MS 60000U
-#define TDS_REPORT_DELTA_PERCENT 5.0f
+#define TDS_REPORT_DELTA_PERCENT 5 // ppm
 
 #define TDS_INPUT_ERROR_THRESHOLD 500 //ppm 
  

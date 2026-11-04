@@ -26,7 +26,7 @@ static DeviceElementAttributeInfo s_element_3_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
     ATTRIBUTE(160, "tds_output", 2),
-    // ATTRIBUTE(ATTR_ENERGY, "energy_saving", 4),
+    ATTRIBUTE(ATTR_ENERGY, "energy_saving", 4),
 };
 
 static DeviceElementAttributeInfo s_element_4_attributes[] = {
