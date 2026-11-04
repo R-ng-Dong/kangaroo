@@ -626,19 +626,19 @@ static void AppCheckVersionFirmwareMainboard(void)
     if (is_check_done)
         return;
 
-    if (++time_out >= 5)
+    if (++time_out >= 30)
     {
         ESP_LOGW(TAG, "Check version firmware mainboard timeout");
         is_check_done = D_TRUE;
         UI16 firm_version = 0xFFFF;
         AppPushFirmwareVersion(firm_version);
-        WaterControllerResetSystem();
+        // WaterControllerResetSystem();
     }
 
-    if (!g_cloud_is_connected)
-    {
-        return;
-    }
+    // if (!g_cloud_is_connected)
+    // {
+    //     return;
+    // }
 
     if (HasMessageTypeA())
     {
@@ -646,7 +646,7 @@ static void AppCheckVersionFirmwareMainboard(void)
         UI16 firm_version = WaterProfileGetVersionFirmware();
         // post to cloud
         AppPushFirmwareVersion(firm_version);
-        WaterControllerResetSystem();
+        // WaterControllerResetSystem();
         return;
     }
 }
@@ -717,6 +717,7 @@ WaterPurifierType AppCheckModel(void)
     if (HasMessageType1() || HasMessageTypeA())
     {
         AppSetModel(WATER_PURIFIER_TYPE_HOT_COLD);
+        WaterControllerResetSystem();
     }
     else
     {

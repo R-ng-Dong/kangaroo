@@ -275,7 +275,7 @@ static void WaterProfileApplyFrameTypeA(const KgrExternFrameTypeA *data)
     memcpy(&s_frame_type_A, data, sizeof(s_frame_type_A));
     s_frame_type_A_sequence++;
 
-    ESP_LOGI(WATER_PROFILE_TAG,
+    ESP_LOGW(WATER_PROFILE_TAG,
              "DeviceID=%" PRIu32 ", input=0x%02x, output=0x%02x, switch=0x%02x, led=0x%02x",
              s_frame_type_A.dev_id,
              s_frame_type_A.input_status,

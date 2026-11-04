@@ -9,7 +9,6 @@ static _bool WaterControllerResult(esp_err_t result)
     return (result == ESP_OK) ? D_TRUE : D_FALSE;
 }
 
-
 _bool WaterControllerInit(void)
 {
     return WaterControllerTaskInit();
@@ -48,13 +47,16 @@ _bool WaterControllerSetFilterRuntimeMinutes(FilterTimeIndex filter_index, UI16 
 
 _bool WaterControllerSetFeatureHot(UI8 enabled, UI8 temperature)
 {
-    if (enabled > 1U) return D_FALSE;
-    if (temperature < MIN_TEMPERATURE_HOT_TANK) temperature = MIN_TEMPERATURE_HOT_TANK;
-    if (temperature > MAX_TEMPERATURE_HOT_TANK) temperature = MAX_TEMPERATURE_HOT_TANK;
+    if (enabled > 1U)
+        return D_FALSE;
+    if (temperature < MIN_TEMPERATURE_HOT_TANK)
+        temperature = MIN_TEMPERATURE_HOT_TANK;
+    if (temperature > MAX_TEMPERATURE_HOT_TANK)
+        temperature = MAX_TEMPERATURE_HOT_TANK;
     printf("set feature hot: %d, temp: %d\n", enabled, temperature);
     WaterControlRequest_t request = {0};
     request.command = WATER_CONTROL_SEND_FEATURE_HOT;
-    
+
     request.value1 = enabled ? 1 : 0;
     request.expected1 = enabled ? HOT_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
@@ -69,15 +71,18 @@ _bool WaterControllerSetFeatureHot(UI8 enabled, UI8 temperature)
 
 _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature)
 {
-    if (enabled > 1U) return D_FALSE;
-    if (temperature < MIN_TEMPERATURE_COLD_TANK) temperature = MIN_TEMPERATURE_COLD_TANK;
-    if (temperature > MAX_TEMPERATURE_COLD_TANK) temperature = MAX_TEMPERATURE_COLD_TANK;
+    if (enabled > 1U)
+        return D_FALSE;
+    if (temperature < MIN_TEMPERATURE_COLD_TANK)
+        temperature = MIN_TEMPERATURE_COLD_TANK;
+    if (temperature > MAX_TEMPERATURE_COLD_TANK)
+        temperature = MAX_TEMPERATURE_COLD_TANK;
 
     printf("set feature cold: %d, temp: %d\n", enabled, temperature);
 
     WaterControlRequest_t request = {0};
     request.command = WATER_CONTROL_SEND_FEATURE_COLD;
-    
+
     request.value1 = (UI32)enabled ? 1 : 0;
     request.expected1 = enabled ? COLD_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
@@ -101,7 +106,7 @@ _bool WaterControllerStartROFlushing(UI16 time_s)
 
     WaterControlRequest_t request = {0};
     request.command = WATER_CONTROL_SEND_RO_FLUSHING;
-    
+
     request.value1 = (UI32)time_s;
     request.expected1 = RO_STATUS_FLUSHING;
     request.verify1 = WATER_CONTROL_VERIFY_RO_STATUS;
@@ -134,4 +139,3 @@ _bool WaterControllerSetDeviceId(UI32 dev_id)
 {
     return WaterControllerResult(SetDeviceId(dev_id));
 }
-

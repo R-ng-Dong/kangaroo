@@ -224,9 +224,11 @@ static esp_err_t FactoryAdcInit(void)
 
 static void TestAdc(cJSON *data)
 {
+    printf("Factory ADC test requested\n");
     if (0U == s_adc_ready && ESP_OK != FactoryAdcInit())
     {
         SetResult(data, 0U, "adc_init_failed");
+        printf("adc ready: %u\n", (unsigned)s_adc_ready);
         return;
     }
 
@@ -256,6 +258,7 @@ static void TestAdc(cJSON *data)
     {
         err = AdcOneshotRead(FACTORY_TDS_1_ADC, &raw2);
     }
+    printf("Factory ADC read: raw1=%u, raw2=%u\n", (unsigned)raw1, (unsigned)raw2);
     /* Remove DC drive after the reads, including when a GPIO or ADC call fails. */
     esp_err_t stop_err = FactoryAdcStopPulse();
     if (ESP_OK == err)
