@@ -3,27 +3,27 @@
 
 #include "common.h"
 
-#define BIT_0     (1U << 0)
-#define BIT_1     (1U << 1)
-#define BIT_2     (1U << 2)
-#define BIT_3     (1U << 3)
-#define BIT_4     (1U << 4)
-#define BIT_5     (1U << 5)
-#define BIT_6     (1U << 6)
-#define BIT_7     (1U << 7)
+#define BIT_0 (1U << 0)
+#define BIT_1 (1U << 1)
+#define BIT_2 (1U << 2)
+#define BIT_3 (1U << 3)
+#define BIT_4 (1U << 4)
+#define BIT_5 (1U << 5)
+#define BIT_6 (1U << 6)
+#define BIT_7 (1U << 7)
 
-#define KGR_MAX_INDEX    8
+#define KGR_MAX_INDEX 8
 
 #define STATUS_BIT(x) (((x) >= 1 && (x) <= KGR_MAX_INDEX) ? (1U << ((x) - 1)) : 0U)
 
-#define INPUT_STATUS(x)   STATUS_BIT(x)
-#define OUTPUT_STATUS(x)  STATUS_BIT(x)
-#define SWITCH_STATUS(x)  STATUS_BIT(x)
-#define LED_STATUS(x)     STATUS_BIT(x)
+#define INPUT_STATUS(x) STATUS_BIT(x)
+#define OUTPUT_STATUS(x) STATUS_BIT(x)
+#define SWITCH_STATUS(x) STATUS_BIT(x)
+#define LED_STATUS(x) STATUS_BIT(x)
 
-#define HOT_SWITCH_BIT      BIT_0
-#define COLD_SWITCH_BIT     BIT_1
-#define ENERGY_SAVING_BIT   BIT_2
+#define HOT_SWITCH_BIT BIT_0
+#define COLD_SWITCH_BIT BIT_1
+#define ENERGY_SAVING_BIT BIT_2
 
 // RO status
 #define RO_STATUS_PUMP_STOPPED 0x00
@@ -54,7 +54,8 @@
 #define COLD_TANK_STATUS_ENERGY_SAVING 0x0A
 #define COLD_TANK_STATUS_COMPRESSOR_DISABLED 0x0F
 
-typedef enum {
+typedef enum
+{
     FILTER_TIME_INDEX_1ST = 0,
     FILTER_TIME_INDEX_2ND = 1,
     FILTER_TIME_INDEX_3RD = 2,
@@ -62,14 +63,16 @@ typedef enum {
     FILTER_TIME_INDEX_POST = 4
 } FilterTimeIndex;
 
-typedef enum {
+typedef enum
+{
     RO_STATUS,
     PLY_STATUS,
     HOT_TANK_STATUS,
     COLD_TANK_STATUS
 } WaterPurifyStatusType;
 
-typedef enum {
+typedef enum
+{
     INPUT_STATUS,
     OUTPUT_STATUS,
     SWITCH_STATUS,
@@ -95,5 +98,9 @@ SI8 WaterProfileGetColdTankTemperature(void);
 UI16 WaterProfileGetVersionFirmware(void);
 _bool HasMessageTypeA(void);
 _bool HasMessageType1(void);
+
+UI32 WaterProfileGetSystemRunSeconds(void);
+UI32 WaterProfileGetSystemTimeSeconds(void);
+UI8 *WaterProfileGetFirmwareVersionByte(void);
 
 #endif
