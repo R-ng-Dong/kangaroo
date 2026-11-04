@@ -17,6 +17,7 @@ typedef struct {
 } UartConfig;
 
 esp_err_t UartInit(const UartConfig *uart_config);
+esp_err_t UartDeinit(uart_port_t port_num);
 esp_err_t UartWriteBytes(uart_port_t port_num, UI8 *data, size_t size);
 int       UartReadBytes(uart_port_t port_num, UI8 *data, size_t size);
 esp_err_t UartClearBuffer(uart_port_t port_num);

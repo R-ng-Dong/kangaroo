@@ -35,7 +35,6 @@ static void TdsPollingTask(void *arg)
 
         TdsManagerHandleSample(inlet_ppm, ro_ppm, now_ms);
         TdsManagerCheckWarnings(inlet_ppm, ro_ppm);
-
 #if 0        
         if (!warning_window_started)
         {

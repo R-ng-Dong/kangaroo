@@ -9,7 +9,6 @@ static _bool WaterControllerResult(esp_err_t result)
     return (result == ESP_OK) ? D_TRUE : D_FALSE;
 }
 
-
 _bool WaterControllerInit(void)
 {
     return WaterControllerTaskInit();

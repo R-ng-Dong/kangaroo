@@ -518,6 +518,10 @@ iot_err_t IOT_BleStopScan(void);
  */
 iot_err_t IOT_BleSetDeviceName(const char *name);
 
+/** Override the scan-response name used by subsequent connectable advertising.
+ * Pass NULL to restore the caller-supplied name. Call before advertising starts. */
+iot_err_t IOT_BleSetAdvertisingNameOverride(const char *name);
+
 /** @} */
 
 /** @defgroup BLE_Advertising Advertising Operations

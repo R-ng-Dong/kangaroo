@@ -139,7 +139,8 @@ UI32 WaterProfileGetDeviceId(void)
 
 UI8 WaterProfileGetInputStatus(WaterPurifyInputStatus input_type, UI8 index)
 {
-    if (KGR_MAX_INDEX <= index)
+    /* MLN input indices are one-based and include index 8. */
+    if (0U == index || KGR_MAX_INDEX < index)
     {
         return 0U;
     }
@@ -254,7 +255,6 @@ static void WaterProfileApplyFrameTypeA(const KgrExternFrameTypeA *data)
     memcpy(&s_frame_type_A, data, sizeof(s_frame_type_A));
     s_frame_type_A_sequence++;
 
-
     ESP_LOGW(WATER_PROFILE_TAG,
              "DeviceID=%" PRIu32 ", input=0x%02x, output=0x%02x, switch=0x%02x, led=0x%02x",
              s_frame_type_A.dev_id,
@@ -299,4 +299,19 @@ static void WaterProfileHandleUartFrame(const KgrDataFormat *frame)
     default:
         break;
     }
+}
+
+UI32 WaterProfileGetSystemRunSeconds(void)
+{
+    return s_frame_type_1.system_run;
+}
+
+UI32 WaterProfileGetSystemTimeSeconds(void)
+{
+    return s_frame_type_1.system_time;
+}
+
+UI8 *WaterProfileGetFirmwareVersionByte(void)
+{
+    return s_frame_type_A.fw_build_ver;
 }

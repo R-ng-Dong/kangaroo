@@ -96,4 +96,7 @@ UI16 WaterProfileGetVersionFirmware(void);
 _bool HasMessageTypeA(void);
 _bool HasMessageType1(void);
 
+UI32 WaterProfileGetSystemRunSeconds(void);
+UI32 WaterProfileGetSystemTimeSeconds(void);
+UI8 *WaterProfileGetFirmwareVersionByte(void);
 #endif

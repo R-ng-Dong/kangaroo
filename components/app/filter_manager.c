@@ -19,27 +19,23 @@ static const UI32 s_default_filter_lifetime_seconds[FILTER_RUNTIME_FILTER_COUNT]
     SECOND_FILTER_LIFETIME_HOURS * 3600U,
     THIRD_FILTER_LIFETIME_HOURS * 3600U,
     RO_FILTER_LIFETIME_HOURS * 3600U,
-    POST_FILTER_LIFETIME_HOURS * 3600U
-};
+    POST_FILTER_LIFETIME_HOURS * 3600U};
 
 static const UI64 s_filter_replacement_seconds[FILTER_RUNTIME_FILTER_COUNT] = {
     FIRST_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
     SECOND_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
     THIRD_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
     RO_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
-    POST_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U
-};
+    POST_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U};
 
 static UI32 s_last_report_ms = 0U;
 static UI8 s_last_reported_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
 
 static const char *s_filter_lifetime_nvs_keys[FILTER_RUNTIME_FILTER_COUNT] = {
-    "f1_life_s", "f2_life_s", "f3_life_s", "ro_life_s", "post_life_s"
-};
+    "f1_life_s", "f2_life_s", "f3_life_s", "ro_life_s", "post_life_s"};
 
 static const char *s_filter_pid_nvs_keys[FILTER_RUNTIME_FILTER_COUNT] = {
-    "f1_pid", "f2_pid", "f3_pid", "ro_pid", "post_pid"
-};
+    "f1_pid", "f2_pid", "f3_pid", "ro_pid", "post_pid"};
 
 static const UI8 s_default_filter_pids[FILTER_RUNTIME_FILTER_COUNT][FILTER_PID_SIZE] = {
     {0x00U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U,
@@ -91,7 +87,7 @@ static void FilterManagerLoadLifetimes(void)
             }
         }
     }
- 
+
     if (defaults_added)
     {
         nvs_commit(handle);
@@ -132,6 +128,7 @@ static void FilterManagerLoadDefaultPids(void)
     }
     nvs_close(handle);
 }
+
 
 _bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds)
 {
@@ -268,12 +265,13 @@ static UI32 GetRemainingPercent(FilterTimeIndex filter_index, UI32 used_seconds,
     return (remaining_seconds * 100U) / max_seconds;
 }
 
-static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
+static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values)
+{
     FilterRuntimeSnapshot_t snapshot = {0};
 
     if (!FilterRuntimeGetSnapshot(now_ms, &snapshot) || !percent_values)
     {
-        return ;
+        return;
     }
     for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
     {
@@ -334,7 +332,6 @@ void FilterManagerSetModel(WaterPurifierType model)
     }
 }
 
-
 static _bool FilterManagerHasSignificantDecrease(const UI8 *percent_values)
 {
     if (NULL == percent_values)
@@ -359,12 +356,13 @@ static void FilterManagerReportCurrentPercent(const UI8 *percent_values,
 {
     FilterManagerReportToCloud(percent_values, mode, filter_index);
 
-    // Update s_last_reported_percent 
-    if(mode == FILTER_MANAGER_REPORT_ONE_FILTER)
+    // Update s_last_reported_percent
+    if (mode == FILTER_MANAGER_REPORT_ONE_FILTER)
     {
         s_last_reported_percent[(UI8)filter_index] = percent_values[(UI8)filter_index];
     }
-    else{
+    else
+    {
         for (UI8 idx = 0; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
         {
             s_last_reported_percent[idx] = percent_values[idx];
@@ -422,13 +420,11 @@ void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent)
     static const WarningId warning_70[FILTER_RUNTIME_FILTER_COUNT] = {
         WARNING_ID_ER00056_FILTER1_LIFE_70, WARNING_ID_ER00057_FILTER2_LIFE_70,
         WARNING_ID_ER00058_FILTER3_LIFE_70, WARNING_ID_ER00059_FILTER4_LIFE_70,
-        WARNING_ID_ER00060_FILTER5_LIFE_70
-    };
+        WARNING_ID_ER00060_FILTER5_LIFE_70};
     static const WarningId warning_90[FILTER_RUNTIME_FILTER_COUNT] = {
         WARNING_ID_ER00061_FILTER1_LIFE_90, WARNING_ID_ER00062_FILTER2_LIFE_90,
         WARNING_ID_ER00063_FILTER3_LIFE_90, WARNING_ID_ER00064_FILTER4_LIFE_90,
-        WARNING_ID_ER00065_FILTER5_LIFE_90
-    };
+        WARNING_ID_ER00065_FILTER5_LIFE_90};
 
     if (!FilterRuntimeGetSnapshot(now_ms, &snapshot))
     {
@@ -480,7 +476,7 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
             {
                 printf("filter %d report by trigger\n", idx);
                 FilterManagerReportCurrentPercent(remaining_percent,
-                                                 FILTER_MANAGER_REPORT_ONE_FILTER, (FilterTimeIndex)idx);
+                                                  FILTER_MANAGER_REPORT_ONE_FILTER, (FilterTimeIndex)idx);
             }
         }
     }
@@ -491,7 +487,7 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
         FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
         s_last_report_ms = now_ms;
     }
-    return ;
+    return;
 }
 
 UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
