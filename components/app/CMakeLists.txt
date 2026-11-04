@@ -1,4 +1,4 @@
-file(GLOB_RECURSE SRCS "warning_manager.c" "cloud_event_handler.c" "report_alert.c" "record.c" "water_controller_task.c" "water_controller.c" "device_element_manager.c" "energy_saving_manager.c" "energy_consumption.c" "led_manager.c" "water_runtime.c" "status_manager.c" "water_profile.c" "tds_task.c" "tds_manager.c" "app.c" "system_runtime.c" "filter_runtime.c" "filter_manager.c" "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
+file(GLOB_RECURSE SRCS "group.c" "warning_manager.c" "cloud_event_handler.c" "report_alert.c" "record.c" "water_controller_task.c" "water_controller.c" "device_element_manager.c" "energy_saving_manager.c" "energy_consumption.c" "led_manager.c" "water_runtime.c" "status_manager.c" "water_profile.c" "tds_task.c" "tds_manager.c" "app.c" "system_runtime.c" "filter_runtime.c" "filter_manager.c" "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
 idf_component_register(SRCS ${SRCS}
                        INCLUDE_DIRS "include"
                        PRIV_REQUIRES sdkcontract sdk protocols app_context systems json
