@@ -1,6 +1,7 @@
 #include "group.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include <string.h>
 
 #define GROUP_NVS_NAMESPACE "group_ns"
 #define KEY_CONFIG_GROUP "group_key"
