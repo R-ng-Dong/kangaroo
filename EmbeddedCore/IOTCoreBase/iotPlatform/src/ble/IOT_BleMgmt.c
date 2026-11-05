@@ -1,9 +1,23 @@
 #include "ble/IOT_BleMgmt.h"
 #include "ble/IOT_BleDriver.h"
 #include "IOT_Log.h"
+#include <string.h>
 
 static const char *TAG = "BLE_DRV";
 static const IOT_BleDriver_t *s_driver = NULL;
+#define IOT_BLE_ADV_NAME_MAX_LEN 29U
+static char s_advertising_name[IOT_BLE_ADV_NAME_MAX_LEN + 1U];
+
+iot_err_t IOT_BleSetAdvertisingNameOverride(const char *name)
+{
+    if (NULL == name)
+        return IOT_ERR_INVALID_ARG;
+    size_t length = strlen(name);
+    if (0U == length || IOT_BLE_ADV_NAME_MAX_LEN < length)
+        return IOT_ERR_INVALID_ARG;
+    memcpy(s_advertising_name, name, length + 1U);
+    return IOT_OK;
+}
 
 void IOT_BleRegisterDriver(const IOT_BleDriver_t *driver)
 {
@@ -56,6 +70,15 @@ iot_err_t IOT_BleStartAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
 {
     if (s_driver == NULL || s_driver->startAdvertising == NULL)
         return IOT_ERR_NOT_SUPPORTED;
+    if (NULL == adv_requirements)
+        return IOT_ERR_INVALID_ARG;
+    if ('\0' != s_advertising_name[0])
+    {
+        IOT_BleMgmtAdvData_t advertising_data = *adv_requirements;
+        advertising_data.name = s_advertising_name;
+        advertising_data.nameLen = (uint8_t)strlen(s_advertising_name);
+        return s_driver->startAdvertising(&advertising_data);
+    }
     return s_driver->startAdvertising(adv_requirements);
 }
 
