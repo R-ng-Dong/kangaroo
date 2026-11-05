@@ -58,19 +58,25 @@ _bool WaterControllerSetFeatureHot(UI8 enabled, UI8 temperature)
     request.value1 = enabled ? 1 : 0;
     request.expected1 = enabled ? HOT_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
-    // if (enabled)
-    // {
-        request.value2 = temperature;
-        request.expected2 = (UI32)(temperature); // target temperature
-        request.verify2 = WATER_CONTROL_VERIFY_HOT_TEMPERATURE;
-    // }
+
+    /* Off carries 0 in the value byte (uart.txt: "when off, b2 = b3 = 0")
+     * and the target is not verified: the mainboard echoes the previous
+     * target for an off tank, so a target check would never confirm and the
+     * command would be retried three times. */
+    request.value2 = temperature;
+    request.expected2 = (UI32)(temperature); // target temperature
+    request.verify2 = WATER_CONTROL_VERIFY_HOT_TEMPERATURE;
+
+    // request.value2 = (0U != enabled) ? temperature : 0U;
+    // request.expected2 = request.value2;
+    // request.verify2 = (0U != enabled) ? WATER_CONTROL_VERIFY_HOT_TEMPERATURE
+    //                                   : WATER_CONTROL_VERIFY_NONE;
     return WaterControllerTaskEnqueue(&request);
 }
 
 _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature)
 {
     if (enabled > 1U) return D_FALSE;
-    if (temperature < MIN_TEMPERATURE_COLD_TANK) temperature = MIN_TEMPERATURE_COLD_TANK;
     if (temperature > MAX_TEMPERATURE_COLD_TANK) temperature = MAX_TEMPERATURE_COLD_TANK;
 
     printf("set feature cold: %d, temp: %d\n", enabled, temperature);
@@ -81,12 +87,15 @@ _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature)
     request.value1 = (UI32)enabled ? 1 : 0;
     request.expected1 = enabled ? COLD_SWITCH_BIT : 0;
     request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
-    // if (enabled)
-    // {
-        request.value2 = temperature ;
-        request.expected2 = (UI32)(temperature); // target temperature
-        request.verify2 = WATER_CONTROL_VERIFY_COLD_TEMPERATURE;
-    // }
+
+    request.value2 = temperature ;
+    request.expected2 = (UI32)(temperature); // target temperature
+    request.verify2 = WATER_CONTROL_VERIFY_COLD_TEMPERATURE;
+
+    // request.value2 = (0U != enabled) ? temperature : 0U;
+    // request.expected2 = request.value2;
+    // request.verify2 = (0U != enabled) ? WATER_CONTROL_VERIFY_COLD_TEMPERATURE
+    //                                   : WATER_CONTROL_VERIFY_NONE;
     return WaterControllerTaskEnqueue(&request);
 }
 

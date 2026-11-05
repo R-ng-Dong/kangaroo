@@ -27,6 +27,7 @@
 #include "led_manager.h"
 #include "event_manager.h"
 #include "cloud_event_handler.h"
+#include "cloud_sync.h"
 #include "device_element_manager.h"
 #include "energy_saving_manager.h"
 #include "energy_consumption.h"
@@ -161,6 +162,47 @@ static void BootCountResetTimeoutTask(void *arg)
     vTaskDelete(NULL);
 }
 
+/* The element registry is initialised at boot before the mainboard's first
+ * STATUS frame, so ATTR_ONOFF/ATTR_TEMP_SET start at 0. Correct them once
+ * from the first real frame (uart.txt 4.12 settings, 4.22/4.23 targets) and
+ * publish, so the app does not show the tanks as off/0 C while the machine
+ * is running. */
+static void AppSyncTankStateFromMainboard(void)
+{
+    static _bool done = D_FALSE;
+    if (D_TRUE == done)
+    {
+        return;
+    }
+    if (D_FALSE == StatusManagerHasWaterStatus())
+    {
+        return;
+    }
+    done = D_TRUE;
+
+    const UI8 setting = WaterProfileGetSetting();
+    const UI8 hot_raw = WaterProfileGetHotTargetTemperature();
+    const UI8 cold_raw = WaterProfileGetColdTargetTemperature();
+    UI8 value[2] = {0U, 0U};
+
+    value[1] = (0U != (setting & HOT_SWITCH_BIT)) ? 1U : 0U;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_ONOFF, value, 2);
+    value[1] = (0U != (setting & COLD_SWITCH_BIT)) ? 1U : 0U;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_ONOFF, value, 2);
+
+    value[1] = hot_raw;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_TEMP_SET, value, 2);
+    value[1] = cold_raw;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_TEMP_SET, value, 2);
+
+    ESP_LOGW(TAG, "Tank state synced from mainboard: setting=0x%02x hot=%u/%u cold=%u/%u",
+             setting, (unsigned)((setting & HOT_SWITCH_BIT) ? 1U : 0U), hot_raw,
+             (unsigned)((setting & COLD_SWITCH_BIT) ? 1U : 0U), cold_raw);
+
+    AppRspToCloud(ELEMENT_ID_4, ATTR_ONOFF);
+    AppRspToCloud(ELEMENT_ID_5, ATTR_ONOFF);
+}
+
 static void AppTask(void *arg)
 {
     UI32 now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
@@ -175,10 +217,13 @@ static void AppTask(void *arg)
     while (1)
     {
         ReportAlertPoll();
+        CloudSyncTick();
         if(WATER_PURIFIER_TYPE_HOT_COLD == s_model)
         {
             StatusManagerRefresh();
             StatusManagerCheckWarnings();
+            EnergySavingManagerSyncFromMainboard();
+            AppSyncTankStateFromMainboard();
             GetNowTime(&year, &hour, &minute, NULL);
             if (year >= 125)
             {
@@ -306,6 +351,42 @@ static void EventHandler(EventID event_id, void *data)
     }
 }
 
+/* A hot/cold switch or setpoint may only drive the tank when the mainboard
+ * reports no fault for that tank (4.6/4.9: 0x02 running too long, 0x03
+ * temperature sensor, 0x04 load broken). Before the first STATUS frame the
+ * state is unknown, so ON/setpoint is refused as well; OFF is always
+ * allowed. The registry is not touched on refusal, so the state report
+ * echoes the old value and the app snaps back. */
+static _bool AppTankOnAllowed(UI16 elem_id)
+{
+    if ((ELEMENT_ID_4 != elem_id) && (ELEMENT_ID_5 != elem_id))
+    {
+        return D_TRUE;
+    }
+
+    if (D_FALSE == HasMessageType1())
+    {
+        ESP_LOGW(TAG, "Tank 0x%04x: no mainboard status yet, refused", elem_id);
+        return D_FALSE;
+    }
+
+    const UI8 status = (ELEMENT_ID_4 == elem_id) ? WaterProfileGetStatus(HOT_TANK_STATUS)
+                                                 : WaterProfileGetStatus(COLD_TANK_STATUS);
+    const _bool faulted = (ELEMENT_ID_4 == elem_id)
+                              ? ((HOT_TANK_STATUS_HEATER_RUNNING_TOO_LONG == status) ||
+                                 (HOT_TANK_STATUS_TEMPERATURE_SENSOR_ERROR == status) ||
+                                 (HOT_TANK_STATUS_LOAD_BROKEN == status))
+                              : ((COLD_TANK_STATUS_COMPRESSOR_RUNNING_TOO_LONG == status) ||
+                                 (COLD_TANK_STATUS_TEMPERATURE_SENSOR_ERROR == status) ||
+                                 (COLD_TANK_STATUS_LOAD_BROKEN == status));
+    if (D_TRUE == faulted)
+    {
+        ESP_LOGW(TAG, "Tank 0x%04x faulted (status 0x%02x): change refused", elem_id, status);
+        return D_FALSE;
+    }
+    return D_TRUE;
+}
+
 static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 lenAttrValue)
 {
     const DeviceElementAttributeInfo *attribute = DeviceElementGetAttribute(elemId, attrId);
@@ -327,6 +408,14 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
         return;
     }
     ESP_LOGI(TAG, "Received %s for element 0x%04x", attribute->name, elemId);
+
+    if (((ATTR_ONOFF == attrId) || (ATTR_TEMP_SET == attrId)) &&
+        (((ATTR_TEMP_SET == attrId) || (0U != attrValue[1]))) &&
+        (D_TRUE != AppTankOnAllowed(elemId)))
+    {
+        return;
+    }
+
     if (!DeviceElementSetAttributeValue(elemId, attrId, attrValue, lenAttrValue))
     {
         ESP_LOGE(TAG, "Failed to store %s for element 0x%04x", attribute->name, elemId);
@@ -364,14 +453,14 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
             {
             case ELEMENT_ID_4:
             {
-                EnergySavingManagerSetTank(ENERGY_SAVING_TANK_HOT, 1, (UI8)temp,
-                                           (UI64)(esp_timer_get_time() / 1000000ULL));
+                (void)EnergySavingManagerSetTankTemperature(ENERGY_SAVING_TANK_HOT, (UI8)temp,
+                                                            (UI64)(esp_timer_get_time() / 1000000ULL));
                 break;
             }
             case ELEMENT_ID_5:
             {
-                EnergySavingManagerSetTank(ENERGY_SAVING_TANK_COLD, 1, (UI8)temp,
-                                           (UI64)(esp_timer_get_time() / 1000000ULL));
+                (void)EnergySavingManagerSetTankTemperature(ENERGY_SAVING_TANK_COLD, (UI8)temp,
+                                                            (UI64)(esp_timer_get_time() / 1000000ULL));
                 break;
             }
             default:
@@ -435,7 +524,7 @@ void AppRspToCloud(UI8 elem_id, UI16 attr_id)
     static devStateElemsInfo_t full_state;
     static uint16_t changed_element_id;
 
-    if (!g_cloud_is_connected) return;
+    if (!IOT_CoreIsCloudConnected()) return;
 
     iot_err_t iot_err = IOT_OK;
     IOT_DevIdentityInfo_t info = {0};
@@ -744,6 +833,7 @@ esp_err_t AppCommonInit(void)
 
 esp_err_t AppInit(WaterPurifierType model)
 {
+    CloudSyncInit();
     HandleBootCount();
     if(IOT_CoreIsProvisioned())
         LedManagerSetNetworkConnected();
@@ -751,8 +841,15 @@ esp_err_t AppInit(WaterPurifierType model)
     if(IOT_CoreIsProvisioned())
     {
         RAL_DeinitBle();
+        /* Provisioned boot: give the cloud session the heap first; TDS starts
+         * on ready or after 15 s (CloudSyncTick). */
+        CloudSyncStartTdsWhenRoomy();
     }
-    TdsTaskStart();
+    else
+    {
+        /* Provisioning boot: TDS runs until DEV_EVENT_IDENTIFICATION stops it. */
+        TdsTaskStart();
+    }
 
     FilterManagerSetModel(model);
 

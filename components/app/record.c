@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <time.h>
+#include "esp_log.h"
 
 #include "IOT_AppManager.h"
 #include "IOT_Core.h"
@@ -21,6 +22,7 @@
 #include "defines/IOT_AttrDefines.h"
 
 #include "device_element_manager.h"
+#include "energy_saving_manager.h"
 
 static const char *TAG = "RECORD";
 
@@ -67,6 +69,8 @@ static void app_on_device_removed(uint16_t eid, bool root)
     (void) eid;
     if(root)
     {
+        ESP_LOGW(TAG, "Root device removed, clearing energy saving config and restarting");
+        EnergySavingManagerClearConfig();
         IOT_ApplicationRestartChip();
     }
 }

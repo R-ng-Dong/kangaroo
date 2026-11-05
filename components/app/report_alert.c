@@ -67,7 +67,7 @@ static const ConfigKey s_config_keys[] = {
     {"alert.tier2.intervalMs", 0, 60000, 5000, INT32_MAX}, 
     {"alert.tier2.maxSends", 0, 5, 1, INT32_MAX}, 
     {"alert.tier3.intervalMs", 0, 6000000, 5000, INT32_MAX}, 
-    {"report.intervalMs", 0, 86400000, 60000, 604800000}, 
+    {"report.intervalMs", 0, 900000, 60000, 604800000}, 
     {"state.tds.deltaPct", 1, 5, 1, 50}, 
     {"state.tds.floorPpm", 1, 2, 0, 50}, 
     {"state.tds.minGapSec", 1, 60, 10, 3600}, 
@@ -397,8 +397,7 @@ void ReportAlertHandleServiceEvent(IOT_CoreServiceEvent_t *event)
     cJSON_Delete(root);
 }
 
-/* Hook called by WarningManager on every warning-bit transition. */
-// Override
+/* Hook called by WarningManager on every warning-bit transition. */// Override
 void WarningManagerOnChanged(UI32 active_mask, UI32 changed_mask)
 {
     for (size_t i = 0; i < sizeof(s_warning_ids) / sizeof(s_warning_ids[0]); ++i)
@@ -525,4 +524,12 @@ iot_err_t ReportAlertPublishReport(void)
     iot_err_t err = !IOT_CoreIsCloudConnected() ? IOT_ERR_NO_NETWORK_CONNECT : (len <= REPORT_JSON_CAPACITY ? IOT_CoreServiceMsgPublish("report", json, len) : IOT_ERR_INVALID_SIZE);
     cJSON_free(json);
     return err;
+}
+
+/* Report period from the cloud config (report.intervalMs is index 5 in
+ * s_config_keys). config_load() clamps it to 60 s .. 7 days. */
+UI32 ReportAlertGetReportIntervalMs(void)
+{
+    config_load();
+    return (UI32)s_config.values[5];
 }

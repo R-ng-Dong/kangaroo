@@ -661,7 +661,7 @@ esp_err_t TdsInit(TdsPinConfig config[2])
         return err;
     }
 
-    BaseType_t ret = xTaskCreate(TdsTask, "TdsTask", 2048 * 2, NULL, configMAX_PRIORITIES - 3, &xTask_tds);
+    BaseType_t ret = xTaskCreate(TdsTask, "TdsTask", 4096, NULL, configMAX_PRIORITIES - 3, &xTask_tds);
     if (pdPASS != ret)
     {
         ESP_LOGE(TAG, "Failed to create TDS task");

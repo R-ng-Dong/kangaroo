@@ -12,10 +12,19 @@ typedef enum
 } EnergySavingTank_t;
 
 void EnergySavingManagerInit(void);
+_bool EnergySavingManagerClearConfig(void);
 _bool EnergySavingManagerSetSchedule(_bool enabled, UI16 start_minute, UI16 end_minute);
+void EnergySavingManagerSyncFromMainboard(void);
 void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds);
 _bool EnergySavingManagerSetTank(EnergySavingTank_t tank, UI8 enabled, UI8 temperature,
                                  UI64 now_seconds);
+/* Update the target only; the switch state is left untouched. Used by the
+ * cloud ATTR_TEMP_SET path (attr 20 is the half-degree wire value, C x 2):
+ * the reference never turns a tank on because its setpoint changed. */
+_bool EnergySavingManagerSetTankTemperature(EnergySavingTank_t tank, UI8 temperature,
+                                            UI64 now_seconds);
+/* Current policy switch state (what was last applied to the mainboard). */
+_bool EnergySavingManagerGetTankEnabled(EnergySavingTank_t tank, UI8 *enabled);
 void EnergySavingManagerGetSavedEnergy(UI64 now_seconds, UI64 *hot_tank_wh, UI64 *cold_tank_wh);
 
 #endif
