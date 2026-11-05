@@ -230,6 +230,8 @@ void FilterRuntimeSet(FilterTimeIndex filter_index, UI32 seconds)
     s_snapshot.seconds[filter_index] = seconds;
     s_snapshot.valid[filter_index] = true;
 
+    printf("==> FilterRuntimeSet: filter_index=%d, seconds=%ld\n", filter_index, seconds);
+
     if (s_runtime_model == FILTER_RUNTIME_MODEL_LOCAL)
     {
         s_local_runtime_total_s[filter_index] = seconds;

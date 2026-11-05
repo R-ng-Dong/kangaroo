@@ -342,6 +342,7 @@ static esp_err_t TdsReadRawSamples(TdsSensorId sensor_id, UI16 *samples, UI16 sa
         if (err != ESP_OK) {
             samples[i] = 0; // Set to 0 on error
         }
+        esp_rom_delay_us(20);
     }
     return ESP_OK;
 }
@@ -521,6 +522,7 @@ esp_err_t TdsDeinit(TdsSensorId sensor_id)
     return ESP_OK;
 }
 
+#define TDS_SLEEP_US 100
 static void TdsTask(void * param)
 {
     TdsConfig *sensor_1 = TdsGetConfig(TDS_SENSOR_0);
@@ -549,12 +551,12 @@ static void TdsTask(void * param)
 
         gpio_set_level(sensor_1->pulse1_pin, 1);
         gpio_set_level(sensor_1->pulse2_pin, 0);
-        esp_rom_delay_us(100);
+        esp_rom_delay_us(TDS_SLEEP_US);
         TdsReadAverageRaw(TDS_SENSOR_0, &pos_value1);
 
         gpio_set_level(sensor_1->pulse1_pin, 0);
         gpio_set_level(sensor_1->pulse2_pin, 1);
-        esp_rom_delay_us(100);
+        esp_rom_delay_us(TDS_SLEEP_US);
         TdsReadAverageRaw(TDS_SENSOR_0, &neg_value1);
 
         gpio_set_level(sensor_1->pulse1_pin, 0);
@@ -562,12 +564,12 @@ static void TdsTask(void * param)
 
         gpio_set_level(sensor_2->pulse1_pin, 1);
         gpio_set_level(sensor_2->pulse2_pin, 0);
-        esp_rom_delay_us(100);
+        esp_rom_delay_us(TDS_SLEEP_US);
         TdsReadAverageRaw(TDS_SENSOR_1, &pos_value2);
 
         gpio_set_level(sensor_2->pulse1_pin, 0);
         gpio_set_level(sensor_2->pulse2_pin, 1);
-        esp_rom_delay_us(100);
+        esp_rom_delay_us(TDS_SLEEP_US);
         TdsReadAverageRaw(TDS_SENSOR_1, &neg_value2);
 
         TdsStartPulses(TDS_SENSOR_0);

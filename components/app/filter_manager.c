@@ -264,8 +264,9 @@ static UI32 GetRemainingPercent(FilterTimeIndex filter_index, UI32 used_seconds,
     {
         return 0U;
     }
-
-    return (remaining_seconds * 100U) / max_seconds;
+    float percent = ((float)remaining_seconds / (float)max_seconds) * 100.0f;
+    if(percent >= 99.5f) percent = 100.0f;
+    return (UI32)percent;
 }
 
 static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){

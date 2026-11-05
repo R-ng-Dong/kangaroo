@@ -19,6 +19,7 @@ static volatile _bool s_pattern_active = D_FALSE;
 static void LedPatternTask(void *arg)
 {
     _bool led_on = D_TRUE;
+    _bool is_connected = D_FALSE;
     while (1)
     {
         if (!s_pattern_active)
@@ -29,11 +30,19 @@ static void LedPatternTask(void *arg)
         LedPattern pattern = s_pattern;
         if (pattern == LED_PATTERN_CONNECTED)
         {
+            if(is_connected)
+            {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+            printf("===>>> LED_PATTERN_CONNECTED\n");
             LedManagerSetState(1);
+            is_connected = D_TRUE;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
+        is_connected = D_FALSE;
         LedManagerSetState(led_on ? LED_ON : LED_OFF);
         led_on = !led_on;
         vTaskDelay(pdMS_TO_TICKS(pattern == LED_PATTERN_OTA ? 100 : 500));

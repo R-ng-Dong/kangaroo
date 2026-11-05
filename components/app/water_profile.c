@@ -222,8 +222,9 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
     SI8 cold_temp = (s_frame_type_1.cold_tank_temperature / 100) - 50;
 
 #if 1
+    ESP_LOGI(WATER_PROFILE_TAG, "=============================================================FRAME TYPE 1============================================================");
     ESP_LOGI(WATER_PROFILE_TAG,
-             "System run=%" PRIu32 "s, time=%" PRIu32 "s, STATUS [ro=0x%02x, ply=0x%02x, hot=0x%02x, cold=0x%02x, setting=0x%02x], TEMPERATURE [hot: %d *C, cold: %d *C]",
+             "System run=%" PRIu32 "s, total time=%" PRIu32 "s, STATUS [ro=0x%02x, ply=0x%02x, hot=0x%02x, cold=0x%02x, setting=0x%02x], TEMPERATURE [hot: %d *C, cold: %d *C]",
              s_frame_type_1.system_run,
              s_frame_type_1.system_time,
              s_frame_type_1.ro_status,
@@ -241,6 +242,7 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
              s_frame_type_1.filter_time_3,
              s_frame_type_1.ro_filter_time,
              s_frame_type_1.post_filter_time);
+    ESP_LOGI(WATER_PROFILE_TAG, "================================================================================================================================");
 #endif
 }
 
