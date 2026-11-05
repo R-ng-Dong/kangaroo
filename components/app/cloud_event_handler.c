@@ -924,7 +924,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         // TODO: Sync device state to cloud if needed
         g_cloud_is_connected = 1;
         LedManagerSetNormal();
-
+        
         AppPushWarningToCloud();
 
         IOT_ContractOnCloudConnected();
