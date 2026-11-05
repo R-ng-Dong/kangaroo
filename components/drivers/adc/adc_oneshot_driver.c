@@ -56,6 +56,13 @@ esp_err_t AdcOneshotRead(AdcChannel channel, UI16 *raw_data)
     if (raw_data == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    // WARNING: adc_oneshot_read() writes a 4-byte int, but raw_data points to a 2-byte UI16.
+    // The upper 2 bytes (always 0) land right after *raw_data and overwrite whatever is there
+    // (for TdsReadRawSamples: 2 bytes past samples[ADC_SAMPLE_COUNT - 1]). Currently harmless
+    // only because that slot is stack padding. Fix: read into a local int, then cast to UI16.
+
+    // sizeof(UI16) = sizeof(int) = 2 
+    // done 
     esp_err_t err = adc_oneshot_read(adc1_handle, (adc_channel_t)channel, (int *)raw_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read ADC1 channel");

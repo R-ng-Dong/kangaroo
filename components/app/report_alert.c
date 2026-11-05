@@ -345,13 +345,17 @@ void ReportAlertPoll(void)
         s_last_publish_us = now;
         ++a->sends_in_tier;
         uint32_t max_sends = a->tier == 1U ? (uint32_t)s_config.values[1] : (a->tier == 2U ? (uint32_t)s_config.values[3] : UINT32_MAX);
-        uint32_t interval = a->tier == 1U ? (uint32_t)s_config.values[0] * 1000U : (a->tier == 2U ? (uint32_t)s_config.values[2] * 1000U : (uint32_t)s_config.values[4] * 1000U);
+        // WARNING (B6): config values are already in ms. "* 1000U" here turns them into us, then
+        // next_send_us adds "* 1000LL" again -> retries every 4.2 h / 16.7 h / ~473 h instead of
+        // 15 s / 60 s / 100 min. tier 3 (6000000 * 1000) also overflows uint32_t.
+        // done
+        uint32_t interval_ms = a->tier == 1U ? (uint32_t)s_config.values[0] : (a->tier == 2U ? (uint32_t)s_config.values[2] : (uint32_t)s_config.values[4]);
         if (a->tier < 3U && a->sends_in_tier >= max_sends)
         {
             ++a->tier;
             a->sends_in_tier = 0U;
         }
-        a->next_send_us = now + (int64_t)interval * 1000LL;
+        a->next_send_us = now + (int64_t)interval_ms * 1000LL;
         return;
     }
 }
@@ -421,6 +425,11 @@ void WarningManagerOnChanged(UI32 active_mask, UI32 changed_mask)
     }
 }
 
+// WARNING (B8): nothing calls ReportAlertPublishReport(), so the "report" message (after connect
+// + every report.intervalMs, see report_alert.md) is never sent. Also the full state built here is
+// likely larger than IOT_SERVICE_MSG_PAYLOAD_MAX (1024) -> IOT_ERR_INVALID_SIZE.
+// // NOTE: This function is already called in CloudSyncTick().
+// done
 iot_err_t ReportAlertPublishReport(void)
 {
     char mac[13] = {0}, device_id[25] = {0};
@@ -453,9 +462,12 @@ iot_err_t ReportAlertPublishReport(void)
     cJSON_AddNumberToObject(extra, "cfg.general", s_config.version[SCOPE_GENERAL]);
 
     UI8 element_count = DeviceElementGetCount();
+    DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+    DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
+    DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
     for (UI8 i = 0; i < element_count; ++i)
     {
-        const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+        const DeviceElementInfo *element = &element_snapshot[i];
         if (element == NULL)
             continue;
         char element_key[6];

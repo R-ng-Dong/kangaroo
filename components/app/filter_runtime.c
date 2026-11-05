@@ -173,7 +173,6 @@ bool FilterRuntimeUpdateLocal(bool pump_active, UI32 now_ms)
                 s_local_runtime_start_ms[i] = now_ms;
                 // s_local_runtime_total_s[i] += (now_ms - s_local_runtime_start_ms[i]) / 1000U;
                 s_snapshot.valid[i] = true;
-                break;
             }
         }
     }

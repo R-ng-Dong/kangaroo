@@ -1,4 +1,7 @@
 #include "device_element_manager.h"
+#include "freertos/FreeRTOS.h"
+
+static portMUX_TYPE s_elements_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define ATTRIBUTE(id_, name_, length_) { .id = (id_), .name = (name_), .value_length = (length_), .has_value = D_FALSE, .value = {0} }
 #define ARRAY_COUNT(array_) (sizeof(array_) / sizeof((array_)[0]))
@@ -98,9 +101,11 @@ _bool DeviceElementSetAttributeValue(UI16 element_id, UI16 attribute_id, const u
         return D_FALSE;
     }
 
+    portENTER_CRITICAL(&s_elements_lock);
     const DeviceElementInfo *element = DeviceElementGetById(element_id);
     if (element == NULL)
     {
+        portEXIT_CRITICAL(&s_elements_lock);
         return D_FALSE;
     }
 
@@ -112,15 +117,18 @@ _bool DeviceElementSetAttributeValue(UI16 element_id, UI16 attribute_id, const u
         {
             if (value_length != entry->value_length || value_length > sizeof(entry->value))
             {
+                portEXIT_CRITICAL(&s_elements_lock);
                 return D_FALSE;
             }
             memcpy(entry->value, value, value_length);
             entry->has_value = D_TRUE;
             if(ATTR_ENERGY_SAVING_SCHEDULE == attribute_id || ATTR_FILTER_SETTING == attribute_id)
                 entry->has_value = D_FALSE;
+            portEXIT_CRITICAL(&s_elements_lock);
             return D_TRUE;
         }
     }
+    portEXIT_CRITICAL(&s_elements_lock);
     return D_FALSE;
 }
 
@@ -131,9 +139,11 @@ _bool DeviceElementSetAttributeValueOffset(UI16 element_id, UI16 attribute_id, U
         return D_FALSE;
     }
 
+    portENTER_CRITICAL(&s_elements_lock);
     const DeviceElementInfo *element = DeviceElementGetById(element_id);
     if (element == NULL)
     {
+        portEXIT_CRITICAL(&s_elements_lock);
         return D_FALSE;
     }
 
@@ -146,6 +156,7 @@ _bool DeviceElementSetAttributeValueOffset(UI16 element_id, UI16 attribute_id, U
             if ((offset > entry->value_length) ||
                 (value_length > (entry->value_length - offset)))
             {
+                portEXIT_CRITICAL(&s_elements_lock);
                 return D_FALSE;
             }
             if (value_length > 0U)
@@ -153,9 +164,11 @@ _bool DeviceElementSetAttributeValueOffset(UI16 element_id, UI16 attribute_id, U
                 memcpy(entry->value + offset, value, value_length);
             }
             entry->has_value = D_TRUE;
+            portEXIT_CRITICAL(&s_elements_lock);
             return D_TRUE;
         }
     }
+    portEXIT_CRITICAL(&s_elements_lock);
     return D_FALSE;
 }
 
@@ -166,9 +179,11 @@ _bool DeviceElementGetAttributeValue(UI16 element_id, UI16 attribute_id, uint8_t
         return D_FALSE;
     }
 
+    portENTER_CRITICAL(&s_elements_lock);
     const DeviceElementInfo *element = DeviceElementGetById(element_id);
     if (element == NULL)
     {
+        portEXIT_CRITICAL(&s_elements_lock);
         return D_FALSE;
     }
 
@@ -180,18 +195,22 @@ _bool DeviceElementGetAttributeValue(UI16 element_id, UI16 attribute_id, uint8_t
         {
             if (!entry->has_value || value_capacity != entry->value_length)
             {
+                portEXIT_CRITICAL(&s_elements_lock);
                 return D_FALSE;
             }
             memcpy(value_out, entry->value, entry->value_length);
             *value_length_out = entry->value_length;
+            portEXIT_CRITICAL(&s_elements_lock);
             return D_TRUE;
         }
     }
+    portEXIT_CRITICAL(&s_elements_lock);
     return D_FALSE;
 }
 
 void DeviceElementResetAttributeValues(void)
 {
+    portENTER_CRITICAL(&s_elements_lock);
     for (UI8 i = 0U; i < ARRAY_COUNT(s_elements); ++i)
     {
         DeviceElementAttributeInfo *attributes = (DeviceElementAttributeInfo *)s_elements[i].attributes;
@@ -201,6 +220,25 @@ void DeviceElementResetAttributeValues(void)
             attributes[j].has_value = D_FALSE;
         }
     }
+    portEXIT_CRITICAL(&s_elements_lock);
+}
+
+void DeviceElementGetSnapshot(DeviceElementInfo elements[MAX_NUM_ELEMENT],
+                              DeviceElementAttributeInfo attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE])
+{
+    if (elements == NULL || attributes == NULL) return;
+
+    portENTER_CRITICAL(&s_elements_lock);
+    for (UI8 i = 0U; i < ARRAY_COUNT(s_elements); ++i)
+    {
+        elements[i] = s_elements[i];
+        for (UI8 j = 0U; j < s_elements[i].attribute_count; ++j)
+        {
+            attributes[i][j] = s_elements[i].attributes[j];
+        }
+        elements[i].attributes = attributes[i];
+    }
+    portEXIT_CRITICAL(&s_elements_lock);
 }
 
 const UI16 IndexToElementId(UI8 idx)

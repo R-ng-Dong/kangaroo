@@ -1,6 +1,7 @@
 #include "app.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -100,6 +101,15 @@ static void ResetBootCount(void)
 
 static void HandleBootCount(void)
 {
+    esp_reset_reason_t reset_reason = esp_reset_reason();
+    if (reset_reason != ESP_RST_POWERON)
+    {
+        ESP_LOGI(TAG, "Reset reason %d is not power-on; clearing factory-reset boot count",
+                 (int)reset_reason);
+        ResetBootCount();
+        return;
+    }
+
     uint32_t boot_count = 0U;
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -126,6 +136,8 @@ static void HandleBootCount(void)
     boot_count += 1;
     ESP_LOGI(TAG, "Boot count = %lu", (unsigned long)boot_count);
 
+    // Only consecutive power-on resets count toward this gesture. Crash, watchdog,
+    // software restart, and brownout resets clear the counter above.
     if (boot_count >= BOOT_COUNT_RESET_THRESHOLD)
     {
         ESP_LOGW(TAG, "Boot count reached %lu, resetting device", (unsigned long)boot_count);
@@ -216,6 +228,7 @@ static void AppTask(void *arg)
 
     while (1)
     {
+        IotSmartEvaluateCondition();
         ReportAlertPoll();
         CloudSyncTick();
         if(WATER_PURIFIER_TYPE_HOT_COLD == s_model)
@@ -519,10 +532,12 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
 
 void AppRspToCloud(UI8 elem_id, UI16 attr_id)
 {
-    static elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
-    static devStateElemState_t elements[MAX_NUM_ELEMENT];
-    static devStateElemsInfo_t full_state;
-    static uint16_t changed_element_id;
+    elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
+    devStateElemState_t elements[MAX_NUM_ELEMENT];
+    devStateElemsInfo_t full_state;
+    uint16_t changed_element_id;
+    DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+    DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
 
     if (!IOT_CoreIsCloudConnected()) return;
 
@@ -543,9 +558,10 @@ void AppRspToCloud(UI8 elem_id, UI16 attr_id)
     }
 
     UI8 element_count = DeviceElementGetCount();
+    DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
     for (UI8 i = 0; i < element_count; ++i)
     {
-        const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+        const DeviceElementInfo *element = &element_snapshot[i];
         UI8 attribute_count = 0;
         for (UI8 j = 0; j < element->attribute_count; ++j)
         {
@@ -709,13 +725,8 @@ static UI32 AppValueChanged(UI32 previous, UI32 current)
 {
     if (previous == current)
     {
-        return D_FALSE;
+        return 0U;
     }
-    if (previous == 0U)
-    {
-        return D_TRUE;
-    }
-
     UI32 difference = (current > previous) ? (current - previous) : (previous - current);
 
     return difference;

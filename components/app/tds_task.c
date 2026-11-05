@@ -14,6 +14,7 @@
 static const char *TAG = "TDS_TASK";
 
 TaskHandle_t s_tds_task_handle = NULL;
+static volatile bool s_tds_poll_stop_requested = false;
 
 static void TdsPollingTask(void *arg)
 {
@@ -27,7 +28,7 @@ static void TdsPollingTask(void *arg)
     UI16 ro_ppm = 0;
     ESP_LOGW(TAG, "===>>> TdsPollingTask created sucessfully");
 
-    while (1)
+    while (!s_tds_poll_stop_requested)
     {
         inlet_ppm = TdsGetValue(TDS_SENSOR_0);
         ro_ppm = TdsGetValue(TDS_SENSOR_1);
@@ -72,8 +73,15 @@ static void TdsPollingTask(void *arg)
                  ro_ppm,
                  (unsigned long)now_ms);
 
-        vTaskDelay(pdMS_TO_TICKS(TDS_TASK_PERIOD_MS));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TDS_TASK_PERIOD_MS));
     }
+
+    // Stop the sensor driver only after this task has finished any report or
+    // manager operation that may hold application/core locks.
+    TdsTaskDeinit();
+    s_tds_poll_stop_requested = false;
+    s_tds_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void TdsTaskStart(void)
@@ -88,6 +96,8 @@ void TdsTaskStart(void)
     {
         return;
     }
+
+    s_tds_poll_stop_requested = false;
 
     esp_err_t err = TdsInit(config);
     if (err != ESP_OK)
@@ -111,8 +121,13 @@ void TdsTaskStop(void)
     printf("===>>> TDS task stop\n");
     if(s_tds_task_handle)
     {
-        vTaskDelete(s_tds_task_handle);
-        s_tds_task_handle = NULL;
+        s_tds_poll_stop_requested = true;
+        xTaskNotifyGive(s_tds_task_handle);
+        while (s_tds_task_handle != NULL)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return;
     }
     TdsTaskDeinit();
 }
@@ -124,6 +139,8 @@ void TdsTaskContinue(void)
     {
         return;
     }
+
+    s_tds_poll_stop_requested = false;
 
     esp_err_t err = TdsTaskResume();
     if (err != ESP_OK)

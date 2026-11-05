@@ -290,6 +290,9 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI64 max_systemruntime_seconds = GetMaxSecondsBySystem((FilterTimeIndex)idx);
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
+        // WARNING (B2): while pump-based life >= 80% the time-based limit (months) is ignored.
+        // Combined with filter_runtime.c (only filter 1 accumulates pump time on the Standard
+        // model), filters 2-5 stay at 100% forever. Also a rarely used filter never expires by time.
         if(filter_lifetime_by_pump >= 80)
         {
             percent_values[idx] = filter_lifetime_by_pump ;
@@ -511,9 +514,10 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
         }
     }
     // UI32 pump_active_total_hours = pump_active_total_seconds/3600;
-    UI32 water_consumption = (pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY) / (3600 * 100);
-    printf("pump_active_total_seconds: %lu, water_consumption: %lu\n", pump_active_total_seconds, water_consumption);
-    return water_consumption;
+
+    UI64 water_consumption = (UI64)(pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY) / (3600 * 100);
+    printf("pump_active_total_seconds: %lu, water_consumption: %llu\n", pump_active_total_seconds, water_consumption);
+    return (UI32)water_consumption;
 }
 
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds)

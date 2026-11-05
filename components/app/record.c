@@ -193,7 +193,10 @@ _bool app_update_tds_out(uint16_t outlet_ppm)
     value[0] = (outlet_ppm >> 8) & 0xff;
     value[1] = outlet_ppm & 0xff;
 
-    (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_EVENT_TDS_STATUS, value, 2);
+    // WARNING (B9): outlet TDS belongs to ELEMENT_ID_3 (see AppUpdateAttributeU16 below), but this
+    // writes ELEMENT_ID_2 -> overwrites the inlet TDS value in the local state.
+    // done
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_EVENT_TDS_STATUS, value, 2);
 
     return AppUpdateAttributeU16(ELEMENT_ID_3, IOT_ATTR_APP_TDS_STATUS, outlet_ppm) == IOT_OK ? D_TRUE : D_FALSE;
 }

@@ -47,6 +47,11 @@ static iot_err_t resolveSetTargetEid(const IOT_EventStateSetRequest_t *setData, 
     {
         IOT_LOGI(TAG, "==> ^-^ Control by unicast");
         dev_set_info_t devSetInfo = setData->devSetInfo;
+        if (devSetInfo.numOfElems > 1)
+        {
+            // WARNING: changedIds[] in the caller holds only 1 element (product controls 1 element per SET)
+            IOT_LOGW(TAG, "SET_STATE has %u elements, only 1 supported", (unsigned)devSetInfo.numOfElems);
+        }
         *outEid = setData->target.device.eid;
         IOT_LOGI(TAG, "Target EID: %04x,  Target Device Type: %d", *outEid, setData->targetDeviceType);
         for (int i = 0; i < devSetInfo.numOfElems; i++)
@@ -195,11 +200,14 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
 
         elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
         devStateElemState_t elements[MAX_NUM_ELEMENT];
+        DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+        DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
 
         UI8 element_count = DeviceElementGetCount();
+        DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
         for (UI8 i = 0; i < element_count; ++i)
         {
-            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            const DeviceElementInfo *element = &element_snapshot[i];
             UI8 attribute_count = 0;
             for (UI8 j = 0; j < element->attribute_count; ++j)
             {
@@ -261,11 +269,14 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
         
         elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
         devStateElemState_t elements[MAX_NUM_ELEMENT];
+        DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+        DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
 
         UI8 element_count = DeviceElementGetCount();
+        DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
         for (UI8 i = 0; i < element_count; ++i)
         {
-            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            const DeviceElementInfo *element = &element_snapshot[i];
             UI8 attribute_count = 0;
             for (UI8 j = 0; j < element->attribute_count; ++j)
             {
@@ -924,9 +935,9 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         if(eid_temp == unbindData->eid)
         {
             IOT_LOGI(TAG,"  remove groupId: %04x", unbindData->groupId);
-            if(GroupDelete(unbindData->groupId) == ESP_OK)
+            if(GroupDelete(unbindData->groupId) != D_TRUE)
             {
-                
+                IOT_LOGW(TAG, "  groupId %04x not found or not saved", unbindData->groupId);
             }
         }
         RAL_ContractHandleDeviceEvent(deviceEvent);

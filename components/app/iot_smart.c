@@ -68,6 +68,11 @@ void IotSmartInit(void)
     {
         // Keep the zero-initialized defaults if the key is absent or has an old format.
         memset(s_smart, 0, sizeof(s_smart));
+        for (UI8 i = 0; i < MAX_NUM_IOT_SMART; i++)
+        {
+            SmartTriggerBindCmd *sm_temp = &s_smart[i];
+            sm_temp->ro_flushing_time_s = 120; // default 2 minutes
+        }
     }
 }
 
@@ -136,7 +141,9 @@ _bool IotSmartUnBindCommand(UI16 smid)
     for (UI8 i = 0; i < MAX_NUM_IOT_SMART; i++)
     {
         SmartTriggerBindCmd *sm_temp = &s_smart[i];
-        UI16 smid = sm_temp->bindTriggerElmInfo.smid;
+        // WARNING (B4): this local 'smid' shadows the parameter, so the check below compares the
+        // slot with itself (always true). The FIRST used slot is unbound, not the requested smid.
+        // done
         if(smid == sm_temp->bindTriggerElmInfo.smid && sm_temp->is_used == 1)
         {
             sm_temp->is_used = 0;
@@ -153,7 +160,9 @@ _bool IotSmartEnableCommand(UI16 smid, UI8 enable)
     for (UI8 i = 0; i < MAX_NUM_IOT_SMART; i++)
     {
         SmartTriggerBindCmd *sm_temp = &s_smart[i];
-        UI16 smid = sm_temp->bindTriggerElmInfo.smid;
+        // WARNING (B4): this local 'smid' shadows the parameter, so the check below compares the
+        // slot with itself (always true). The FIRST used slot is enabled/disabled, not the requested smid.
+        //done
         if(smid == sm_temp->bindTriggerElmInfo.smid && sm_temp->is_used == 1)
         {
             sm_temp->bindTriggerElmInfo.enable = enable;
@@ -164,6 +173,26 @@ _bool IotSmartEnableCommand(UI16 smid, UI8 enable)
     return D_FALSE; // not found smid
 }
 
+_bool IOTSetRoFlushingTime(UI16 smid, UI16 time_s)
+{
+    for (UI8 i = 0; i < MAX_NUM_IOT_SMART; i++)
+    {
+        SmartTriggerBindCmd *sm_temp = &s_smart[i];
+        if(smid == sm_temp->bindTriggerElmInfo.smid && sm_temp->is_used == 1)
+        {
+            sm_temp->ro_flushing_time_s = time_s;
+            return IotSmartSave();
+        }
+    }
+
+    return D_FALSE; // not found smid
+}
+
+// WARNING (B5): nothing calls IotSmartEvaluateCondition(), and ro_flushing_time_s is never set
+// (IotSmartBindCommand does not fill it), so the scheduled RO flushing never runs. If it is
+// called later, note it fires on every call inside [timeStart, timeStop] with a 0 s duration.
+// NOTE: This function is already called in AppTask().
+// done
 void IotSmartEvaluateCondition(void)
 {
     INT year, hour, min, wday;

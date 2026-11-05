@@ -81,6 +81,7 @@ static size_t s_tds_count = 0; //must be less than or equal to TDS_MAX_SENSOR_CO
 static TdsPinConfig s_tds_saved_config[TDS_MAX_SENSOR_COUNT];
 static bool s_tds_has_saved_config;
 TaskHandle_t xTask_tds = NULL;
+static volatile bool s_tds_stop_requested = false;
 // ============================================================
 // RMT SYMBOL DATA
 //
@@ -545,7 +546,13 @@ static void TdsTask(void * param)
     ESP_LOGW(TAG, "===>>> TdsTask created sucessfully");
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    while (1) {
+    while (!s_tds_stop_requested) {
+        // WARNING: TdsStopPulses()/TdsStartPulses() delete and re-create the RMT channel + encoder
+        // every loop (~1 s). Continuous heap alloc/free fragments the heap over time; OTA needs one
+        // contiguous ~16.7 KB block for TLS. Prefer creating the channels once and using
+        // rmt_disable()/rmt_enable() (or stopping the transmission) around the measurement.
+
+        // NOTE: This reading method was provided by Kangaroo.
         TdsStopPulses(TDS_SENSOR_0);
         TdsStopPulses(TDS_SENSOR_1);
 
@@ -584,6 +591,16 @@ static void TdsTask(void * param)
         // printf("[probe 2] ADC+: %d, ADC-: %d, tds: %.2f ppm\n", (UI16)pos_value2, (UI16)neg_value2, tds2);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+
+    // Finish the current driver operation, then release owned resources here.
+    TdsStopInternal(TDS_SENSOR_0);
+    TdsStopInternal(TDS_SENSOR_1);
+    TdsDeinit(TDS_SENSOR_0);
+    TdsDeinit(TDS_SENSOR_1);
+    AdcOneshotDeinit();
+    s_tds_stop_requested = false;
+    xTask_tds = NULL;
+    vTaskDelete(NULL);
 }
 
 void TdsTaskDeinit(void)
@@ -595,9 +612,12 @@ void TdsTaskDeinit(void)
             ESP_LOGE(TAG, "TdsTaskDeinit cannot be called from the TDS task");
             return;
         }
-        vTaskSuspend(xTask_tds);
-        vTaskDelete(xTask_tds);
-        xTask_tds = NULL;
+        s_tds_stop_requested = true;
+        // Let the task finish any blocking ADC/RMT call and clean up its resources.
+        while (xTask_tds != NULL) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        return;
     }
 
     if (TdsGetConfig(TDS_SENSOR_0) != NULL)
@@ -634,6 +654,7 @@ esp_err_t TdsTaskResume(void)
 
 esp_err_t TdsInit(TdsPinConfig config[2])
 {
+    s_tds_stop_requested = false;
     if (config == NULL)
     {
         return ESP_ERR_INVALID_ARG;
