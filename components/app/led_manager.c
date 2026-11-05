@@ -110,3 +110,16 @@ esp_err_t LedManagerSetState(UI8 state)
 esp_err_t LedManagerSetNetworkWaiting(void) { return LedManagerSetPattern(LED_PATTERN_WAITING); }
 esp_err_t LedManagerSetNetworkConnected(void) { return LedManagerSetPattern(LED_PATTERN_CONNECTED); }
 esp_err_t LedManagerSetOta(void) { return LedManagerSetPattern(LED_PATTERN_OTA); }
+
+esp_err_t LedManagerSetRgb(UI8 red, UI8 green, UI8 blue) {
+    if (NULL == s_led) {
+        return ESP_FAIL;
+    }
+    s_pattern_active = D_FALSE;
+    LC8823LoadValue(s_led, LED_ON, DIM_ON, red, green, blue);
+    esp_err_t err = LC8823SetState(s_led, LED_ON);
+    if (ESP_OK != err) {
+        return err;
+    }
+    return LC8823SendFrameBuffer();
+}
