@@ -1,4 +1,9 @@
 # Demo 18/09/26
+
+## Test qua UDP
+
+Xem [test-msg.md](test-msg.md) để biết toàn bộ bản tin `pcba` và `uartTest` cùng ví dụ phản hồi.
+
 1. Quét thiết bị
 Xem thêm **[core_flow.png](core_flow.png)** để hiểu rõ luồng hoạt động.
 2. Truyền bản tin App->Device
