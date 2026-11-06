@@ -67,7 +67,7 @@ static void TdsPollingTask(void *arg)
 #endif
         // TdsManagerGetEfficiency(inlet_ppm, ro_ppm);
 
-        ESP_LOGI(TAG,
+        ESP_LOGD(TAG,
                  "TDS sample: inlet=%u ppm, ro=%u ppm, now=%lu ms",
                  inlet_ppm,
                  ro_ppm,

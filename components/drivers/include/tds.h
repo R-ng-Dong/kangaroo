@@ -25,6 +25,7 @@ typedef struct
 esp_err_t TdsInit(TdsPinConfig config[2]);
 esp_err_t TdsDeinit(TdsSensorId sensor_id);
 UI16 TdsGetValue(TdsSensorId sensor_id);
+float TdsCorrectValue(float measured_ppm);
 esp_err_t TdsConfigure(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel adc_channel, TdsSensorId sensor_id);
 esp_err_t TdsStartPulses(TdsSensorId sensor_id);
 esp_err_t TdsStopPulses(TdsSensorId sensor_id);
