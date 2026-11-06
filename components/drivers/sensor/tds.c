@@ -601,8 +601,8 @@ float TdsCorrectValue(float measured_ppm)
 {
     // Shared empirical calibration for the current sampling timing.
     // Zero is preserved; values above the measured range use the last slope.
-    static const float measured[] = {0.0f, 28.0f, 45.55f, 75.0f, 105.0f, 337.0f, 395.0f};
-    static const float reference[] = {0.0f, 16.0f, 40.0f, 60.0f, 80.0f, 180.0f, 200.0f};
+    static const float measured[] = {0.0f, 28.0f, 45.55f, 75.0f, 105.0f, 208.0f, 337.0f, 395.0f};
+    static const float reference[] = {0.0f, 16.0f, 40.0f, 60.0f, 80.0f, 120.0f, 180.0f, 200.0f};
     const size_t count = sizeof(measured) / sizeof(measured[0]);
     if (measured_ppm <= 0.0f) return 0.0f;
 
@@ -687,8 +687,17 @@ static void TdsTask(void * param)
         // Keep both probes quiet while measuring either probe.
         if (start1_err == ESP_OK && start2_err == ESP_OK &&
             stop1_err == ESP_OK && stop2_err == ESP_OK) {
-            read1_err = TdsReadPair(sensor_1, &pos_value1, &neg_value1, &positive1_us, &negative1_us);
-            read2_err = TdsReadPair(sensor_2, &pos_value2, &neg_value2, &positive2_us, &negative2_us);
+            // Discard the first ADC conversion before applying either polarity.
+            UI16 warmup_raw = 0;
+            esp_err_t warmup_err = AdcOneshotRead(sensor_1->adc_channel, &warmup_raw);
+            if (warmup_err == ESP_OK) {
+                read1_err = TdsReadPair(sensor_1, &pos_value1, &neg_value1, &positive1_us, &negative1_us);
+                read2_err = TdsReadPair(sensor_2, &pos_value2, &neg_value2, &positive2_us, &negative2_us);
+            }
+            else {
+                read1_err = warmup_err;
+                read2_err = warmup_err;
+            }
         }
         start1_err = TdsStartPulses(TDS_SENSOR_0);
         start2_err = TdsStartPulses(TDS_SENSOR_1);
