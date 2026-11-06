@@ -513,9 +513,9 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
             pump_active_total_seconds = snapshot.total_pump_runtime;
         }
     }
-    // UI32 pump_active_total_hours = pump_active_total_seconds/3600;
 
-    UI64 water_consumption = (UI64)(pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY) / (3600 * 100);
+    UI64 water_consumption_ws = (UI64)pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY;
+    UI64 water_consumption = water_consumption_ws / (3600 * 100);
     printf("pump_active_total_seconds: %lu, water_consumption: %llu\n", pump_active_total_seconds, water_consumption);
     return (UI32)water_consumption;
 }

@@ -879,7 +879,7 @@ esp_err_t AppInit(WaterPurifierType model)
 
     AppInitAttributeValue();
 
-    BaseType_t ret = xTaskCreate(AppTask, "AppTask", 4096, NULL, 5, NULL);
+    BaseType_t ret = xTaskCreate(AppTask, "AppTask", 2048 * 3, NULL, 5, NULL);
 
     if (ret != pdPASS)
     {

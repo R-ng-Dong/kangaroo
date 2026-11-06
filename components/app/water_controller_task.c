@@ -213,7 +213,7 @@ _bool WaterControllerTaskInit(void)
         return D_FALSE;
     }
 
-    if (xTaskCreate(WaterControllerTask, "water_control", 3072, NULL, 5, NULL) != pdPASS)
+    if (xTaskCreate(WaterControllerTask, "water_control", 2048 * 2, NULL, 5, NULL) != pdPASS)
     {
         vQueueDelete(s_water_control_queue);
         s_water_control_queue = NULL;

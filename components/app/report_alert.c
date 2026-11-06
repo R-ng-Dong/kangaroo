@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "esp_mac.h"
 
 #include "cJSON.h"
 #include "IOT_Core.h"
@@ -247,13 +248,13 @@ static bool device_identity(char mac[13], char device_id[25])
     IOT_DevIdentityInfo_t identity = {0};
     if (IOT_CoreGetRootEid(&eid) != IOT_OK || IOT_DaoDeviceGetIdentityInfo(eid, &identity) != IOT_OK)
         return false;
-    if (identity.mac == NULL || identity.macSize != 6U)
-    {
-        IOT_DaoDeviceFreeIdentityInfo(&identity);
-        return false;
-    }
-    for (size_t i = 0; i < 6; ++i)
-        snprintf(mac + i * 2, 3, "%02x", identity.mac[i]);
+    UI8 mac_temp[6];
+    ESP_ERROR_CHECK(esp_read_mac(mac_temp, ESP_MAC_WIFI_STA));
+
+    sprintf(mac, "%02x%02x%02x%02x%02x%02x", mac_temp[0], mac_temp[1], mac_temp[2], mac_temp[3], mac_temp[4], mac_temp[5]);
+    // sprintf(device_id, "%02x%02x%02x%02x%02x%02x", identity.devId[0], identity.devId[1], identity.devId[2], identity.devId[3], identity.devId[4], identity.devId[5]);
+    // for (size_t i = 0; i < 6; ++i)
+    //     snprintf(mac + i * 2, 3, "%02x", mac_temp[i]);
     for (size_t i = 0; i < IOT_DAO_DEVICE_ID_LEN; ++i)
         snprintf(device_id + i * 2, 3, "%02x", identity.devId[i]);
     IOT_DaoDeviceFreeIdentityInfo(&identity);
@@ -478,6 +479,7 @@ iot_err_t ReportAlertPublishReport(void)
             cJSON_Delete(root);
             cJSON_Delete(state);
             cJSON_Delete(alerts);
+            cJSON_Delete(extra);
             return IOT_ERR_NO_MEM;
         }
         for (UI8 j = 0; j < element->attribute_count; ++j)
@@ -494,6 +496,7 @@ iot_err_t ReportAlertPublishReport(void)
                 cJSON_Delete(root);
                 cJSON_Delete(state);
                 cJSON_Delete(alerts);
+                cJSON_Delete(extra);
                 return IOT_ERR_NO_MEM;
             }
             cJSON_AddItemToArray(values, cJSON_CreateNumber(attr->id));
@@ -517,6 +520,7 @@ iot_err_t ReportAlertPublishReport(void)
             cJSON_Delete(root);
             cJSON_Delete(state);
             cJSON_Delete(alerts);
+            cJSON_Delete(extra);
             return IOT_ERR_NO_MEM;
         }
         char code[8];
@@ -534,6 +538,7 @@ iot_err_t ReportAlertPublishReport(void)
         return IOT_ERR_NO_MEM;
     size_t len = strlen(json);
     iot_err_t err = !IOT_CoreIsCloudConnected() ? IOT_ERR_NO_NETWORK_CONNECT : (len <= REPORT_JSON_CAPACITY ? IOT_CoreServiceMsgPublish("report", json, len) : IOT_ERR_INVALID_SIZE);
+    printf("ReportAlertPublishReport: %s\n", json);
     cJSON_free(json);
     return err;
 }

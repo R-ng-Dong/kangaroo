@@ -61,13 +61,14 @@ esp_err_t AdcOneshotRead(AdcChannel channel, UI16 *raw_data)
     // (for TdsReadRawSamples: 2 bytes past samples[ADC_SAMPLE_COUNT - 1]). Currently harmless
     // only because that slot is stack padding. Fix: read into a local int, then cast to UI16.
 
-    // sizeof(UI16) = sizeof(int) = 2 
-    // done 
-    esp_err_t err = adc_oneshot_read(adc1_handle, (adc_channel_t)channel, (int *)raw_data);
+    // done
+    int adc_temp = 0;
+    esp_err_t err = adc_oneshot_read(adc1_handle, (adc_channel_t)channel, &adc_temp);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read ADC1 channel");
         return err;
     }
+    *raw_data = (UI16)adc_temp;
     return ESP_OK;
 }
 

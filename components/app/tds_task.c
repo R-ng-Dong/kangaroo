@@ -106,7 +106,7 @@ void TdsTaskStart(void)
         return;
     }
 
-    BaseType_t ret = xTaskCreate(TdsPollingTask, "tds_poll", 3072, NULL, 5, &s_tds_task_handle);
+    BaseType_t ret = xTaskCreate(TdsPollingTask, "tds_poll", 2048 * 2, NULL, 5, &s_tds_task_handle);
 
     if (ret != pdPASS)
     {
@@ -149,7 +149,7 @@ void TdsTaskContinue(void)
         return;
     }
 
-    BaseType_t ret = xTaskCreate(TdsPollingTask, "tds_poll", 3072, NULL, 5,
+    BaseType_t ret = xTaskCreate(TdsPollingTask, "tds_poll", 2048 * 2, NULL, 5,
                                  &s_tds_task_handle);
     if (ret != pdPASS)
     {
