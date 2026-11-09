@@ -4,7 +4,7 @@
 #include "common.h"
 
 #define TDS_REPORT_INTERVAL_MS 60000U
-#define TDS_REPORT_DELTA_PERCENT 5 // ppm
+#define TDS_REPORT_DELTA_PERCENT 2 // ppm
 
 #define TDS_INPUT_ERROR_THRESHOLD 500 //ppm 
  
@@ -17,6 +17,7 @@ void TdsManagerHandleSample(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms);
 void TdsManagerForceReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms);
 bool TdsManagerShouldReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms);
 UI8 TdsManagerGetEfficiency(UI16 inlet_ppm, UI16 ro_ppm);
-void TdsManagerCheckWarnings(UI16 inlet_ppm, UI16 ro_ppm);
+void TdsManagerCheckWarnings(UI16 inlet_ppm, UI16 ro_ppm, const UI8 max_num_detect);
+void TdsManagerClearAllWarnings(void);
 
 #endif

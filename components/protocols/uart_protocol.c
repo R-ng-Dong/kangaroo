@@ -74,6 +74,14 @@ static void ProcessData(const UI8 *data_buff, UI8 length)
                 continue;
             }
         }
+        // WARNING: length comes from the received byte and is not bounds-checked. On a corrupted
+        // frame (noise / read started mid-frame) a 0x55 inside the payload is taken as a header,
+        // and CheckSum() may read past data_buff (MAX_BUFFER_SIZE). Needs a bounds check.
+        if ((offset + s_data_frame_temp->length + 2U) > MAX_BUFFER_SIZE)
+        {
+            ESP_LOGW(TAG, "Frame at offset %u with length %u exceeds buffer %u (corrupted data)",
+                     (unsigned)offset, (unsigned)s_data_frame_temp->length, (unsigned)MAX_BUFFER_SIZE);
+        }
         ret = CheckSum(&data_buff[offset], s_data_frame_temp->length);
         if (ESP_OK == ret)
         {

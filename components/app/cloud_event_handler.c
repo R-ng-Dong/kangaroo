@@ -9,6 +9,9 @@
 #include "IOT_DaoDeviceMgmt.h"
 #include "IOT_DaoStoresInternal.h"
 #include "IOT_AppManager.h"
+#include "sdkconfig.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "led_manager.h"
 #include "device_element_manager.h"
 #include "group.h"
@@ -16,6 +19,8 @@
 #include "tds_task.h"
 #include "report_alert.h"
 #include "app.h"
+#include "cloud_sync.h"
+#include "energy_saving_manager.h"
 
 #include "IOT_Record.h"
 #include "IOT_ContractStateQuery.h"
@@ -42,6 +47,11 @@ static iot_err_t resolveSetTargetEid(const IOT_EventStateSetRequest_t *setData, 
     {
         IOT_LOGI(TAG, "==> ^-^ Control by unicast");
         dev_set_info_t devSetInfo = setData->devSetInfo;
+        if (devSetInfo.numOfElems > 1)
+        {
+            // WARNING: changedIds[] in the caller holds only 1 element (product controls 1 element per SET)
+            IOT_LOGW(TAG, "SET_STATE has %u elements, only 1 supported", (unsigned)devSetInfo.numOfElems);
+        }
         *outEid = setData->target.device.eid;
         IOT_LOGI(TAG, "Target EID: %04x,  Target Device Type: %d", *outEid, setData->targetDeviceType);
         for (int i = 0; i < devSetInfo.numOfElems; i++)
@@ -190,11 +200,14 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
 
         elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
         devStateElemState_t elements[MAX_NUM_ELEMENT];
+        DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+        DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
 
         UI8 element_count = DeviceElementGetCount();
+        DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
         for (UI8 i = 0; i < element_count; ++i)
         {
-            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            const DeviceElementInfo *element = &element_snapshot[i];
             UI8 attribute_count = 0;
             for (UI8 j = 0; j < element->attribute_count; ++j)
             {
@@ -256,11 +269,14 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
         
         elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
         devStateElemState_t elements[MAX_NUM_ELEMENT];
+        DeviceElementInfo element_snapshot[MAX_NUM_ELEMENT];
+        DeviceElementAttributeInfo attribute_snapshot[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
 
         UI8 element_count = DeviceElementGetCount();
+        DeviceElementGetSnapshot(element_snapshot, attribute_snapshot);
         for (UI8 i = 0; i < element_count; ++i)
         {
-            const DeviceElementInfo *element = DeviceElementGetByIndex(i);
+            const DeviceElementInfo *element = &element_snapshot[i];
             UI8 attribute_count = 0;
             for (UI8 j = 0; j < element->attribute_count; ++j)
             {
@@ -773,13 +789,13 @@ static void app_deinit_ble_timer_cb(void *userData)
     (void) userData;
     IOT_LOGI(TAG, "Deinit BLE ...");
     RAL_DeinitBle();
-    TdsTaskContinue();
+    /* TDS restarts after the cloud session has the heap (or after 15 s). */
+    CloudSyncStartTdsWhenRoomy();
 }
 extern void RAL_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event);
 
 static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
 {
-    static uint16_t groupId = 0;
     if (deviceEvent == NULL)
     {
         IOT_LOGE(TAG, "Invalid deviceEvent pointer");
@@ -806,32 +822,69 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     }
     case DEV_EVENT_PROVISION_COMPLETED:
     {
-        IOT_LOGI(TAG, "DEVICE event: PROVISION_COMPLETED — device is cloud-connected");
-        // TODO: Initialize device state, set default values
-        RAL_DeinitBle();
-        TdsTaskContinue();
+        const UI8 status = deviceEvent->data.provisionCompleted.statusCode;
+        IOT_LOGW(TAG, "DEVICE event: PROVISION_COMPLETED, status=%u", status);
+        if (1U == status)
+        {
+            /* Cloud registration finished: the BLE link is no longer needed
+             * and its heap is what the first TLS session wants. */
+            RAL_DeinitBle();
+            CloudSyncStartTdsWhenRoomy();
+        }
+        else
+        {
+            /* The cloud config/cert were saved before the sync walk, so the
+             * supervisor can still bring the session up once the BLE release
+             * timer frees the heap. Keep advertising until then. */
+            IOT_LOGE(TAG, "Provisioning reported failure; retrying cloud after BLE release");
+            LedManagerSetNetworkWaiting();
+        }
+        break;
+    }
+    case DEV_EVENT_PROVISION_CANCELLED:
+    {
+        /* The phone left before registering. Resume sensing and stay
+         * reachable: the next sync attempt or a reboot retries the cloud. */
+        IOT_LOGW(TAG, "DEVICE event: PROVISION_CANCELLED");
+        TdsTaskStart();
+        LedManagerSetNetworkWaiting();
+        break;
+    }
+    case DEV_EVENT_ERROR:
+    {
+        IOT_LOGE(TAG, "DEVICE event: ERROR, code=%d", deviceEvent->data.error.errorCode);
+        TdsTaskStart();
         break;
     }
     case DEV_EVENT_NEW_DEVICE_JOINED:
     {
-        IOT_LOGW(TAG, "DEINIT BLE after 3000 ms");
-        if (IOT_TimerInsertCb(app_deinit_ble_timer_cb, NULL, 3000) == IOT_TIMER_HANDLE_INVALID)
+        /* The contract owns the Device store and answers core for joins. Call
+         * it once per phase here; the switch below no longer falls through. */
+        RAL_ContractHandleDeviceEvent(deviceEvent);
+        if (IOT_DEV_JOIN_PHASE_SYNC_COMPLETE == deviceEvent->data.newDeviceJoined.phase)
         {
-            IOT_LOGE(TAG, "Failed to schedule deinit BLE timer");
-            return IOT_ERR_NO_MEM;
+            IOT_LOGW(TAG, "DEINIT BLE after 2000 ms");
+            if (IOT_TimerInsertCb(app_deinit_ble_timer_cb, NULL, 2000) == IOT_TIMER_HANDLE_INVALID)
+            {
+                IOT_LOGE(TAG, "Failed to schedule deinit BLE timer");
+                return IOT_ERR_NO_MEM;
+            }
         }
+        break;
     }
     case DEV_EVENT_DEVICE_REMOVED:
     {
-
+        IOT_LOGE(TAG, "DEVICE event: DEVICE_REMOVED, EID=%04x, root=%d",
+                 deviceEvent->data.deviceRemoved.eid,
+                 deviceEvent->data.deviceRemoved.isRootDevice);
+        RAL_ContractHandleDeviceEvent(deviceEvent);
+        break;
     }
     case DEV_EVENT_GROUP_BIND:
     {
         IOT_CoreDeviceEventGroupBindData_t *bindData = &deviceEvent->data.groupBind;
         IOT_LOGI(TAG, "DEVICE event: GROUP_BIND, EID=%04x, newGroup=%04x, oldGroup=%04x, elmLen=%u",
                  bindData->eid, bindData->newGroupId, bindData->oldGroupId, bindData->elemDataLen);
-
-
         uint16_t eid_temp = 0;
         if (IOT_CoreGetRootEid(&eid_temp) != IOT_OK)
         {
@@ -866,14 +919,15 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
                     }
             }
         }
+        RAL_ContractHandleDeviceEvent(deviceEvent);
+        break;
     }
     case DEV_EVENT_GROUP_UNBIND:
     {
-        IOT_CoreDeviceEventGroupUnbindData_t *unbindData = &deviceEvent->data.groupUnbind;
         IOT_LOGI(TAG, "DEVICE event: GROUP_UNBIND, EID=%04x, group=%04x",
-                 unbindData->eid, unbindData->groupId);
-
+                 deviceEvent->data.groupUnbind.eid, deviceEvent->data.groupUnbind.groupId);
         uint16_t eid_temp = 0;
+        IOT_CoreDeviceEventGroupUnbindData_t *unbindData = &deviceEvent->data.groupUnbind;
         if (IOT_CoreGetRootEid(&eid_temp) != IOT_OK)
         {
             eid_temp = 0;
@@ -881,11 +935,13 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         if(eid_temp == unbindData->eid)
         {
             IOT_LOGI(TAG,"  remove groupId: %04x", unbindData->groupId);
-            if(GroupDelete(unbindData->groupId) == ESP_OK)
+            if(GroupDelete(unbindData->groupId) != D_TRUE)
             {
-                
+                IOT_LOGW(TAG, "  groupId %04x not found or not saved", unbindData->groupId);
             }
         }
+        RAL_ContractHandleDeviceEvent(deviceEvent);
+        break;
     }
 
     case DEV_EVENT_DEVICE_ATTR_SET:
@@ -920,29 +976,41 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     }
     case DEV_EVENT_CLOUD_CONNECTED:
     {
+        /* Broker session up. Device state is published from CloudSyncTick()
+         * once IOT_CoreIsCloudConnected() is true (subscriptions confirmed);
+         * a publish on this edge is silently lost. */
         IOT_LOGI(TAG, "DEVICE event: CLOUD_CONNECTED");
-        // TODO: Sync device state to cloud if needed
-        g_cloud_is_connected = 1;
         LedManagerSetNormal();
-        
-        AppPushWarningToCloud();
-
-        IOT_ContractOnCloudConnected();
-        IOT_ContractStateSyncSchedule();
-        // app_cond_resync_all();
-        // esp_event_post(EVENT_BASE_COMMON, EVENT_CLOUD_CONNECTED, NULL, 0, pdMS_TO_TICKS(10));
+        CloudSyncNotifyCloudConnected();
         break;
     }
     case DEV_EVENT_CLOUD_DISCONNECTED:
     {
-        g_cloud_is_connected = 0;
-        LedManagerSetError();
         IOT_LOGW(TAG, "DEVICE event: CLOUD_DISCONNECTED");
+        CloudSyncNotifyCloudDisconnected();
         break;
     }
     case DEV_EVENT_CLOUD_CONNECTING:
     {
         IOT_LOGW(TAG, "DEVICE event: CLOUD_CONNECTING");
+        break;
+    }
+    case DEV_EVENT_DEVICE_STATUS_REQUEST:
+    {
+        /* The status report itself is the answer. This is what the cloud asks
+         * for on reconnect; the reference publishes the same fields from its
+         * attributes/status block. */
+        IOT_CoreDeviceStatusData_t status = {0};
+        status.firmwareVersion = CONFIG_APP_PROJECT_VER;
+        status.uptimeSeconds = (int64_t)(esp_timer_get_time() / 1000000ULL);
+        status.protocolFlags[0] = IOT_DEVICE_MODE_INDEPENDENT;
+        const size_t ramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        const size_t ramTotal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+        status.totalRamKB = (uint32_t)(ramTotal / 1024U);
+        status.ramUsagePercent = (0U == ramTotal) ? 0U
+                                   : (uint8_t)(100U - ((ramFree * 100U) / ramTotal));
+        (void)IOT_CoreRequestReportDeviceStatus(&status);
+        IOT_LOGI(TAG, "Device status reported");
         break;
     }
     default:
@@ -1098,6 +1166,11 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
         IOT_LOGW(TAG, "[OS_EVENT_OTA_REQUESTED] ...");
         // esp_event_post(EVENT_BASE_COMMON, EVENT_OTA_REQUEST, NULL, 0, pdMS_TO_TICKS(10));
         // break;
+        if(IsOtaReady() == D_FALSE)
+        {
+            return IOT_ERR_FAIL;
+        }
+        printf("OTA ready ... \n");
         return app_handle_ota_requested(&osEvent->data.otaRequested);
     }
     default:
@@ -1245,5 +1318,7 @@ void RAL_DeinitBle(void)
         IOT_CoreChangeWifiSuspendBle();
         IOT_CoreBleDeinit();
     }
-
+    /* Even if the stack was already down, the supervisor may now attempt the
+     * cloud session: the BLE release is what makes the heap available. */
+    CloudSyncSetBleReleased();
 }

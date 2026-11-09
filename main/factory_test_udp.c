@@ -25,15 +25,16 @@
 #include "water_controller.h"
 #include "water_profile.h"
 #include "network/wifi.h"
-#include "factory_test_ble.h"
+#include "define.h"
 
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
-// #define FACTORY_WIFI_SSID "Kangaroo2026"
-// #define FACTORY_WIFI_PASSWORD "Kangaroo2026"
 
-#define FACTORY_WIFI_SSID "DigitalR&D"
-#define FACTORY_WIFI_PASSWORD "DigitalRD@2804"
+#define FACTORY_WIFI_SSID "Kangaroo2026"
+#define FACTORY_WIFI_PASSWORD "Kangaroo2026"
+
+// #define FACTORY_WIFI_SSID "DigitalR&D"
+// #define FACTORY_WIFI_PASSWORD "DigitalRD@2804"
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
@@ -291,7 +292,7 @@ static void AddUartProfileData(cJSON *data)
     /* Return the latest frames decoded by the normal UART1 receiver. */
     if (D_TRUE == HasMessageType1())
     {
-        cJSON_AddNumberToObject(data, "system_run", WaterProfileGetSystemRunSeconds());
+        cJSON_AddNumberToObject(data, "system_run", WaterProfileGetSystemRuntime());
         cJSON_AddNumberToObject(data, "system_time", WaterProfileGetSystemTimeSeconds());
         cJSON_AddNumberToObject(data, "ro_status", WaterProfileGetStatus(RO_STATUS));
         cJSON_AddNumberToObject(data, "ply_status", WaterProfileGetStatus(PLY_STATUS));
@@ -315,6 +316,8 @@ static void AddUartProfileData(cJSON *data)
         cJSON_AddNumberToObject(data, "output_stt", ReadUartBitmask(OUTPUT_STATUS));
         cJSON_AddNumberToObject(data, "switch_stt", ReadUartBitmask(SWITCH_STATUS));
         cJSON_AddNumberToObject(data, "led_stt", ReadUartBitmask(LED_STATUS));
+        // cJSON_AddNumberToObject(data, "raw1", WaterProfileGetAdcRaw1());
+        // cJSON_AddNumberToObject(data, "raw2", WaterProfileGetAdcRaw2());
     }
 }
 

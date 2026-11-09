@@ -134,7 +134,6 @@ static void SpiSendData(UI8 *data_send, UI8 length){
         ESP_LOGE("SPI", "SPI transaction failed: %s\n", esp_err_to_name(ret));
         return;
     }
-    printf("===\n");
 }
 
 esp_err_t LC8823InitFrameBuffer(const UI8 num_led){

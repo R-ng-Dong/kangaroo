@@ -1,7 +1,6 @@
 #include "group.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include <string.h>
 
 #define GROUP_NVS_NAMESPACE "group_ns"
 #define KEY_CONFIG_GROUP "group_key"
@@ -14,7 +13,7 @@ static _bool GroupSave(const DaoGroup *config)
     if (nvs_open(GROUP_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK)
         return D_FALSE;
 
-    esp_err_t err = nvs_set_blob(handle, KEY_CONFIG_GROUP, config, sizeof(*config));
+    esp_err_t err = nvs_set_blob(handle, KEY_CONFIG_GROUP, config, sizeof(DaoGroup) * MAX_NUM_GROUPS);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return (err == ESP_OK) ? D_TRUE : D_FALSE;

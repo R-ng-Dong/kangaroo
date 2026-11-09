@@ -50,10 +50,13 @@ UI8 DeviceElementGetCount(void);
 const DeviceElementInfo *DeviceElementGetByIndex(UI8 index);
 const DeviceElementInfo *DeviceElementGetById(UI16 element_id);
 const DeviceElementAttributeInfo *DeviceElementGetAttribute(UI16 element_id, UI16 attribute_id);
+/* Returned lookup pointers expose static metadata; use GetAttributeValue or a snapshot for values. */
 _bool DeviceElementSetAttributeValue(UI16 element_id, UI16 attribute_id, const UI8 *value, UI8 value_length);
 _bool DeviceElementSetAttributeValueOffset(UI16 element_id, UI16 attribute_id, UI8 offset, const UI8 *value, UI8 value_length);
 _bool DeviceElementGetAttributeValue(UI16 element_id, UI16 attribute_id, UI8 *value_out, UI8 value_capacity, UI8 *value_length_out);
 void DeviceElementResetAttributeValues(void);
+void DeviceElementGetSnapshot(DeviceElementInfo elements[MAX_NUM_ELEMENT],
+                              DeviceElementAttributeInfo attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE]);
 const UI16 IndexToElementId(UI8 idx);
 const UI8 ElementIdToIndex(UI16 elem_id);
 

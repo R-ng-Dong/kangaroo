@@ -6,6 +6,9 @@
 
 static const char *TAG = "UART";
 
+// WARNING: must match MAX_BUFFER_SIZE in uart_protocol.h (size of the protocol's data_buffer)
+#define UART_RX_BUFFER_SIZE 128
+
 /*======================================================
                         UART
 ========================================================*/
@@ -99,6 +102,13 @@ static void UartTask(void *param)
                 last_time_rec_uart = esp_timer_get_time();
 
                 ESP_ERROR_CHECK(uart_get_buffered_data_len(my_uart->uart_num, (size_t *)&len_buf));
+                // WARNING: no bound check - noise or burst data (several frames within 1 ms) can push
+                // rx_count + len_buf past data_buffer and overwrite memory. Needs noise/burst protection.
+                if ((rx_count + len_buf) > UART_RX_BUFFER_SIZE)
+                {
+                    ESP_LOGW(TAG, "RX overflow risk: rx_count=%u + len=%u > buffer %u (noise/burst data)",
+                             (unsigned)rx_count, (unsigned)len_buf, (unsigned)UART_RX_BUFFER_SIZE);
+                }
                 if (my_uart->data_buffer)
                 {
                     len_buf = uart_read_bytes(my_uart->uart_num, my_uart->data_buffer + rx_count, len_buf, portMAX_DELAY);
