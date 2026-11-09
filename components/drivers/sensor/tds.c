@@ -1,8 +1,8 @@
-#include "utils.h"
 #include "tds.h"
 
 #include <string.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -71,6 +71,9 @@ typedef struct {
     UI8 fan_out_active;
     rmt_channel_handle_t rmt_channel;
     rmt_encoder_handle_t rmt_encoder;
+    bool channel_enabled;
+    bool pulse_gpio_mode;
+    bool pulses_running;
     // UI16 pos_value; // positive excitation
     // UI16 neg_value; // negative excitation
     UI16 tds_value; // TDS value in ppm
@@ -200,7 +203,37 @@ static esp_err_t TdsCreatePulseChannel(TdsSensorId sensor_id)
         return err;
     }
 
+    temp->channel_enabled = true;
     return ESP_OK;
+}
+
+esp_err_t TdsStopPulses(TdsSensorId sensor_id)
+{
+    TdsConfig *temp = TdsGetConfig(sensor_id);
+    if (NULL == temp) return ESP_ERR_INVALID_ARG;
+
+    if (temp->rmt_channel != NULL && temp->channel_enabled) {
+        esp_err_t err = rmt_disable(temp->rmt_channel);
+        if (err != ESP_OK) return err;
+        temp->channel_enabled = false;
+        temp->pulses_running = false;
+    }
+    if (temp->rmt_channel != NULL) {
+        esp_err_t err = rmt_tx_wait_all_done(temp->rmt_channel, 0);
+        if (err != ESP_OK) return err;
+    }
+
+    TdsDetachFanOut(sensor_id);
+    esp_rom_gpio_connect_out_signal(temp->pulse1_pin, SIG_GPIO_OUT_IDX, false, false);
+    temp->pulse_gpio_mode = true;
+    esp_err_t err = gpio_set_direction(temp->pulse1_pin, GPIO_MODE_OUTPUT);
+    if (err == ESP_OK) err = gpio_set_direction(temp->pulse2_pin, GPIO_MODE_OUTPUT);
+    if (err == ESP_OK) err = gpio_set_pull_mode(temp->pulse1_pin, GPIO_FLOATING);
+    if (err == ESP_OK) err = gpio_set_pull_mode(temp->pulse2_pin, GPIO_FLOATING);
+    if (err == ESP_OK) err = gpio_set_level(temp->pulse1_pin, 0);
+    if (err == ESP_OK) err = gpio_set_level(temp->pulse2_pin, 0);
+    temp->pulses_running = false;
+    return err;
 }
 
 static esp_err_t TdsStopInternal(TdsSensorId sensor_id)
@@ -208,25 +241,18 @@ static esp_err_t TdsStopInternal(TdsSensorId sensor_id)
     TdsConfig *temp = TdsGetConfig(sensor_id);
     if (NULL == temp) return ESP_ERR_INVALID_ARG;
 
-    if (NULL != temp->rmt_channel) {
-        rmt_disable(temp->rmt_channel);
-        rmt_del_channel(temp->rmt_channel);
+    esp_err_t err = TdsStopPulses(sensor_id);
+    if (err != ESP_OK) return err;
+    if (temp->rmt_channel != NULL) {
+        err = rmt_del_channel(temp->rmt_channel);
+        if (err != ESP_OK) return err;
         temp->rmt_channel = NULL;
     }
-
-    if (NULL != temp->rmt_encoder) {
-        rmt_del_encoder(temp->rmt_encoder);
+    if (temp->rmt_encoder != NULL) {
+        err = rmt_del_encoder(temp->rmt_encoder);
+        if (err != ESP_OK) return err;
         temp->rmt_encoder = NULL;
     }
-
-    TdsDetachFanOut(sensor_id);
-
-    gpio_set_direction(temp->pulse1_pin, GPIO_MODE_OUTPUT);
-    gpio_set_direction(temp->pulse2_pin, GPIO_MODE_OUTPUT);
-
-    gpio_set_level(temp->pulse1_pin, 0);
-    gpio_set_level(temp->pulse2_pin, 0);
-
     return ESP_OK;
 }
 
@@ -281,6 +307,9 @@ esp_err_t TdsConfigure(gpio_num_t pulse1_pin, gpio_num_t pulse2_pin, AdcChannel 
     temp->fan_out_active = 0;
     temp->rmt_channel = NULL;
     temp->rmt_encoder = NULL;
+    temp->channel_enabled = false;
+    temp->pulse_gpio_mode = false;
+    temp->pulses_running = false;
     temp->tds_value = 0U;
 
     s_tds_count++;
@@ -295,31 +324,31 @@ esp_err_t TdsStartPulses(TdsSensorId sensor_id)
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (temp->pulses_running) return ESP_OK;
     esp_err_t err = TdsCreatePulseChannel(sensor_id);
-    if (err != ESP_OK) {
-        return err;
+    if (err != ESP_OK) return err;
+    if (temp->pulse_gpio_mode) {
+        err = rmt_tx_switch_gpio(temp->rmt_channel, temp->pulse1_pin, false);
+        if (err != ESP_OK) return err;
+        temp->pulse_gpio_mode = false;
     }
     err = TdsAttachFanOut(sensor_id);
-    if (err != ESP_OK) {
-        TdsStopInternal(sensor_id);
-        return err;
+    if (err != ESP_OK) return err;
+    if (!temp->channel_enabled) {
+        err = rmt_enable(temp->rmt_channel);
+        if (err != ESP_OK) return err;
+        temp->channel_enabled = true;
     }
 
     rmt_transmit_config_t tx_cfg = { .loop_count = -1 };
     err = rmt_transmit(temp->rmt_channel, temp->rmt_encoder, s_pulse_symbols, sizeof(s_pulse_symbols), &tx_cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "rmt_transmit failed for sensor %zu: %s", sensor_id, esp_err_to_name(err));
-        TdsStopInternal(sensor_id);
+        ESP_LOGE(TAG, "rmt_transmit failed for sensor %d: %s", sensor_id, esp_err_to_name(err));
+        TdsStopPulses(sensor_id);
         return err;
     }
-
-    // ESP_LOGI(TAG, "TDS pulse started for sensor %zu", sensor_id);
+    temp->pulses_running = true;
     return ESP_OK;
-}
-
-esp_err_t TdsStopPulses(TdsSensorId sensor_id)
-{
-    return TdsStopInternal(sensor_id);
 }
 
 UI16 TdsGetValue(TdsSensorId sensor_id)
@@ -331,7 +360,36 @@ UI16 TdsGetValue(TdsSensorId sensor_id)
     return temp->tds_value;
 }
 
-static esp_err_t TdsReadRawSamples(TdsSensorId sensor_id, UI16 *samples, UI16 sample_count)
+typedef struct
+{
+    uint32_t start_us[ADC_SAMPLE_COUNT];
+    uint32_t end_us[ADC_SAMPLE_COUNT];
+    UI16 raw[ADC_SAMPLE_COUNT];
+    UI16 count;
+    int64_t phase_start_us;
+} TdsSampleTrace;
+
+// Diagnostic storage stays off the measurement task's stack.
+static TdsSampleTrace s_sample_trace[TDS_MAX_SENSOR_COUNT][2];
+static bool s_sample_trace_done;
+
+static void TdsPrintSampleTrace(void)
+{
+    for (UI8 sensor = 0; sensor < TDS_MAX_SENSOR_COUNT; sensor++) {
+        for (UI8 phase = 0; phase < 2; phase++) {
+            const TdsSampleTrace *trace = &s_sample_trace[sensor][phase];
+            // for (UI16 i = 0; i < trace->count; i++) {
+            //     // ESP_LOGI(TAG, "ADC trace %s %c[%u]: raw=%u start=%lu end=%lu read=%lu us",
+            //     //          sensor == TDS_SENSOR_0 ? "inlet" : "ro", phase == 0 ? '+' : '-',
+            //     //          (unsigned)i, (unsigned)trace->raw[i],
+            //     //          (unsigned long)trace->start_us[i], (unsigned long)trace->end_us[i],
+            //     //          (unsigned long)(trace->end_us[i] - trace->start_us[i]));
+            // }
+        }
+    }
+}
+
+static esp_err_t TdsReadRawSamples(TdsSensorId sensor_id, UI16 *samples, UI16 sample_count, int64_t *last_sample_us, TdsSampleTrace *trace)
 {
     TdsConfig *temp = TdsGetConfig(sensor_id);
     if (NULL == temp || NULL == samples || 0 == sample_count) {
@@ -339,33 +397,48 @@ static esp_err_t TdsReadRawSamples(TdsSensorId sensor_id, UI16 *samples, UI16 sa
     }
     memset(samples, 0, sample_count * sizeof(UI16));
     for (UI16 i = 0; i < sample_count; i++) {
+        int64_t sample_start_us = trace != NULL ? esp_timer_get_time() : 0;
         esp_err_t err = AdcOneshotRead(temp->adc_channel, &samples[i]);
         if (err != ESP_OK) {
-            samples[i] = 0; // Set to 0 on error
+            return err;
         }
-        esp_rom_delay_us(20);
+        *last_sample_us = esp_timer_get_time();
+        if (trace != NULL) {
+            trace->start_us[i] = (uint32_t)(sample_start_us - trace->phase_start_us);
+            trace->end_us[i] = (uint32_t)(*last_sample_us - trace->phase_start_us);
+            trace->raw[i] = samples[i];
+            trace->count = i + 1;
+        }
     }
     return ESP_OK;
 }
 
-esp_err_t TdsReadAverageRaw(TdsSensorId sensor_id, UI16 *average_raw)
+static esp_err_t TdsReadAverageRaw(TdsSensorId sensor_id, float *average_raw, int64_t *last_sample_us, TdsSampleTrace *trace)
 {
     if (NULL == average_raw) {
         return ESP_ERR_INVALID_ARG;
     }
     UI16 samples[ADC_SAMPLE_COUNT] = {0};
-    esp_err_t err = TdsReadRawSamples(sensor_id, samples, ADC_SAMPLE_COUNT);
+    esp_err_t err = TdsReadRawSamples(sensor_id, samples, ADC_SAMPLE_COUNT, last_sample_us, trace);
     if (err != ESP_OK) {
         return err;
     }
     // Sort the samples to remove outliers
-    MergeSort(samples, 0, ADC_SAMPLE_COUNT - 1);
+    for (UI16 i = 1; i < ADC_SAMPLE_COUNT; i++) {
+        UI16 value = samples[i];
+        UI16 j = i;
+        while (j > 0 && samples[j - 1] > value) {
+            samples[j] = samples[j - 1];
+            j--;
+        }
+        samples[j] = value;
+    }
     // Calculate the average of the middle samples, trimming edges
     UI32 sum = 0;
     for (UI16 i = ADC_TRIM_EDGES; i < ADC_SAMPLE_COUNT - ADC_TRIM_EDGES; i++) {
         sum += samples[i];
     }
-    *average_raw = sum / (ADC_SAMPLE_COUNT - 2 * ADC_TRIM_EDGES);
+    *average_raw = (float)sum / (ADC_SAMPLE_COUNT - 2 * ADC_TRIM_EDGES);
 
     return ESP_OK;
 }
@@ -515,7 +588,8 @@ esp_err_t TdsDeinit(TdsSensorId sensor_id)
     if (NULL == temp) {
         return ESP_ERR_INVALID_ARG;
     }
-    TdsStopInternal(sensor_id);
+    esp_err_t err = TdsStopInternal(sensor_id);
+    if (err != ESP_OK) return err;
     gpio_reset_pin(temp->pulse1_pin);
     gpio_reset_pin(temp->pulse2_pin);
     temp->sensor_id = TDS_SENSOR_UNKNOWN;
@@ -523,73 +597,165 @@ esp_err_t TdsDeinit(TdsSensorId sensor_id)
     return ESP_OK;
 }
 
+float TdsCorrectValue(float measured_ppm)
+{
+    // Shared empirical calibration for the current sampling timing.
+    // Zero is preserved; values above the measured range use the last slope.
+    static const float measured[] = {0.0f, 28.0f, 45.55f, 75.0f, 105.0f, 208.0f, 337.0f, 395.0f};
+    static const float reference[] = {0.0f, 16.0f, 40.0f, 60.0f, 80.0f, 120.0f, 180.0f, 200.0f};
+    const size_t count = sizeof(measured) / sizeof(measured[0]);
+    if (measured_ppm <= 0.0f) return 0.0f;
+
+    size_t i = 0;
+    while (i < count - 2 && measured_ppm > measured[i + 1]) {
+        i++;
+    }
+    float fraction = (measured_ppm - measured[i]) / (measured[i + 1] - measured[i]);
+    float corrected_ppm = reference[i] + fraction * (reference[i + 1] - reference[i]);
+    if (corrected_ppm > (float)UINT16_MAX) return (float)UINT16_MAX;
+    return corrected_ppm;
+}
+
 #define TDS_SLEEP_US 100
+#define TDS_MEASURE_PERIOD_US 1000000LL
+#define TDS_LOG_PERIOD_US 10000000LL
+static esp_err_t TdsReadPair(TdsConfig *sensor, float *positive, float *negative,
+                             int64_t *positive_us, int64_t *negative_us)
+{
+    esp_err_t err = gpio_set_level(sensor->pulse1_pin, 1);
+    if (err == ESP_OK) err = gpio_set_level(sensor->pulse2_pin, 0);
+    int64_t phase_start_us = esp_timer_get_time();
+    int64_t last_sample_us = phase_start_us;
+    TdsSampleTrace *positive_trace = s_sample_trace_done ? NULL : &s_sample_trace[sensor->sensor_id][0];
+    TdsSampleTrace *negative_trace = s_sample_trace_done ? NULL : &s_sample_trace[sensor->sensor_id][1];
+    if (positive_trace != NULL) {
+        positive_trace->phase_start_us = phase_start_us;
+        positive_trace->count = 0;
+        negative_trace->count = 0;
+    }
+    if (err == ESP_OK) {
+        esp_rom_delay_us(TDS_SLEEP_US);
+        err = TdsReadAverageRaw(sensor->sensor_id, positive, &last_sample_us, positive_trace);
+        *positive_us = last_sample_us - phase_start_us;
+    }
+    if (err == ESP_OK) err = gpio_set_level(sensor->pulse1_pin, 0);
+    if (err == ESP_OK) err = gpio_set_level(sensor->pulse2_pin, 1);
+    phase_start_us = esp_timer_get_time();
+    last_sample_us = phase_start_us;
+    if (negative_trace != NULL) negative_trace->phase_start_us = phase_start_us;
+    if (err == ESP_OK) {
+        esp_rom_delay_us(TDS_SLEEP_US);
+        err = TdsReadAverageRaw(sensor->sensor_id, negative, &last_sample_us, negative_trace);
+        *negative_us = last_sample_us - phase_start_us;
+    }
+    esp_err_t low1_err = gpio_set_level(sensor->pulse1_pin, 0);
+    esp_err_t low2_err = gpio_set_level(sensor->pulse2_pin, 0);
+    if (err == ESP_OK) err = low1_err;
+    if (err == ESP_OK) err = low2_err;
+    return err;
+}
+
 static void TdsTask(void * param)
 {
     TdsConfig *sensor_1 = TdsGetConfig(TDS_SENSOR_0);
-    if(NULL == sensor_1)
-    {
-        vTaskDelete(NULL);
-        return; 
-    }
     TdsConfig *sensor_2 = TdsGetConfig(TDS_SENSOR_1);
-    if(NULL == sensor_2)
+    if(NULL == sensor_1 || NULL == sensor_2)
     {
+        xTask_tds = NULL;
         vTaskDelete(NULL);
-        return; 
+        return;
     }
-    UI16 pos_value1 = 0; UI16 neg_value1 = 0;
-    UI16 pos_value2 = 0; UI16 neg_value2 = 0;
 
-    TdsStartPulses(TDS_SENSOR_0);
-    TdsStartPulses(TDS_SENSOR_1);
+    esp_err_t start1_err = TdsStartPulses(TDS_SENSOR_0);
+    esp_err_t start2_err = TdsStartPulses(TDS_SENSOR_1);
     ESP_LOGW(TAG, "===>>> TdsTask created sucessfully");
     vTaskDelay(pdMS_TO_TICKS(3000));
 
+    s_sample_trace_done = false;
+    memset(s_sample_trace, 0, sizeof(s_sample_trace));
+    int64_t last_log_us = 0;
     while (!s_tds_stop_requested) {
-        // WARNING: TdsStopPulses()/TdsStartPulses() delete and re-create the RMT channel + encoder
-        // every loop (~1 s). Continuous heap alloc/free fragments the heap over time; OTA needs one
-        // contiguous ~16.7 KB block for TLS. Prefer creating the channels once and using
-        // rmt_disable()/rmt_enable() (or stopping the transmission) around the measurement.
+        float pos_value1 = 0.0f; float neg_value1 = 0.0f;
+        float pos_value2 = 0.0f; float neg_value2 = 0.0f;
+        int64_t positive1_us = 0; int64_t negative1_us = 0;
+        int64_t positive2_us = 0; int64_t negative2_us = 0;
+        esp_err_t stop1_err = TdsStopPulses(TDS_SENSOR_0);
+        esp_err_t stop2_err = TdsStopPulses(TDS_SENSOR_1);
+        esp_err_t read1_err = ESP_ERR_INVALID_STATE;
+        esp_err_t read2_err = ESP_ERR_INVALID_STATE;
 
-        // NOTE: This reading method was provided by Kangaroo.
-        TdsStopPulses(TDS_SENSOR_0);
-        TdsStopPulses(TDS_SENSOR_1);
+        // Keep both probes quiet while measuring either probe.
+        if (start1_err == ESP_OK && start2_err == ESP_OK &&
+            stop1_err == ESP_OK && stop2_err == ESP_OK) {
+            // Discard the first ADC conversion before applying either polarity.
+            UI16 warmup_raw = 0;
+            esp_err_t warmup_err = AdcOneshotRead(sensor_1->adc_channel, &warmup_raw);
+            if (warmup_err == ESP_OK) {
+                read1_err = TdsReadPair(sensor_1, &pos_value1, &neg_value1, &positive1_us, &negative1_us);
+                read2_err = TdsReadPair(sensor_2, &pos_value2, &neg_value2, &positive2_us, &negative2_us);
+            }
+            else {
+                read1_err = warmup_err;
+                read2_err = warmup_err;
+            }
+        }
+        start1_err = TdsStartPulses(TDS_SENSOR_0);
+        start2_err = TdsStartPulses(TDS_SENSOR_1);
+        int64_t pulse_start_us = esp_timer_get_time();
+        bool log_due = last_log_us == 0 || pulse_start_us - last_log_us >= TDS_LOG_PERIOD_US;
 
-        gpio_set_level(sensor_1->pulse1_pin, 1);
-        gpio_set_level(sensor_1->pulse2_pin, 0);
-        esp_rom_delay_us(TDS_SLEEP_US);
-        TdsReadAverageRaw(TDS_SENSOR_0, &pos_value1);
-
-        gpio_set_level(sensor_1->pulse1_pin, 0);
-        gpio_set_level(sensor_1->pulse2_pin, 1);
-        esp_rom_delay_us(TDS_SLEEP_US);
-        TdsReadAverageRaw(TDS_SENSOR_0, &neg_value1);
-
-        gpio_set_level(sensor_1->pulse1_pin, 0);
-        gpio_set_level(sensor_1->pulse2_pin, 0);
-
-        gpio_set_level(sensor_2->pulse1_pin, 1);
-        gpio_set_level(sensor_2->pulse2_pin, 0);
-        esp_rom_delay_us(TDS_SLEEP_US);
-        TdsReadAverageRaw(TDS_SENSOR_1, &pos_value2);
-
-        gpio_set_level(sensor_2->pulse1_pin, 0);
-        gpio_set_level(sensor_2->pulse2_pin, 1);
-        esp_rom_delay_us(TDS_SLEEP_US);
-        TdsReadAverageRaw(TDS_SENSOR_1, &neg_value2);
-
-        TdsStartPulses(TDS_SENSOR_0);
-        TdsStartPulses(TDS_SENSOR_1);
-
-        float resistance1 = AdcToResistance(pos_value1, neg_value1); // R_water
-        float tds1 = table_tds(resistance1); sensor_1->tds_value = (UI16)tds1;
-        float resistance2 = AdcToResistance(pos_value2, neg_value2); // R_water
-        float tds2 = table_tds(resistance2); sensor_2->tds_value = (UI16)tds2;
-
-        // printf("[probe 1] ADC+: %d, ADC-: %d, tds: %.2f ppm\n", (UI16)pos_value1, (UI16)neg_value1, tds1);
-        // printf("[probe 2] ADC+: %d, ADC-: %d, tds: %.2f ppm\n", (UI16)pos_value2, (UI16)neg_value2, tds2);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (read1_err == ESP_OK && start1_err == ESP_OK && start2_err == ESP_OK) {
+            float resistance1 = AdcToResistance(pos_value1, neg_value1);
+            float measured_ppm = table_tds(resistance1);
+            float corrected_ppm = measured_ppm;
+            corrected_ppm = TdsCorrectValue(corrected_ppm); // Comment out to use raw TDS.
+            sensor_1->tds_value = (UI16)(corrected_ppm + 0.5f);
+            if (log_due) {
+                // ESP_LOGI(TAG, "inlet: ADC+=%.2f ADC-=%.2f R=%.1f ohm raw_TDS=%.2f TDS=%u ppm sample_end=+%lld/-%lld us",
+                //          (double)pos_value1, (double)neg_value1, (double)resistance1,
+                //          (double)measured_ppm,
+                //          (unsigned)sensor_1->tds_value,
+                //          (long long)positive1_us, (long long)negative1_us);
+            }
+        }
+        if (read2_err == ESP_OK && start1_err == ESP_OK && start2_err == ESP_OK) {
+            float resistance2 = AdcToResistance(pos_value2, neg_value2);
+            float measured_ppm = table_tds(resistance2);
+            float corrected_ppm = measured_ppm;
+            corrected_ppm = TdsCorrectValue(corrected_ppm); // Comment out to use raw TDS.
+            sensor_2->tds_value = (UI16)(corrected_ppm + 0.5f);
+            if (log_due) {
+                // ESP_LOGI(TAG, "ro: ADC+=%.2f ADC-=%.2f R=%.1f ohm raw_TDS=%.2f TDS=%u ppm sample_end=+%lld/-%lld us",
+                //          (double)pos_value2, (double)neg_value2, (double)resistance2,
+                //          (double)measured_ppm,
+                //          (unsigned)sensor_2->tds_value,
+                //          (long long)positive2_us, (long long)negative2_us);
+            }
+        }
+        if (log_due && (read1_err != ESP_OK || read2_err != ESP_OK ||
+            start1_err != ESP_OK || start2_err != ESP_OK)) {
+            ESP_LOGW(TAG, "TDS measurement failed: read=%s/%s, start=%s/%s",
+                     esp_err_to_name(read1_err), esp_err_to_name(read2_err),
+                     esp_err_to_name(start1_err), esp_err_to_name(start2_err));
+        }
+        if (!s_sample_trace_done && read1_err == ESP_OK && read2_err == ESP_OK &&
+            start1_err == ESP_OK && start2_err == ESP_OK) {
+            s_sample_trace_done = true;
+            TdsPrintSampleTrace();
+        }
+        if (log_due) last_log_us = pulse_start_us;
+        // Anchor the next measurement to the RMT restart, excluding log time.
+        while (!s_tds_stop_requested) {
+            int64_t remaining_us = TDS_MEASURE_PERIOD_US - (esp_timer_get_time() - pulse_start_us);
+            if (remaining_us <= 0) break;
+            if (remaining_us > 3000) {
+                TickType_t delay_ticks = pdMS_TO_TICKS((remaining_us - 2000) / 1000);
+                vTaskDelay(delay_ticks > 0 ? delay_ticks : 1);
+            }
+            else {
+                esp_rom_delay_us((uint32_t)remaining_us);
+            }
+        }
     }
 
     // Finish the current driver operation, then release owned resources here.

@@ -1,4 +1,5 @@
 #include "water_controller_task.h"
+#include "warning_manager.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -183,6 +184,7 @@ static void WaterControllerTask(void *arg)
                 {
                     AppReportColdTankTemperatureToCloud((UI8)request.value1, (UI8)request.value2);
                 }
+                WarningManagerUpdate(WARNING_ID_ER00072, D_FALSE); 
                 break;
             }
 
@@ -190,6 +192,7 @@ static void WaterControllerTask(void *arg)
             {
                 ESP_LOGE(TAG, "Command %u failed confirmation (send=%s, retries=%u)",
                          (unsigned)request.command, esp_err_to_name(result), retries);
+                WarningManagerUpdate(WARNING_ID_ER00072, D_TRUE); // tx err
                 break;
             }
 

@@ -245,6 +245,14 @@ EventID WarningToEvent(WarningId Warning_id)
             return EVENT_COOLER_SENSOR_FAULT;
         case WARNING_ID_ER00070_COOLER_RUNTIME_OVER_2H:
             return EVENT_COOLER_RUNTIME_OVER_2H;
+        case WARNING_ID_ER00071:
+            return EVENT_WARNING_ID_ER00071;
+        case WARNING_ID_ER00072:
+            return EVENT_WARNING_ID_ER00072;
+        case WARNING_ID_ER00073:
+            return EVENT_WARNING_ID_ER00073;
+        case WARNING_ID_ER00074:
+            return EVENT_WARNING_ID_ER00074;
         default:
             return EVENT_MAX_NUM;
     }

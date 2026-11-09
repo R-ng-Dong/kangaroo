@@ -4,6 +4,7 @@
 #include "cloud_event_handler.h"
 #include "device_element_manager.h"
 #include "led_manager.h"
+#include "system_config.h"
 #include "report_alert.h"
 
 #include "IOT_Core.h"
@@ -169,7 +170,7 @@ void CloudSyncTick(void)
         /* Periodic service/RAL report, after the connect jitter above. */
         if ((0U != s_nextReportUs) && (nowUs >= s_nextReportUs))
         {
-            UI32 intervalMs = ReportAlertGetReportIntervalMs();
+            UI32 intervalMs = SystemConfigGetReportIntervalMs();
             if (intervalMs < 60000U)
             {
                 intervalMs = 60000U;

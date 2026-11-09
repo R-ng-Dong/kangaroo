@@ -86,6 +86,7 @@ UI8 WaterProfileGetHotTargetTemperature(void);
 UI8 WaterProfileGetColdTargetTemperature(void);
 UI8 WaterProfileGetStatus(WaterPurifyStatusType type);
 UI8 WaterProfileGetSetting(void);
+UI32 WaterProfileGetSystemRuntime(void);
 UI32 WaterProfileGetFrameType1Sequence(void);
 UI32 WaterProfileGetFrameTypeASequence(void);
 UI32 WaterProfileGetDeviceId(void);
@@ -95,5 +96,6 @@ SI8 WaterProfileGetColdTankTemperature(void);
 UI16 WaterProfileGetVersionFirmware(void);
 _bool HasMessageTypeA(void);
 _bool HasMessageType1(void);
+void DisableMessageType1(void);
 
 #endif

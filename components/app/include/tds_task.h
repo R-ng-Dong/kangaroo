@@ -7,4 +7,7 @@ void TdsTaskStart(void);
 void TdsTaskStop(void);
 void TdsTaskContinue(void);
 
+UI16 TdsInletGet(void);
+UI16 TdsRoGet(void);
+
 #endif

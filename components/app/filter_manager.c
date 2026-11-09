@@ -5,12 +5,13 @@
 #include "system_runtime.h"
 #include "filter_runtime.h"
 #include "water_runtime.h"
-#include "filter_runtime.h"
 #include "pump.h"
 #include "warning_manager.h"
 #include "nvs.h"
 #include "esp_err.h"
 #include "pin_config.h"
+#include "system_config.h"
+#include "flush_cycle_state.h"
 
 #define FILTER_LIFETIME_NVS_NAMESPACE "filter_config"
 
@@ -293,14 +294,15 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         // WARNING (B2): while pump-based life >= 80% the time-based limit (months) is ignored.
         // Combined with filter_runtime.c (only filter 1 accumulates pump time on the Standard
         // model), filters 2-5 stay at 100% forever. Also a rarely used filter never expires by time.
-        if(filter_lifetime_by_pump >= 80)
-        {
-            percent_values[idx] = filter_lifetime_by_pump ;
-        }else
-        {
-            percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
-        }
-        // if(percent_values[idx] >= 99) percent_values[idx] = 100;  
+        // if(filter_lifetime_by_pump >= 80)
+        // {
+        //     percent_values[idx] = filter_lifetime_by_pump ;
+        // }else
+        // {
+        //     percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
+        // }
+        percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
+  
     }
 }
 
@@ -454,6 +456,7 @@ void FilterManagerCheckWarning(UI32 now_ms, UI8 *remaining_percent)
 
 void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
 {
+    static _bool first_time = D_TRUE;
     if(WATER_PURIFIER_TYPE_STANDARD == model)
     {
         _bool updated = FilterManagerUpdateFromPump(now_ms);
@@ -472,11 +475,19 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
 
     FilterManagerCheckWarning(now_ms, remaining_percent);
 
+    if(first_time)
+    {
+        FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
+        first_time = D_FALSE;
+        return;
+    }
     // printf("remaining: %d %d %d %d %d\n", remaining_percent[0], remaining_percent[1], remaining_percent[2], remaining_percent[3], remaining_percent[4]);
     // Report immediately when any filter's remaining life drops by at least 5 points.
     _bool has_significant_decrease = FilterManagerHasSignificantDecrease(remaining_percent);
     if (has_significant_decrease)
     {
+        FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
+#if 0
         for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
         {
             if ((s_last_reported_percent[idx] >= remaining_percent[idx]) &&
@@ -487,7 +498,11 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
                                                  FILTER_MANAGER_REPORT_ONE_FILTER, (FilterTimeIndex)idx);
             }
         }
+#endif
+
     }
+
+#if 0
     // Keep periodic feedback as a fallback.
     else if (FilterManagerShouldReport(now_ms))
     {
@@ -495,6 +510,8 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
         FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
         s_last_report_ms = now_ms;
     }
+#endif
+
     return ;
 }
 
@@ -516,8 +533,24 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
 
     UI64 water_consumption_ws = (UI64)pump_active_total_seconds * PUMP_FLOW_RATE_LPH * FILTER_EFFICIENCY;
     UI64 water_consumption = water_consumption_ws / (3600 * 100);
-    printf("pump_active_total_seconds: %lu, water_consumption: %llu\n", pump_active_total_seconds, water_consumption);
-    return (UI32)water_consumption;
+
+
+    FlushCycleState_t state_out;
+    if(FlushCycleStateGet(&state_out))
+    {
+        return 0;
+    }
+
+    UI32 total_flush_water = state_out.total_drain_water_filter1 + state_out.total_drain_water_filter2\
+                            + state_out.total_drain_water_filter3 + state_out.total_drain_water_ro\
+                            + state_out.total_drain_water_post;
+    UI32 total_removed_water = WATER_TANK_CAPACITY_L + INITIAL_WASTE_WATER_VOLUME_L + total_flush_water;
+    printf("pump_active_total_seconds: %lu, total_removed_water: %lu, water_consumption: %llu\n", pump_active_total_seconds, total_removed_water, water_consumption);
+    if((UI32)water_consumption <= total_removed_water)
+    {
+        return 0;
+    }
+    return (UI32)water_consumption - total_removed_water;
 }
 
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds)

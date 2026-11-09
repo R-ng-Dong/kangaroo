@@ -71,7 +71,7 @@ void IotSmartInit(void)
         for (UI8 i = 0; i < MAX_NUM_IOT_SMART; i++)
         {
             SmartTriggerBindCmd *sm_temp = &s_smart[i];
-            sm_temp->ro_flushing_time_s = 120; // default 2 minutes
+            sm_temp->ro_flushing_time_s = 600; // default 10 minutes
         }
     }
 }

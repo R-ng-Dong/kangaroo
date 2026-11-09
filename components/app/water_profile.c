@@ -127,6 +127,11 @@ UI32 WaterProfileGetFrameType1Sequence(void)
     return s_frame_type_1_sequence;
 }
 
+UI32 WaterProfileGetSystemRuntime(void)
+{
+    return s_frame_type_1.system_run;
+}
+
 UI32 WaterProfileGetFrameTypeASequence(void)
 {
     return s_frame_type_A_sequence;
@@ -167,6 +172,11 @@ _bool HasMessageTypeA(void)
 _bool HasMessageType1(void)
 {
     return s_has_mess_type1;
+}
+
+void DisableMessageType1(void)
+{
+    s_has_mess_type1 = D_FALSE;
 }
     
 UI16 WaterProfileGetVersionFirmware(void)
@@ -221,7 +231,7 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
     SI8 hot_temp = (s_frame_type_1.hot_tank_temperature / 100) - 50;
     SI8 cold_temp = (s_frame_type_1.cold_tank_temperature / 100) - 50;
 
-    #if 1
+    #if 0
     ESP_LOGI(WATER_PROFILE_TAG, "=============================================================FRAME TYPE 1============================================================");
     ESP_LOGI(WATER_PROFILE_TAG,
              "System run=%" PRIu32 "s, total time=%" PRIu32 "s, STATUS [ro=0x%02x, ply=0x%02x, hot=0x%02x, cold=0x%02x, setting=0x%02x], TEMPERATURE [hot: %d *C, cold: %d *C]",

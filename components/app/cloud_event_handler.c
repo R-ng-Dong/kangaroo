@@ -1166,6 +1166,11 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
         IOT_LOGW(TAG, "[OS_EVENT_OTA_REQUESTED] ...");
         // esp_event_post(EVENT_BASE_COMMON, EVENT_OTA_REQUEST, NULL, 0, pdMS_TO_TICKS(10));
         // break;
+        if(IsOtaReady() == D_FALSE)
+        {
+            return IOT_ERR_FAIL;
+        }
+        printf("OTA ready ... \n");
         return app_handle_ota_requested(&osEvent->data.otaRequested);
     }
     default:
