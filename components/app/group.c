@@ -1,6 +1,7 @@
 #include "group.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "string.h"
 
 #define GROUP_NVS_NAMESPACE "group_ns"
 #define KEY_CONFIG_GROUP "group_key"
@@ -14,7 +15,8 @@ static _bool GroupSave(const DaoGroup *config)
         return D_FALSE;
 
     esp_err_t err = nvs_set_blob(handle, KEY_CONFIG_GROUP, config, sizeof(DaoGroup) * MAX_NUM_GROUPS);
-    if (err == ESP_OK) err = nvs_commit(handle);
+    if (err == ESP_OK)
+        err = nvs_commit(handle);
     nvs_close(handle);
     return (err == ESP_OK) ? D_TRUE : D_FALSE;
 }
@@ -35,7 +37,7 @@ void GroupInit(void)
     nvs_close(handle);
 }
 
-DaoGroup* GroupGetById(UI16 group_id)
+DaoGroup *GroupGetById(UI16 group_id)
 {
     for (int i = 0; i < MAX_NUM_GROUPS; i++)
     {
@@ -55,7 +57,7 @@ _bool GroupAdd(UI16 group_id)
         {
             s_groups[i].group_id = group_id;
             s_groups[i].is_used = 1;
-            //save to DAO
+            // save to DAO
             return GroupSave(s_groups);
         }
     }
@@ -70,11 +72,11 @@ _bool GroupDelete(UI16 group_id)
         {
             s_groups[i].group_id = 0x0000;
             s_groups[i].is_used = 0;
-            //save to DAO
+            // save to DAO
             return GroupSave(s_groups);
         }
     }
-    return D_FALSE; 
+    return D_FALSE;
 }
 
 _bool GroupResetAll(void)
@@ -82,18 +84,18 @@ _bool GroupResetAll(void)
     nvs_handle_t handle;
     if (nvs_open(GROUP_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK)
         return D_FALSE;
-    esp_err_t err = nvs_erase_key(handle, KEY_CONFIG_GROUP); 
-    if(err == ESP_ERR_NVS_NOT_FOUND)
+    esp_err_t err = nvs_erase_key(handle, KEY_CONFIG_GROUP);
+    if (err == ESP_ERR_NVS_NOT_FOUND)
     {
         ESP_LOGW("GROUP", "Key %s not found in namespace %s (nothing to erase)", KEY_CONFIG_GROUP, GROUP_NVS_NAMESPACE);
         nvs_close(handle);
         return D_FALSE;
     }
-    if(err != ESP_OK)
+    if (err != ESP_OK)
     {
         ESP_LOGE("GROUP", "Error erasing key %s: %s", KEY_CONFIG_GROUP, esp_err_to_name(err));
         nvs_close(handle);
-        return D_FALSE;  
+        return D_FALSE;
     }
     err = nvs_commit(handle);
     nvs_close(handle);
