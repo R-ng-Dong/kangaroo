@@ -3,6 +3,8 @@
 #include "water_controller.h"
 #include "esp_err.h"
 #include "nvs.h"
+#include "rtc_time.h"
+#include "esp_timer.h"
 
 #include <string.h>
 
@@ -41,6 +43,7 @@ static struct
     UI16 end_minute;
     UI16 last_minute;
     _bool has_last_minute;
+    _bool handled_first_schedule_deactivation;
     _bool has_last_update;
     UI64 last_update_seconds;
     _bool synced_from_mainboard;
@@ -266,6 +269,23 @@ _bool EnergySavingManagerSetSchedule(_bool enabled, UI16 start_minute, UI16 end_
     ApplyConfig(&config);
     s_policy.has_last_minute = D_FALSE;
     s_policy.has_last_update = D_FALSE;
+
+    INT hour = 0; INT minute = 0; INT year = 0;
+    GetNowTime(&year, &hour, &minute, NULL);
+    if (year >= 125)
+    {
+        UI16 minute_of_day = hour * 60 + minute;
+
+        if(!IsScheduleActive(minute_of_day))
+        {
+            TankPolicy *hot = &s_policy.tanks[ENERGY_SAVING_TANK_HOT];
+            TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
+            hot->base_enabled = D_TRUE;
+            cold->base_enabled = D_TRUE;
+        }
+        EnergySavingManagerUpdate(minute_of_day, (UI64)(esp_timer_get_time() / 1000000ULL));
+
+    }    
     return D_TRUE;
 }
 
@@ -375,6 +395,27 @@ void EnergySavingManagerSyncFromMainboard(void)
            hot->enabled, hot->temperature, cold->enabled, cold->temperature);
 }
 
+void EnergySavingManagerSyncBaseEnable(EnergySavingTank_t tank)
+{
+    if (D_FALSE == HasMessageType1())
+    {
+        return;
+    }
+
+    const UI8 setting = WaterProfileGetSetting();
+    if(ENERGY_SAVING_TANK_HOT == tank)
+    {
+        TankPolicy *hot = &s_policy.tanks[ENERGY_SAVING_TANK_HOT];
+        hot->base_enabled = (0U != (setting & HOT_SWITCH_BIT)) ? D_TRUE : D_FALSE;
+        printf("[hot] energy saving: synced base_enable %d\n", hot->base_enabled);
+    }else if(ENERGY_SAVING_TANK_COLD == tank)
+    {
+        TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
+        cold->base_enabled = (0U != (setting & COLD_SWITCH_BIT)) ? D_TRUE : D_FALSE;
+        printf("[cold] energy saving: synced base_enable %d\n", cold->base_enabled);
+    }
+}
+
 void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
 {
     if (minute_of_day >= MINUTES_PER_DAY)
@@ -389,7 +430,17 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
 
     EnergySavingManagerSyncFromMainboard();
 
+    const _bool was_schedule_active = s_policy.has_last_minute
+                                         ? IsScheduleActive(s_policy.last_minute)
+                                         : D_FALSE;
     const _bool schedule_active = IsScheduleActive(minute_of_day);
+    const _bool schedule_just_deactivated =
+        (was_schedule_active && !schedule_active &&
+         !s_policy.handled_first_schedule_deactivation) ? D_TRUE : D_FALSE;
+    if (schedule_just_deactivated)
+    {
+        s_policy.handled_first_schedule_deactivation = D_TRUE;
+    }
     AccountSavedTimeUntil(now_seconds);
 
     s_policy.last_minute = minute_of_day;
@@ -418,11 +469,13 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         }
         else
         {
-            /* Outside the window: restore what the user last asked for.
-             * The old forced ON here re-enabled a tank one second after the
-             * app turned it off (observed: "set feature hot: 0" followed by
-             * "set feature hot: 1" and a failed confirmation). */
-            desired_enabled = D_TRUE; //tank->base_enabled;
+            /* Schedule end forces the tank back ON and updates the base
+             * state too, so the next update does not immediately turn it OFF. */
+            if (schedule_just_deactivated)
+            {
+                tank->base_enabled = D_TRUE;
+            }
+            desired_enabled = tank->base_enabled;
         }
 
         if ((D_TRUE == desired_enabled) && (D_TRUE == TankFaulted((EnergySavingTank_t)i)))

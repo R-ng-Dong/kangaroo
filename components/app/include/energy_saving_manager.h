@@ -26,5 +26,6 @@ _bool EnergySavingManagerSetTankTemperature(EnergySavingTank_t tank, UI8 tempera
 /* Current policy switch state (what was last applied to the mainboard). */
 _bool EnergySavingManagerGetTankEnabled(EnergySavingTank_t tank, UI8 *enabled);
 void EnergySavingManagerGetSavedEnergy(UI64 now_seconds, UI64 *hot_tank_wh, UI64 *cold_tank_wh);
+void EnergySavingManagerSyncBaseEnable(EnergySavingTank_t tank);
 
 #endif
