@@ -315,8 +315,6 @@ static void AddUartProfileData(cJSON *data)
         cJSON_AddNumberToObject(data, "output_stt", ReadUartBitmask(OUTPUT_STATUS));
         cJSON_AddNumberToObject(data, "switch_stt", ReadUartBitmask(SWITCH_STATUS));
         cJSON_AddNumberToObject(data, "led_stt", ReadUartBitmask(LED_STATUS));
-        cJSON_AddNumberToObject(data, "raw1", WaterProfileGetAdcRaw1());
-        cJSON_AddNumberToObject(data, "raw2", WaterProfileGetAdcRaw2());
     }
 }
 
@@ -399,6 +397,9 @@ static void HandleUartTestCommand(const char *method, const cJSON *params, cJSON
         UI8 frame_type_A_seen = D_TRUE == HasMessageTypeA();
         UI8 received = frame_type_1_seen || frame_type_A_seen;
         AddDeviceVersionData(data, frame_type_A_seen);
+        /* Keep ADC fields consistent with testAdc, even before UART data arrives. */
+        cJSON_AddNumberToObject(data, "raw1", TdsGetValue(TDS_SENSOR_0));
+        cJSON_AddNumberToObject(data, "raw2", TdsGetValue(TDS_SENSOR_1));
         cJSON_AddBoolToObject(data, "uartReceived", received);
         cJSON_AddBoolToObject(data, "frameType1Seen", frame_type_1_seen);
         cJSON_AddBoolToObject(data, "frameTypeASeen", frame_type_A_seen);

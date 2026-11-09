@@ -312,16 +312,6 @@ UI32 WaterProfileGetSystemTimeSeconds(void)
     return s_frame_type_1.system_time;
 }
 
-UI16 WaterProfileGetAdcRaw1(void)
-{
-    return s_frame_type_A.adc_raw_value_1;
-}
-
-UI16 WaterProfileGetAdcRaw2(void)
-{
-    return s_frame_type_A.adc_raw_value_2;
-}
-
 UI8 *WaterProfileGetFirmwareVersionByte(void)
 {
     return s_frame_type_A.fw_build_ver;

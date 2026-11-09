@@ -328,16 +328,16 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
       "output_stt": 1,
       "switch_stt": 2,
       "led_stt": 4,
-      "raw1": 1234,
-      "raw2": 2345
+      "raw1": 123,
+      "raw2": 45
     }
   }
 }
 ```
 
-`getAllState` đọc dữ liệu MLN đã được luồng UART1 chính giải mã qua `water_profile.h`; các lệnh điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây là ADC raw từ khung UART A, khác với giá trị TDS ppm trong `testAdc`. `productId` là ID được dùng khi khởi tạo IoT Core theo model (`...0004` cho STANDARD, `...0003` cho HOT_COLD); `firmwareVersion` lấy từ `CONFIG_APP_PROJECT_VER` của bản firmware đang biên dịch. `mainboardVersion` ghép byte 0 (Major) và byte 1 (Minor) của `fw_build_ver` trong khung UART A theo dạng `major.minor`; byte 2–7 là thời điểm build `YY MM DD hh mm ss`, không thuộc phiên bản. `getAllStatus` và `getAll` vẫn được chấp nhận như tên lệnh cũ, với cùng nội dung dữ liệu và tên phản hồi tương ứng.
+`getAllState` đọc dữ liệu MLN đã được luồng UART1 chính giải mã qua `water_profile.h`; các lệnh điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` lấy từ `TdsGetValue(TDS_SENSOR_0/1)`, cùng nguồn và đơn vị ppm với `testAdc`, không phụ thuộc khung UART. `productId` là ID được dùng khi khởi tạo IoT Core theo model (`...0004` cho STANDARD, `...0003` cho HOT_COLD); `firmwareVersion` lấy từ `CONFIG_APP_PROJECT_VER` của bản firmware đang biên dịch. `mainboardVersion` ghép byte 0 (Major) và byte 1 (Minor) của `fw_build_ver` trong khung UART A theo dạng `major.minor`; byte 2–7 là thời điểm build `YY MM DD hh mm ss`, không thuộc phiên bản. `getAllStatus` và `getAll` vẫn được chấp nhận như tên lệnh cũ, với cùng nội dung dữ liệu và tên phản hồi tương ứng.
 
-UART1 tiếp tục chạy trong chế độ test. Mỗi lần gọi trả giá trị từ **khung hợp lệ gần nhất**, không đợi một khung mới. `frameType1Sequence` và `frameTypeASequence` tăng khi nhận khung tương ứng; tool có thể gọi lại để xác nhận dữ liệu còn cập nhật. Có ít nhất một loại khung thì `code: 0`; nếu chưa có loại nào, trả `no_uart_data` nhưng vẫn có `productId` và `firmwareVersion`. Trường của loại 1 chỉ xuất hiện sau khi đã nhận khung loại 1; `mainboardVersion`, `dev_id`, `input_stt`, `output_stt`, `switch_stt`, `led_stt`, `raw1`, `raw2` chỉ xuất hiện sau khung loại A.
+UART1 tiếp tục chạy trong chế độ test. Mỗi lần gọi trả giá trị từ **khung hợp lệ gần nhất**, không đợi một khung mới. `frameType1Sequence` và `frameTypeASequence` tăng khi nhận khung tương ứng; tool có thể gọi lại để xác nhận dữ liệu còn cập nhật. Có ít nhất một loại khung thì `code: 0`; nếu chưa có loại nào, trả `no_uart_data` nhưng vẫn có `productId`, `firmwareVersion`, `raw1` và `raw2`. Trường của loại 1 chỉ xuất hiện sau khi đã nhận khung loại 1; `mainboardVersion`, `dev_id`, `input_stt`, `output_stt`, `switch_stt` và `led_stt` chỉ xuất hiện sau khung loại A.
 
 ## Phản hồi lỗi
 

@@ -101,8 +101,6 @@ _bool HasMessageType1(void);
 
 UI32 WaterProfileGetSystemRunSeconds(void);
 UI32 WaterProfileGetSystemTimeSeconds(void);
-UI16 WaterProfileGetAdcRaw1(void);
-UI16 WaterProfileGetAdcRaw2(void);
 UI8 *WaterProfileGetFirmwareVersionByte(void);
 
 #endif
