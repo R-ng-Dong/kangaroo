@@ -23,7 +23,7 @@ Tham chiếu: [ThingsBoard MQTT RPC](https://thingsboard.io/docs/reference/mqtt-
 | --------------- | ------------------------------------ | --------------------------------------------------- |
 | `scanDevWifi`   | Không                                | `connected`, `ssid`, `rssi`, `channel`, `ip` nếu có |
 | `getTypeDev`    | Không                                | `type`: 0 máy tiêu chuẩn, 1 máy nóng/lạnh           |
-| `testAdc`       | Không                                | `raw1`, `raw2` từ khung UART A của bo MLN           |
+| `testAdc`       | Không                                | `raw1`, `raw2` từ hai cảm biến TDS, đơn vị ppm      |
 | `testInput`     | Không                                | `pumpActive`                                        |
 | `output`        | `index` 0–7, `state` 0/1             | Echo `index`, `state`; xem `params.code`            |
 | `testLed`       | `color`: `R`, `G` hoặc `B`           | Kết quả `testLedRsp` có `params.code`               |
@@ -95,16 +95,16 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
   "params": {
     "data": {
       "mac": "aabbccddeeff",
-      "raw1": 1234,
-      "raw2": 2345,
-      "source": "uart_frame_A",
-      "frameTypeASequence": 3
+      "raw1": 123,
+      "raw2": 45,
+      "source": "tds_sensor",
+      "unit": "ppm"
     }
   }
 }
 ```
 
-`raw1`/`raw2` là giá trị ADC 12 bit (0–4095) do bo MLN gửi trong khung UART loại A gần nhất. `testAdc` không đọc chân ADC của ESP32 và không dừng tác vụ TDS. Nếu chưa nhận khung A, phản hồi `code: -1`, `error: "no_uart_data"`. `frameTypeASequence` tăng mỗi khi nhận khung A hợp lệ; tool có thể đọc lại để kiểm tra dữ liệu mới.
+`raw1`/`raw2` giữ tên trường để tương thích với tool, nhưng là giá trị TDS đã tính theo ppm từ `TdsGetValue(TDS_SENSOR_0)` và `TdsGetValue(TDS_SENSOR_1)`, không phải ADC raw. `testAdc` đọc giá trị mới nhất do tác vụ TDS cập nhật; ngay sau khi khởi động có thể trả 0 trước mẫu đầu tiên. Lệnh không dừng tác vụ TDS và không cần khung UART A.
 
 ### Input: trạng thái bơm
 
@@ -335,7 +335,7 @@ Tool PC quét trực tiếp bằng adapter BLE, không gửi UDP `scanDevBle`. T
 }
 ```
 
-`getAllState` đọc dữ liệu MLN đã được luồng UART1 chính giải mã qua `water_profile.h`; các lệnh điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây cùng nguồn UART A với `testAdc`. `productId` là ID được dùng khi khởi tạo IoT Core theo model (`...0004` cho STANDARD, `...0003` cho HOT_COLD); `firmwareVersion` lấy từ `CONFIG_APP_PROJECT_VER` của bản firmware đang biên dịch. `mainboardVersion` ghép byte 0 (Major) và byte 1 (Minor) của `fw_build_ver` trong khung UART A theo dạng `major.minor`; byte 2–7 là thời điểm build `YY MM DD hh mm ss`, không thuộc phiên bản. `getAllStatus` và `getAll` vẫn được chấp nhận như tên lệnh cũ, với cùng nội dung dữ liệu và tên phản hồi tương ứng.
+`getAllState` đọc dữ liệu MLN đã được luồng UART1 chính giải mã qua `water_profile.h`; các lệnh điều khiển MLN dùng `water_controller.h`. `raw1`/`raw2` ở đây là ADC raw từ khung UART A, khác với giá trị TDS ppm trong `testAdc`. `productId` là ID được dùng khi khởi tạo IoT Core theo model (`...0004` cho STANDARD, `...0003` cho HOT_COLD); `firmwareVersion` lấy từ `CONFIG_APP_PROJECT_VER` của bản firmware đang biên dịch. `mainboardVersion` ghép byte 0 (Major) và byte 1 (Minor) của `fw_build_ver` trong khung UART A theo dạng `major.minor`; byte 2–7 là thời điểm build `YY MM DD hh mm ss`, không thuộc phiên bản. `getAllStatus` và `getAll` vẫn được chấp nhận như tên lệnh cũ, với cùng nội dung dữ liệu và tên phản hồi tương ứng.
 
 UART1 tiếp tục chạy trong chế độ test. Mỗi lần gọi trả giá trị từ **khung hợp lệ gần nhất**, không đợi một khung mới. `frameType1Sequence` và `frameTypeASequence` tăng khi nhận khung tương ứng; tool có thể gọi lại để xác nhận dữ liệu còn cập nhật. Có ít nhất một loại khung thì `code: 0`; nếu chưa có loại nào, trả `no_uart_data` nhưng vẫn có `productId` và `firmwareVersion`. Trường của loại 1 chỉ xuất hiện sau khi đã nhận khung loại 1; `mainboardVersion`, `dev_id`, `input_stt`, `output_stt`, `switch_stt`, `led_stt`, `raw1`, `raw2` chỉ xuất hiện sau khung loại A.
 
@@ -380,8 +380,8 @@ Các lỗi khác: `wifi_not_connected`, `ble_advertise_failed`, `uart_send_faile
 
 ### 1. ADC
 
-- `testAdc` trả `adc_raw_value_1` và `adc_raw_value_2` từ khung UART loại A gần nhất của bo MLN.
-- Nếu chưa nhận khung A, trả `no_uart_data`; không thay đổi GPIO hoặc tác vụ TDS trên ESP32.
+- `testAdc` trả hai giá trị TDS ppm từ `TdsGetValue(TDS_SENSOR_0)` và `TdsGetValue(TDS_SENSOR_1)`.
+- Tác vụ TDS tiếp tục cập nhật giá trị; lệnh không thay đổi GPIO hoặc yêu cầu dữ liệu UART.
 
 ### 2. UART
 

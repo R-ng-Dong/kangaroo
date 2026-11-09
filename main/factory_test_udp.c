@@ -21,6 +21,7 @@
 #include "led_manager.h"
 #include "pin_config.h"
 #include "pump.h"
+#include "tds.h"
 #include "water_controller.h"
 #include "water_profile.h"
 #include "network/wifi.h"
@@ -28,11 +29,11 @@
 
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
-#define FACTORY_WIFI_SSID "Kangaroo2026"
-#define FACTORY_WIFI_PASSWORD "Kangaroo2026"
+// #define FACTORY_WIFI_SSID "Kangaroo2026"
+// #define FACTORY_WIFI_PASSWORD "Kangaroo2026"
 
-// #define FACTORY_WIFI_SSID "TTS"
-// #define FACTORY_WIFI_PASSWORD "TTS123456"
+#define FACTORY_WIFI_SSID "DigitalR&D"
+#define FACTORY_WIFI_PASSWORD "DigitalRD@2804"
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
@@ -144,16 +145,11 @@ static void SendResponse(int socket_fd, const struct sockaddr_in *peer, socklen_
 
 static void TestAdc(cJSON *data)
 {
-    /* Read the ADC values reported by the MLN board in the latest UART frame A. */
-    if (D_TRUE != HasMessageTypeA())
-    {
-        SetResult(data, 0U, "no_uart_data");
-        return;
-    }
-    cJSON_AddNumberToObject(data, "raw1", WaterProfileGetAdcRaw1());
-    cJSON_AddNumberToObject(data, "raw2", WaterProfileGetAdcRaw2());
-    cJSON_AddStringToObject(data, "source", "uart_frame_A");
-    cJSON_AddNumberToObject(data, "frameTypeASequence", WaterProfileGetFrameTypeASequence());
+    /* Keep the TDS task running; these are its latest calculated ppm values. */
+    cJSON_AddNumberToObject(data, "raw1", TdsGetValue(TDS_SENSOR_0));
+    cJSON_AddNumberToObject(data, "raw2", TdsGetValue(TDS_SENSOR_1));
+    cJSON_AddStringToObject(data, "source", "tds_sensor");
+    cJSON_AddStringToObject(data, "unit", "ppm");
     SetResult(data, 1U, NULL);
 }
 
