@@ -557,3 +557,10 @@ void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds)
 {
     FilterRuntimeSet(filter_index, seconds);
 }
+
+_bool FilterManagerCheckFirstChanged(FilterTimeIndex filter_index, UI8 pid[FILTER_PID_SIZE])
+{
+    if(filter_index > FILTER_TIME_INDEX_POST) return D_FALSE;
+    _bool is_default = (memcmp(s_default_filter_pids[filter_index], pid, FILTER_PID_SIZE) == 0) ? D_TRUE : D_FALSE;
+    return is_default ? D_FALSE : D_TRUE;
+}

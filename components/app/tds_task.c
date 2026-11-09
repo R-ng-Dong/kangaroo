@@ -65,16 +65,19 @@ static void TdsPollingTask(void *arg)
             last_flush_time_update_us = esp_timer_get_time();
         }
 
-        if(TdsIgnoreValue())
-        {
-            ESP_LOGW(TAG, "ignore TDS value");
-            inlet_count = 0; ro_count = 0;
-            TdsManagerClearAllWarnings();
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TDS_TASK_PERIOD_MS));
-            continue;
-        }
+        // if(TdsIgnoreValue())
+        // {
+        //     ESP_LOGW(TAG, "ignore TDS value");
+        //     inlet_count = 0; ro_count = 0;
+        //     TdsManagerClearAllWarnings();
+        //     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TDS_TASK_PERIOD_MS));
+        //     continue;
+        // }
         inlet_ppm = TdsGetValue(TDS_SENSOR_0);
         ro_ppm = TdsGetValue(TDS_SENSOR_1);
+
+        if(inlet_ppm < TDS_MIN_VALID_PPM) inlet_ppm = TDS_MIN_VALID_PPM;
+        if(ro_ppm < TDS_MIN_VALID_PPM) ro_ppm = TDS_MIN_VALID_PPM;
 
         if (inlet_ppm >= TDS_MIN_VALID_PPM && inlet_count < TDS_AVERAGE_SAMPLE_COUNT)
         {

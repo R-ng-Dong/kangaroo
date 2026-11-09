@@ -67,6 +67,8 @@ static void AppCheckStatusChanged(void);
 static void AppCheckVersionFirmwareMainboard(void);
 static void AppCheckMissUartMainboard(void);
 static void AppCheckTankStateChanged(void);
+static void TdsPeriodicReport(UI32 time_count);
+static _bool AppCheckPumActive(void);
 
 WaterPurifierType AppGetModel(void)
 {
@@ -321,6 +323,13 @@ static void AppTask(void *arg)
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
 
+        if(AppCheckPumActive())
+        {
+            TdsPeriodicReport(PUM_ACTIVE_UPDATE_TIMEOUT_COUNT);
+        }else{
+            TdsPeriodicReport(PUM_STOPPED_UPDATE_TIMEOUT_COUNT);
+        }
+
         now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
 
         // update system time every TIMEOUT_UPDATE_SYSTEM_TIME_MS
@@ -424,6 +433,38 @@ static void EventHandler(EventID event_id, void *data)
     }
 }
 
+static void TdsPeriodicReport(UI32 time_count)
+{
+    static UI32 update_tds_time_count = 0;
+    update_tds_time_count++;
+    if(update_tds_time_count >= time_count)
+    {
+        UI16 inlet_ppm = TdsInletGet();
+        UI16 ro_ppm = TdsRoGet();
+        AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
+        update_tds_time_count = 0;
+    }
+}
+
+static _bool AppCheckPumActive(void)
+{
+    WaterPurifierType model =  AppGetModel();
+    if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        if(HasMessageType1() && WaterProfileGetStatus(RO_STATUS) != RO_STATUS_PUMP_STOPPED)
+        {
+            return D_TRUE;
+        }
+    }else if(WATER_PURIFIER_TYPE_STANDARD == model)
+    {
+        if(PumpIsActive())
+        {
+            return D_TRUE;
+        }
+    } 
+    return D_FALSE;
+}
+
 static void AppCheckMissUartMainboard(void)
 {
     static UI32 system_run_old = 0;
@@ -479,12 +520,14 @@ static void AppCheckTankStateChanged(void)
     if(hot_tank_state_old != hot_tank_state)
     {
         hot_tank_state_old = hot_tank_state;
+        EnergySavingManagerSyncBaseEnable(ENERGY_SAVING_TANK_HOT);
         AppResponseTankStateToCloud(ENERGY_SAVING_TANK_HOT, hot_tank_state);
     }
 
     if(cold_tank_state_old != cold_tank_state)
     {
         cold_tank_state_old = cold_tank_state;
+        EnergySavingManagerSyncBaseEnable(ENERGY_SAVING_TANK_COLD);
         AppResponseTankStateToCloud(ENERGY_SAVING_TANK_COLD, cold_tank_state);
     }
 }
@@ -617,9 +660,16 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
                 UI8 pid_get[FILTER_PID_SIZE];
                 if(!FilterManagerGetPid((FilterTimeIndex)filter_idx, pid_get))
                     return;
-                _bool is_equal = (memcmp(pid_get, Pid, FILTER_PID_SIZE) == 0) ? D_TRUE : D_FALSE;
-                if(!is_equal)
-                    return;
+                _bool first_changed = FilterManagerCheckFirstChanged((FilterTimeIndex)filter_idx, Pid);
+                if(!first_changed)
+                {
+                    _bool is_equal = (memcmp(pid_get, Pid, FILTER_PID_SIZE) == 0) ? D_TRUE : D_FALSE;
+                    if(!is_equal)
+                        return;
+                }else{
+                    if(!FilterManagerSetPid((FilterTimeIndex)filter_idx, Pid))
+                        return;
+                }
                 if(!FilterManagerSetLifetimeSeconds((FilterTimeIndex)filter_idx, expire_time_s))
                     return;
             }
