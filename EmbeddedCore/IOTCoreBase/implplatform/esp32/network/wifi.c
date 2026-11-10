@@ -497,7 +497,7 @@ iot_err_t IOT_WifiGetMac(uint8_t *mac)
 
 iot_err_t IOT_WifiConnect(uint8_t iface_num, const char *target_ssid, const char *target_password, uint8_t retryTimes)
 {
-    iot_wifi_auth_mode_t target_auth_mode = IOT_WIFI_AUTH_WPA_WPA2_PSK;
+    iot_wifi_auth_mode_t target_auth_mode = IOT_WIFI_AUTH_OPEN;
 
     if (target_ssid == NULL || target_password == NULL)
     {

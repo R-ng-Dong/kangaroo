@@ -31,6 +31,7 @@ static const char *TAG = "CORE_EVT";
 
 uint8_t g_cloud_is_connected = 0;
 static bool s_wifi_connected = false;
+static bool is_ota_running = false;
 static CloudUpdateStateCallback s_CloudUpdateCb = NULL;
 
 static void CloudUpdateState(uint16_t elemId, uint16_t attrId, uint8_t *attrValue, uint8_t lenAttrValue);
@@ -796,6 +797,7 @@ static void app_deinit_ble_timer_cb(void *userData)
 void tds_task_continue(void)
 {
     IOT_LOGW(TAG, "TDS task continue ...");
+    is_ota_running = false;
     TdsTaskContinue();
     if (s_wifi_connected) LedManagerSetNetworkConnected();
     else LedManagerSetNetworkWaiting();
@@ -804,7 +806,8 @@ void tds_task_continue(void)
 static void tds_task_continue_cb(void *userData)
 {
     (void) userData;
-    tds_task_continue();
+    IOT_LOGW(TAG, "timeout,  TDS task continue ...");
+    TdsTaskContinue();
 }
 
 
@@ -973,6 +976,10 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
             s_wifi_connected = true;
             LedManagerSetNetworkConnected();
             LedManagerSetError();
+            if(is_ota_running)
+            {
+                LedManagerSetOta();
+            }
         }
         IOT_LOGW(TAG, "DEVICE event: WIFI_CONNECTED, IP: %08lx",
                  (unsigned long)deviceEvent->data.wifiConnected.ip);
@@ -984,6 +991,10 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         {
             s_wifi_connected = false;
             LedManagerSetNetworkWaiting();
+            if(is_ota_running)
+            {
+                LedManagerSetOta();
+            }
         }
         LedManagerSetError();
         IOT_LOGW(TAG, "DEVICE event: WIFI_DISCONNECTED, reason: %d",
@@ -1094,9 +1105,11 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
     // IOT_CoreBleDeinit();
     TdsTaskStop();
     IOT_LOGW(TAG, "resume TDS task after 5 minutes");
+    is_ota_running = true;
     if (IOT_TimerInsertCb(tds_task_continue_cb, NULL, 5U * 60U * 1000U) == IOT_TIMER_HANDLE_INVALID)
     {
         IOT_LOGE(TAG, "Failed to schedule ");
+        is_ota_running = false;
         tds_task_continue();
         return IOT_ERR_NO_MEM;
     }
@@ -1106,6 +1119,7 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
     if (err != IOT_OK)
     {
         IOT_LOGE(TAG, "Failed to start OTA download: %s", iot_err_to_name(err));
+        is_ota_running = false;
         if (s_wifi_connected) LedManagerSetNetworkConnected();
         else LedManagerSetNetworkWaiting();
         // Nothing was downloaded and no reboot is coming: re-arm the fallback,
