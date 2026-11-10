@@ -985,6 +985,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
             s_wifi_connected = false;
             LedManagerSetNetworkWaiting();
         }
+        LedManagerSetError();
         IOT_LOGW(TAG, "DEVICE event: WIFI_DISCONNECTED, reason: %d",
                  deviceEvent->data.wifiDisconnected.reason);
 
