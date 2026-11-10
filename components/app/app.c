@@ -693,6 +693,7 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
                 UI16 start_minute = (attrValue[2] << 8 | attrValue[3]);
                 UI16 end_minute = (attrValue[4] << 8 | attrValue[5]);
                 (void)EnergySavingManagerSetSchedule(enabled, start_minute, end_minute);
+                (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY_SAVING_SCHEDULE, attrValue, 6);
             }
         }
         else if(ATTR_RO_FLUSHING == attrId)
@@ -1472,6 +1473,28 @@ void AppInitAttributeValue(void)
         value[0] = 0;
         value[1] = setting & COLD_SWITCH_BIT ? 1 : 0;
         (void)DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_ONOFF, value, 2);
+
+        UI16 schedule_en = 0;
+        UI16 start_minute = 0;
+        UI16 end_minute = 0;
+
+        EnergySavingGetConfig(&schedule_en, &start_minute, &end_minute);
+
+        value[0] = (schedule_en >> 8) & 0xff;
+        value[1] = schedule_en & 0xff;
+        value[2] = (start_minute >> 8) & 0xff;
+        value[3] = start_minute & 0xff;
+        value[4] = (end_minute >> 8) & 0xff;
+        value[5] = end_minute & 0xff;
+
+        printf("schedule: ");
+        for (size_t i = 0; i < 6; i++)
+        {
+            printf("%02x ", value[i]);
+        }
+        printf("\n");
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY_SAVING_SCHEDULE, value, 6);
+
     }    
 
     value[0] = 0;

@@ -792,6 +792,22 @@ static void app_deinit_ble_timer_cb(void *userData)
     /* TDS restarts after the cloud session has the heap (or after 15 s). */
     CloudSyncStartTdsWhenRoomy();
 }
+
+void tds_task_continue(void)
+{
+    IOT_LOGW(TAG, "TDS task continue ...");
+    TdsTaskContinue();
+    if (s_wifi_connected) LedManagerSetNetworkConnected();
+    else LedManagerSetNetworkWaiting();
+}
+
+static void tds_task_continue_cb(void *userData)
+{
+    (void) userData;
+    tds_task_continue();
+}
+
+
 extern void RAL_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event);
 
 static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
@@ -1075,7 +1091,14 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
     RAL_DeinitBle();
     // IOT_CoreChangeWifiSuspendBle();
     // IOT_CoreBleDeinit();
-
+    TdsTaskStop();
+    IOT_LOGW(TAG, "resume TDS task after 5 minutes");
+    if (IOT_TimerInsertCb(tds_task_continue_cb, NULL, 5U * 60U * 1000U) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Failed to schedule ");
+        tds_task_continue();
+        return IOT_ERR_NO_MEM;
+    }
     iot_err_t err = IOT_AppManagerStartUpdateProcess(ota->url, ota->cert, ota->certLen,
                                                      ota->authToken, ota->authTokenLen,
                                                      NULL, IOT_CoreOtaPlatformProgressCb);
@@ -1086,7 +1109,7 @@ static iot_err_t app_handle_ota_requested(const IOT_CoreOsEventOtaRequestedData_
         else LedManagerSetNetworkWaiting();
         // Nothing was downloaded and no reboot is coming: re-arm the fallback,
         // then drop the request so the cloud is answered rather than left waiting.
-
+        TdsTaskContinue();
         // IOT_CoreChangeWifiResumeBle();
         IOT_CoreOtaClearPending();
     }
