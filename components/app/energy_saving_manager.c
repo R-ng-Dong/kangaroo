@@ -402,18 +402,18 @@ void EnergySavingManagerSyncBaseEnable(EnergySavingTank_t tank)
         return;
     }
 
-    const UI8 setting = WaterProfileGetSetting();
-    if(ENERGY_SAVING_TANK_HOT == tank)
-    {
-        TankPolicy *hot = &s_policy.tanks[ENERGY_SAVING_TANK_HOT];
-        hot->base_enabled = (0U != (setting & HOT_SWITCH_BIT)) ? D_TRUE : D_FALSE;
-        printf("[hot] energy saving: synced base_enable %d\n", hot->base_enabled);
-    }else if(ENERGY_SAVING_TANK_COLD == tank)
-    {
-        TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
-        cold->base_enabled = (0U != (setting & COLD_SWITCH_BIT)) ? D_TRUE : D_FALSE;
-        printf("[cold] energy saving: synced base_enable %d\n", cold->base_enabled);
-    }
+    // const UI8 setting = WaterProfileGetSetting();
+    // if(ENERGY_SAVING_TANK_HOT == tank)
+    // {
+    //     TankPolicy *hot = &s_policy.tanks[ENERGY_SAVING_TANK_HOT];
+    //     hot->base_enabled = (0U != (setting & HOT_SWITCH_BIT)) ? D_TRUE : D_FALSE;
+    //     printf("[hot] energy saving: synced base_enable %d\n", hot->base_enabled);
+    // }else if(ENERGY_SAVING_TANK_COLD == tank)
+    // {
+    //     TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
+    //     cold->base_enabled = (0U != (setting & COLD_SWITCH_BIT)) ? D_TRUE : D_FALSE;
+    //     printf("[cold] energy saving: synced base_enable %d\n", cold->base_enabled);
+    // }
 }
 
 void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
