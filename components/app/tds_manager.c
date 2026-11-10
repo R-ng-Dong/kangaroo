@@ -71,20 +71,23 @@ bool TdsManagerShouldReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
         // AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
         UI16 inlet_delta = TdsDeltaPpm(previous.last_reported_inlet_ppm, inlet_ppm);
         UI16 ro_delta = TdsDeltaPpm(previous.last_reported_ro_ppm, ro_ppm);
-        if ((inlet_delta >= TDS_REPORT_DELTA_PERCENT))
+        if((inlet_delta >= TDS_REPORT_DELTA_PERCENT) || ro_delta >= TDS_REPORT_DELTA_PERCENT)
         {
-            printf("TDS input report triggered by delta: inlet=%u ppm\n", inlet_delta);
-            // TdsInputUpdateRecord(inlet_ppm);
-            AppPushTdsReportToCloud(inlet_ppm, 0xFFFF); // post inlet only
+            if ((inlet_delta >= TDS_REPORT_DELTA_PERCENT))
+            {
+                printf("TDS input report triggered by delta: inlet=%u ppm\n", inlet_delta);
+                // TdsInputUpdateRecord(inlet_ppm);
+                AppPushTdsReportToCloud(inlet_ppm, 0xFFFF); // post inlet only
+            }
+            if (ro_delta >= TDS_REPORT_DELTA_PERCENT)
+            {
+                printf("TDS output report triggered by delta: ro=%u ppm\n", ro_delta);
+                // TdsOutputUpdateRecord(ro_ppm);
+                AppPushTdsReportToCloud(0xFFFF, ro_ppm); // post ro only
+            } 
             return true;
         }
-        if (ro_delta >= TDS_REPORT_DELTA_PERCENT)
-        {
-            printf("TDS output report triggered by delta: ro=%u ppm\n", ro_delta);
-            // TdsOutputUpdateRecord(ro_ppm);
-            AppPushTdsReportToCloud(0xFFFF, ro_ppm); // post ro only
-            return true;
-        }        
+       
     }
 
     return false;
