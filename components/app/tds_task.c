@@ -106,6 +106,7 @@ static void TdsPollingTask(void *arg)
         if (ro_count == TDS_AVERAGE_SAMPLE_COUNT)
         {
             UI32 ro_sum = 0;
+            MergeSort(ro_samples, 0, TDS_AVERAGE_SAMPLE_COUNT - 1);
             for (UI8 i = TDS_TRIM_EDGES; i < TDS_AVERAGE_SAMPLE_COUNT - TDS_TRIM_EDGES; i++)
             {
                 ro_sum += ro_samples[i];
