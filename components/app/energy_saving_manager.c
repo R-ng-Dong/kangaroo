@@ -441,6 +441,10 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
     {
         s_policy.handled_first_schedule_deactivation = D_TRUE;
     }
+    if(!was_schedule_active && schedule_active)
+    {
+        s_policy.handled_first_schedule_deactivation = D_FALSE;
+    }
     AccountSavedTimeUntil(now_seconds);
 
     s_policy.last_minute = minute_of_day;
@@ -466,6 +470,7 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         else if (schedule_active)
         {
             desired_enabled = D_FALSE;
+            //s_policy.handled_first_schedule_deactivation = D_FALSE;
         }
         else
         {
