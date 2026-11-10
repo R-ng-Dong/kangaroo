@@ -84,6 +84,8 @@ static esp_err_t ota_http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+extern void tds_task_continue(void);
+
 static void ota_update_task(void *pvParameter)
 {
     ota_task_params_t *params = (ota_task_params_t *)pvParameter;
@@ -282,6 +284,7 @@ cleanup:
     SAFE_FREE(params->cert);
     SAFE_FREE(params->authToken);
     SAFE_FREE(params);
+    tds_task_continue();
     vTaskDelete(NULL);
 }
 

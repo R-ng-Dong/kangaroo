@@ -570,3 +570,17 @@ void EnergySavingManagerGetSavedEnergy(UI64 now_seconds, UI64 *hot_tank_wh, UI64
                         SECONDS_PER_HOUR;
     }
 }
+
+void EnergySavingGetConfig(UI16 *enable, UI16 *start_minute, UI16 *end_minute)
+{
+    if(enable == NULL || start_minute == NULL || end_minute == NULL)
+    {
+        return;
+    }
+    EnergySavingConfig config = GetConfig();
+    *enable = config.schedule_enabled;
+    *start_minute = config.start_minute;
+    *end_minute = config.end_minute;
+
+    printf("schedule: enable: %d, start: %d, stop: %d \n", *enable, *start_minute, *end_minute);
+}

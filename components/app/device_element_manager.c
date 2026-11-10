@@ -122,7 +122,7 @@ _bool DeviceElementSetAttributeValue(UI16 element_id, UI16 attribute_id, const u
             }
             memcpy(entry->value, value, value_length);
             entry->has_value = D_TRUE;
-            if(ATTR_ENERGY_SAVING_SCHEDULE == attribute_id || ATTR_FILTER_SETTING == attribute_id)
+            if(ATTR_FILTER_SETTING == attribute_id)
                 entry->has_value = D_FALSE;
             portEXIT_CRITICAL(&s_elements_lock);
             return D_TRUE;
