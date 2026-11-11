@@ -71,6 +71,26 @@ static void CloudSyncPublishReady(void)
         LedManagerSetNormal();
     }
     AppPushWarningToCloud();     /* element 1 issues mask + full state report */
+    AppRspToCloud(ELEMENT_ID_1, ATTR_INFOMATION_PRODUCT_USAGE_TIME);
+    AppRspToCloud(ELEMENT_ID_2, ATTR_INFOMATION_PRODUCT_USAGE_TIME);
+    AppRspToCloud(ELEMENT_ID_3, ATTR_INFOMATION_PRODUCT_USAGE_TIME);
+    AppRspToCloud(ELEMENT_ID_4, ATTR_INFOMATION_PRODUCT_USAGE_TIME);
+    AppRspToCloud(ELEMENT_ID_5, ATTR_INFOMATION_PRODUCT_USAGE_TIME);
+
+    AppRspToCloud(ELEMENT_ID_2, ATTR_ENERGY_SAVING_SCHEDULE);
+
+    AppRspToCloud(ELEMENT_ID_4, ATTR_ONOFF);
+    AppRspToCloud(ELEMENT_ID_5, ATTR_ONOFF);
+    AppRspToCloud(ELEMENT_ID_4, ATTR_TEMP_SET);
+    AppRspToCloud(ELEMENT_ID_5, ATTR_TEMP_SET);
+
+    AppRspToCloud(ELEMENT_ID_2, ATTR_ENERGY);
+    AppRspToCloud(ELEMENT_ID_3, ATTR_ENERGY);
+    AppRspToCloud(ELEMENT_ID_1, ATTR_INFOMATION_WATER_CONSUMER);
+
+    AppRspToCloud(ELEMENT_ID_2, ATTR_EVENT_TDS_STATUS);
+    AppRspToCloud(ELEMENT_ID_3, ATTR_EVENT_TDS_STATUS);
+
 
     /* service/RAL report: the contract asks for a random 0-30 s after connect
      * so a site-wide reconnect does not hit the server in one burst. */

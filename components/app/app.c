@@ -314,13 +314,13 @@ static void AppTask(void *arg)
         {
             energy_report_count = 0U;
             AppCheckEnergyChanges();
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
         if (++water_report_count >= TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS_COUNT)
         {
             water_report_count = 0U;
             AppCheckWaterConsumptionChanges();
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         if(AppCheckPumActive())
@@ -846,7 +846,7 @@ static void AppCheckStatusChanged(void)
         ro_status_old = ro_status_new;
         ply_status_old = ply_status_new;
         AppPushStatusManagerToCloud(ro_status_new, ply_status_new);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -1126,7 +1126,7 @@ void FilterManagerReportToCloud(const UI8 *percent_values, FilterManagerReportMo
             {
                 AppRspToCloud((UI8)element_ids[idx], ATTR_INFOMATION_PRODUCT_USAGE_TIME);
             }
-            vTaskDelay(pdMS_TO_TICKS(300));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
@@ -1145,7 +1145,7 @@ void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm)
         {
             ESP_LOGW(TAG, "AppPushTdsReportToCloud [inlet]: %u", inlet_ppm);
             AppRspToCloud(ELEMENT_ID_2, ATTR_EVENT_TDS_STATUS);
-            vTaskDelay(pdMS_TO_TICKS(300));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 
@@ -1239,7 +1239,7 @@ void AppReportHotTankTemperatureToCloud(const UI8 state, const UI8 temperature)
         AppRspToCloud(ELEMENT_ID_4, ATTR_TEMP_SET);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(300));
+    vTaskDelay(pdMS_TO_TICKS(100));
     value[0] = 0;
     value[1] = state ? 1 : 0;
     if (DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_ONOFF,
@@ -1262,7 +1262,7 @@ void AppReportColdTankTemperatureToCloud(const UI8 state, const UI8 temperature)
         AppRspToCloud(ELEMENT_ID_5, ATTR_TEMP_SET);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(100));
     value[0] = 0;
     value[1] = state ? 1 : 0;
     if (DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_ONOFF,
