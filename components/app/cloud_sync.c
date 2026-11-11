@@ -18,6 +18,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "warning_manager.h"
 
 #include "tds_task.h"
 
@@ -59,8 +60,16 @@ static void CloudSyncPublishReady(void)
      * server record, a reconnect and a warranty activation all end registered
      * without a special case. */
     g_cloud_is_connected = 1U;
-    LedManagerSetNormal();
-
+    
+    UI32 warning = WarningManagerGetMask();
+    if(warning)
+    {
+        LedManagerSetError();
+    }
+    else
+    {
+        LedManagerSetNormal();
+    }
     AppPushWarningToCloud();     /* element 1 issues mask + full state report */
 
     /* service/RAL report: the contract asks for a random 0-30 s after connect
