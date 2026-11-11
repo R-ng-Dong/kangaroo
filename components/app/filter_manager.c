@@ -355,6 +355,12 @@ static _bool FilterManagerHasSignificantDecrease(const UI8 *percent_values)
         {
             return true;
         }
+
+        if ((s_last_reported_percent[idx] <= percent_values[idx]) &&
+            ((percent_values[idx] - s_last_reported_percent[idx]) >= FILTER_MANAGER_REPORT_DECREASE_PERCENT))
+        {
+            return true;
+        }
     }
 
     return false;
@@ -474,7 +480,7 @@ void FilterManagerTick(UI32 now_ms, WaterPurifierType model)
     FilterManagerGetLifetimePercent(now_ms, remaining_percent);
 
     FilterManagerCheckWarning(now_ms, remaining_percent);
-
+    
     if(first_time)
     {
         FilterManagerReportCurrentPercent(remaining_percent, FILTER_MANAGER_REPORT_ALL_FILTERS, (FilterTimeIndex)0);
