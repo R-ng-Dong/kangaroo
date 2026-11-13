@@ -5,7 +5,7 @@
 #include "esp_err.h"
 
 #define DIM_ON 50 // 50%
-#define DIM_OFF 10 // 10%
+#define DIM_OFF 0 // 10%
 
 esp_err_t LedManagerInit(void);
 esp_err_t LedManagerSetError(void);

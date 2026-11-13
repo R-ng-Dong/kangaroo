@@ -23,14 +23,16 @@
  * OS_EVENT_OTA_BOOT_STARTED (IOT_CoreEventHandler.h) so an SDK that owns the
  * download knows to stop its own init and start it. This is NOT safe to leave
  * unclaimed: it is not enough to have registered an IOT_EVENT_OS callback (e.g.
- * one that only handles OS_EVENT_REBOOT, as every partner since the 08_29 sync
- * already does) -- the callback must set `data.otaBootStarted.handled = true`
+ * one that only handles OS_EVENT_REBOOT_REQUESTED) -- the callback must set `data.otaBootStarted.handled = true`
  * (IOT_CoreEventHandler.h) to claim the download. No handler at all
  * (IOT_DevCoreDispatchEvent() returns IOT_ERR_NOT_FOUND) and a handler that
- * did not set the flag are treated identically: core discards the pending
- * request (IOT_CoreOtaDiscardPending()) and reboots itself -- see the full
- * explanation on OS_EVENT_OTA_BOOT_STARTED. Register the callback AND set the
- * flag when you claim the download.
+ * did not set the flag are treated identically: core marks the update failed
+ * (the normal boot that follows tells the cloud) and reboots itself -- see the
+ * full explanation on OS_EVENT_OTA_BOOT_STARTED. Register the callback AND set
+ * the flag when you claim the download. Only an SDK that claimed an update
+ * request with IOT_CORE_OTA_CLAIM_AFTER_REBOOT gets an update boot; an update
+ * claimed IOT_CORE_OTA_CLAIM_NOW that a restart cut short comes back as a
+ * normal boot, and core tells the cloud it failed.
  *
  * A NORMAL boot (no pending record) behaves exactly as before: this call takes no
  * new parameter and a caller that never sees an OTA request notices no difference.
@@ -125,11 +127,14 @@ iot_err_t IOT_CoreGetTimeZone(char *outTimeZone, size_t outSize);
 /**
  * @brief Factory reset the device.
  *
- * Resets core-owned config (provision state, WiFi, MQTT, certs, etc.) and
- * dispatches DEV_EVENT_DEVICE_REMOVED (isRoot=true) so the SDK can reset
- * its own DAOs. The SDK event handler is expected to restart the chip.
+ * Wipes core-owned config (provision state, WiFi, MQTT, certs, etc.), then delivers
+ * DEV_EVENT_FACTORY_RESET (data.factoryReset.wasProvisioned) to the event callback on the
+ * calling task, before this function returns, so the SDK can reset its own data and restart.
+ * DEV_EVENT_DEVICE_REMOVED is not raised: that event belongs to the cloud's removal command.
+ * The reset is performed in full whether or not the device was provisioned.
  *
- * @return IOT_OK on success, IOT_ERR_DATA_NOT_FOUND if not provisioned
+ * @return IOT_OK once the reset was performed (also when the device was not provisioned, and
+ *         also when no handler took the event)
  */
 iot_err_t IOT_CoreFactoryReset(void);
 
@@ -143,8 +148,12 @@ iot_err_t IOT_CoreFactoryReset(void);
  * Public because an SDK implementing a hub transport needs exactly this and should
  * not have to stand up a worker task of its own to get it.
  *
- * @return IOT_ERR_NO_MEM if the queue is full — the caller owns @p arg and must
- *         free it rather than leak it.
+ * @p arg is handed over: once accepted, core frees it (free()) after @p handler
+ * returns. Pass NULL, or memory from Mem_SafeMalloc() that nothing else frees —
+ * never a static, stack or shared pointer.
+ *
+ * @return IOT_OK once queued; IOT_ERR_NO_MEM if the queue is full — the caller
+ *         still owns @p arg and must free it rather than leak it.
  */
 iot_err_t IOT_CoreDeferWork(void (*handler)(void *), void *arg);
 
@@ -240,14 +249,16 @@ iot_err_t IOT_CoreGetRootEid(uint16_t *eid);
 /**
  * @brief Check whether the cloud channel is genuinely usable right now.
  *
- * "Connected" here means the MQTT session is up AND every standard topic
- * subscription has been confirmed — not the earlier, weaker "TCP session open" moment. Anything published before this point (a
- * status NOTIFY, for example) has no subscriber yet and is silently lost.
+ * "Connected" here means the MQTT session is up AND every standard
+ * subscription has been confirmed — not the earlier, weaker "TCP session open" moment.
+ * Anything published before this point (a status report, for example) has no
+ * subscriber yet and is silently lost.
  *
  * Non-blocking; reflects a flag maintained by the MQTT event callbacks, so it
- * is cheap to poll from a boot-time wait loop.
+ * is cheap to poll from a boot-time wait loop. DEV_EVENT_CLOUD_CONNECTED is raised
+ * at the moment this turns true.
  *
- * @return true if MQTT is connected and all topic subscriptions are confirmed,
+ * @return true if MQTT is connected and all subscriptions are confirmed,
  *         false otherwise (including before the first connect and after any
  *         disconnect).
  */
@@ -276,7 +287,9 @@ iot_err_t IOT_CoreSetWifiCredentials(const char *ssid, const char *pwd);
  * @brief Connect the cloud (MQTT) session using stored configuration.
  *
  * Pairs with IOT_CoreIsCloudConnected(), which reports when the session is up AND every
- * topic subscription is confirmed. This returns as soon as the attempt is started.
+ * subscription is confirmed. This returns as soon as the attempt is started. The attempt is
+ * announced by DEV_EVENT_CLOUD_CONNECTING and ends in DEV_EVENT_CLOUD_CONNECTED or
+ * DEV_EVENT_CLOUD_CONNECT_FAILED (one that cannot even start fails straight away).
  *
  * @return IOT_OK if the attempt was started, IOT_ERR_FAIL if there is no MQTT client.
  */
@@ -285,7 +298,9 @@ iot_err_t IOT_CoreCloudConnect(void);
 /**
  * @brief Disconnect the cloud (MQTT) session, leaving the client allocated.
  *
- * Disconnecting when nothing is connected is a harmless no-op.
+ * Disconnecting when nothing is connected is a harmless no-op. A live session ends with
+ * DEV_EVENT_CLOUD_DISCONNECTED, an attempt in progress with DEV_EVENT_CLOUD_CONNECT_FAILED, and
+ * core does not reconnect by itself until the next IOT_CoreCloudConnect() or network connect.
  *
  * @return IOT_OK on success.
  */

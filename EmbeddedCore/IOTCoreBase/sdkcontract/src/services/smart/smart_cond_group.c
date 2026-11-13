@@ -10,6 +10,7 @@
 #include "IOT_Core.h"      // IOT_CoreGetRootEid
 #include "IOT_Osal.h"
 #include "IOT_TimerMgmt.h" // deferred elected fire
+#include "IOT_Common.h"    // Mem_SafeMalloc, SAFE_FREE
 #include "IOT_Log.h"
 
 static const char *TAG = "SDK_CONDGRP";
@@ -31,6 +32,11 @@ static const char *TAG = "SDK_CONDGRP";
 // When a fire is gated by a stale peer bit, we send a SYNC GET and wait this long for fresh
 // replies, then decide (fail-safe: still stale -> do NOT fire).
 #define COND_ASK_TIMEOUT_MS 3000u
+
+// The elected-fire and ask-timeout timers only hand their decision to core's task (the fire
+// reads the DAO, reports to the cloud and raises the automation event — too much for the timer
+// task's stack). A full core work queue refuses the hand-off; it is tried again this soon.
+#define COND_CORE_RETRY_MS 100u
 
 /* Unreachable-group detection (observational; never changes firing).
  * GRACE: after a boot the scoreboard is empty, so every group looks unreachable until peers
@@ -658,11 +664,55 @@ static void condFireBySmid(uint16_t smid)
         SmartService_CondGroupFire(&trig, trig.attrValue, trig.attrSize);
 }
 
-// Ask-before-fire timeout: a gated fire has waited COND_ASK_TIMEOUT_MS for fresh replies. Fire
-// iff peers are now fresh AND the group is still satisfied; otherwise fail-safe (drop).
-static void condAskTimeoutCb(void *userData)
+// ---- timer -> core's task hand-off ----------------------------------------------------------
+
+typedef struct
 {
-    uint16_t smid = (uint16_t)(uintptr_t) userData;
+    void (*body)(uint16_t smid); // runs on core's task
+    uint16_t smid;
+} cond_core_job_t;
+
+// Core's task. The work queue frees the job afterwards.
+static void condCoreJobWork(void *arg)
+{
+    cond_core_job_t *job = (cond_core_job_t *) arg;
+    if (job != NULL && job->body != NULL)
+        job->body(job->smid);
+}
+
+// Timer task (or a retry): hand the job to core's task, or try again shortly. Light work only.
+static void condCoreJobHandOff(void *userData)
+{
+    cond_core_job_t *job = (cond_core_job_t *) userData;
+    if (job == NULL)
+        return;
+    if (IOT_CoreDeferWork(condCoreJobWork, job) == IOT_OK)
+        return; // the work queue owns and frees it now
+    if (IOT_TimerInsertCb(condCoreJobHandOff, job, COND_CORE_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "SMID=%04x: cond-group decision lost: core queue full and no timer free", job->smid);
+        SAFE_FREE(job);
+    }
+}
+
+// Timer task: run body(smid) on core's task.
+static void condRunOnCoreTask(void (*body)(uint16_t smid), uint16_t smid)
+{
+    cond_core_job_t *job = (cond_core_job_t *) Mem_SafeMalloc(sizeof(cond_core_job_t), TAG, "cond job");
+    if (job == NULL)
+    {
+        IOT_LOGE(TAG, "SMID=%04x: no memory to hand the cond-group decision to core's task", smid);
+        return;
+    }
+    job->body = body;
+    job->smid = smid;
+    condCoreJobHandOff(job);
+}
+
+// Ask-before-fire timeout, on core's task: a gated fire has waited COND_ASK_TIMEOUT_MS for fresh
+// replies. Fire iff peers are now fresh AND the group is still satisfied; otherwise fail-safe (drop).
+static void condAskTimeoutBody(uint16_t smid)
+{
     bool doFire = false;
     lock();
     cond_group_entry_t *e = findEntry(smid);
@@ -680,6 +730,12 @@ static void condAskTimeoutCb(void *userData)
         condFireBySmid(smid);
 }
 
+// Timer task: only hands the decision over.
+static void condAskTimeoutCb(void *userData)
+{
+    condRunOnCoreTask(condAskTimeoutBody, (uint16_t)(uintptr_t) userData);
+}
+
 // Ask-before-fire: send a SYNC GET to refresh stale peer bits, then arm the decision timeout.
 static void condAskPeersAndArmTimeout(uint16_t smid)
 {
@@ -687,12 +743,11 @@ static void condAskPeersAndArmTimeout(uint16_t smid)
     IOT_TimerInsertCb(condAskTimeoutCb, (void *)(uintptr_t) smid, COND_ASK_TIMEOUT_MS);
 }
 
-// Deferred elected fire. Fires only if the group is still satisfied AND our armed
-// state was not cancelled by a heard ACTIVE_BY_TRIGGER (suppression) or an own flip. The
+// Deferred elected fire, on core's task. Fires only if the group is still satisfied AND our
+// armed state was not cancelled by a heard ACTIVE_BY_TRIGGER (suppression) or an own flip. The
 // fire is additionally gated by peer freshness (ask-before-fire): stale → ask, don't fire yet.
-static void condElectedFireCb(void *userData)
+static void condElectedFireBody(uint16_t smid)
 {
-    uint16_t smid = (uint16_t)(uintptr_t) userData;
     bool doFire = false, doAsk = false;
 
     lock();
@@ -722,6 +777,12 @@ static void condElectedFireCb(void *userData)
         condFireBySmid(smid);
     else if (doAsk)
         condAskPeersAndArmTimeout(smid);
+}
+
+// Timer task: only hands the decision over.
+static void condElectedFireCb(void *userData)
+{
+    condRunOnCoreTask(condElectedFireBody, (uint16_t)(uintptr_t) userData);
 }
 
 void SmartService_CondGroupOnLocalResult(const IOT_SmartTrigger_t *trig, bool result,
@@ -1076,15 +1137,19 @@ bool SmartService_CondGroupCannotReachThreshold(uint16_t smid)
 
 static bool s_reachabilityArmed;
 
+/* Core's task: the sweep walks the scoreboard and sends a probe for each suspect group. */
+static void condReachabilityBody(uint16_t unused)
+{
+    (void) unused;
+    (void) SmartService_CondGroupCheckReachability();
+}
+
+/* Timer task: re-arm the next sweep and hand this one to core's task. */
 static void condReachabilityTickCb(void *userData)
 {
     (void) userData;
-    (void) SmartService_CondGroupCheckReachability();
-    /* Re-arm. Runs on the timer task, the same one the other cond-group callbacks use —
-     * NOT a platform timer-service callback, whose small stack cannot take work like
-     * this. The sweep itself is popcounts over <= COND_GROUP_MAX_ENTRIES entries; the only
-     * sends it makes happen outside the lock and only for suspect groups. */
     IOT_TimerInsertCb(condReachabilityTickCb, NULL, COND_UNREACHABLE_SWEEP_MS);
+    condRunOnCoreTask(condReachabilityBody, 0);
 }
 
 /* Armed on the first group this device joins, so a device with no cond-groups never pays

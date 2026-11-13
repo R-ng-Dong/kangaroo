@@ -33,7 +33,7 @@ typedef struct
     uint16_t eid;          ///< Network-wide entity ID. Used by exact element overrides.
     uint16_t deviceType;   ///< Product/device class (IOT_DEVTYPE_*); 0 if unknown.
     uint16_t elemId;       ///< Channel/logical element inside the device.
-    uint16_t elemType;     ///< Semantic element class from device state DAO; 0 if unknown.
+    uint16_t elemType;     ///< Element's type (an IOT_DEVTYPE_* value), from the Device store; 0 if unknown.
     uint16_t attrId;       ///< Property ID (IOT_ATTR_*).
     const uint8_t *value;  ///< Attribute value bytes to record.
     uint16_t valueLen;     ///< Number of bytes in value.
@@ -81,11 +81,18 @@ typedef bool (*IOT_ContractRecordFilterFn)(const IOT_ContractRecordEvent_t *even
  *
  * Set deviceType to 0 to make the rule apply to any device type with the given
  * elemType and attrId. Set valueSize to 0 to accept any incoming value length.
+ *
+ * elemType is the element's TYPE, not its id (elemId). Element types use the same
+ * IOT_DEVTYPE_* values as device types, and each element's type comes from the cloud's
+ * model at provisioning. A rule therefore covers every element of that type: one rule
+ * {IOT_DEVTYPE_SWITCH, IOT_ATTR_ONOFF} records ON/OFF on all three gangs of a 3-gang
+ * switch, each as its own series. To record, or skip, one particular element, use
+ * IOT_ContractRecordSetElementEnabled().
  */
 typedef struct
 {
     uint16_t deviceType; /* 0 means any device type */
-    uint16_t elemType;   ///< Required semantic element type.
+    uint16_t elemType;   ///< Element type to match (an IOT_DEVTYPE_* value), NOT an elemId.
     uint16_t attrId;     ///< Required attribute ID (IOT_ATTR_*).
     uint16_t valueSize;  /* 0 accepts the incoming value length */
     /**
@@ -93,7 +100,8 @@ typedef struct
      *        (IOT_ContractRecordUseCustomStore(); read with IOT_ContractRecordLogValueWidth()).
      *
      * Record itself ignores this field: how many values an entry holds follows the
-     * attribute id (IOT_AttrRecordValueCount()), because the app sizes entries from the id.
+     * attribute id (the attribute table: one value, or two for a two-field attribute), because
+     * the app sizes entries from the id.
      *
      * For an override, 0 means the default of 2 -- the leading 16-bit field of the
      * value, which is what every loggable attribute needs except a paired reading such
@@ -119,7 +127,8 @@ typedef struct
      * Rate-limit MEASUREMENTS, never events. Events are inherently sparse, and the one
      * thing history must not do is lose a transition.
      *
-     * IOT_CONTRACT_RECORD_USE_DEFAULT takes the attribute's default;
+     * IOT_CONTRACT_RECORD_USE_DEFAULT (0, also what an omitted field holds) takes the
+     * attribute's default -- it does NOT mean "no limit";
      * IOT_CONTRACT_RECORD_EVERY_CHANGE never holds a change.
      */
     uint16_t minIntervalSec;
@@ -132,8 +141,12 @@ typedef struct
      * stops producing entries, which is honest. It fires only for devices that re-report
      * an unchanged value, typically a hub's sub-devices.
      *
-     * IOT_CONTRACT_RECORD_USE_DEFAULT takes the attribute's default;
+     * IOT_CONTRACT_RECORD_USE_DEFAULT (0) takes the attribute's default;
      * IOT_CONTRACT_RECORD_NO_HEARTBEAT never repeats a value.
+     *
+     * Make it longer than minIntervalSec. Closing a window does not check the heartbeat, so one
+     * no longer than the window repeats at the first report after it, not on time. Such a rule
+     * is accepted and warned about once, at registration.
      *
      * Values below the configured minimum heartbeat are clamped at registration and
      * warned about. The floor is arithmetic, not taste: history holds a few hundred

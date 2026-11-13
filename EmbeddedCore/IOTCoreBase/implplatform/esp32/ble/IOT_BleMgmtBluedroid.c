@@ -79,6 +79,9 @@ static ble_cb_mgmt_t *callbackMgmt = NULL;
 static uint8_t numberOfGattServices = 0;
 static iot_gatt_service_access_diff_t *gatt_svc_access_diff = NULL;
 static uint16_t currConnectionHandle = 0xFFFF;
+/* The connected central's address: esp_ble_gap_disconnect() ends the link itself, where
+ * esp_ble_gatts_close() only closes the GATT connection and leaves the ACL link to time out. */
+static esp_bd_addr_t s_connectedPeer;
 
 /* Bluedroid GATTS app */
 #define BLUEDROID_APP_ID 0
@@ -142,6 +145,7 @@ static uint8_t s_extAdvData[IOT_BLE_ADV_MAX_LEN];
 static uint8_t s_extAdvLen;
 static uint8_t s_extRspData[IOT_BLE_ADV_MAX_LEN];
 static uint8_t s_extRspLen;
+static bool s_extRspWanted; /* scannable set: write its response, empty or not */
 static uint8_t s_extInstance;
 static bool s_extStartPending;
 #endif /* CONFIG_BT_BLE_50_FEATURES_SUPPORTED */
@@ -177,6 +181,7 @@ static iot_err_t extAdvStart(uint8_t instance, bool connectable, IOT_BleMgmtAdvD
 
     s_extAdvLen = 0;
     s_extRspLen = 0;
+    s_extRspWanted = shape.scannable;
 
     iot_err_t err = IOT_BleAdvBuildPayload(adv, s_extAdvData, sizeof(s_extAdvData), &s_extAdvLen);
     if (err != IOT_OK)
@@ -299,11 +304,15 @@ static iot_err_t configureAdvPayloads(IOT_BleMgmtAdvData_t *adv, bool allowScanR
     }
 
     adv_pending_mask = ADV_PENDING_ADV_DATA;
-    if (rspLen > 0)
+    /* A scannable advert always writes its scan response, empty when it has none, or the
+     * controller keeps answering scans with the previous advert's response. */
+    if (allowScanRsp)
     {
         adv_pending_mask |= ADV_PENDING_SCAN_RSP;
 
-        esp_err_t ret = esp_ble_gap_config_scan_rsp_data_raw(rsp, rspLen);
+        /* Empty must be NULL: Bluedroid deep-copies only a non-empty buffer, then frees
+         * whatever pointer it holds -- a stack pointer with length 0 would be freed. */
+        esp_err_t ret = esp_ble_gap_config_scan_rsp_data_raw((rspLen > 0) ? rsp : NULL, rspLen);
         if (ret != ESP_OK)
         {
             IOT_LOGE(TAG, "Config scan rsp data failed: %s", esp_err_to_name(ret));
@@ -940,6 +949,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     case ESP_GATTS_CONNECT_EVT:
     {
         currConnectionHandle = param->connect.conn_id;
+        memcpy(s_connectedPeer, param->connect.remote_bda, sizeof(esp_bd_addr_t));
         IOT_LOGI(TAG, "Connected, conn_id=%d", param->connect.conn_id);
         if (callbackMgmt && callbackMgmt[BLE_MGMT_EVENT_STATUS_TYPE_CONNECTED].isRegistered)
         {
@@ -1064,10 +1074,13 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
             s_extStartPending = false;
             break;
         }
-        if (s_extRspLen > 0)
+        /* Written even when empty: a set keeps the response its last advert left behind.
+         * Empty must be NULL: Bluedroid deep-copies only a non-empty buffer, then frees
+         * whatever pointer it holds, so a stale pointer with length 0 would be freed. */
+        if (s_extRspWanted)
         {
-            esp_err_t ret =
-                esp_ble_gap_config_ext_scan_rsp_data_raw(s_extInstance, s_extRspLen, s_extRspData);
+            esp_err_t ret = esp_ble_gap_config_ext_scan_rsp_data_raw(s_extInstance, s_extRspLen,
+                                                                     (s_extRspLen > 0) ? s_extRspData : NULL);
             if (ret != ESP_OK)
             {
                 IOT_LOGE(TAG, "ext scan rsp set failed: %s", esp_err_to_name(ret));
@@ -1753,11 +1766,11 @@ static iot_err_t bluedroid_isConnected(bool *isConnected)
 
 static iot_err_t bluedroid_disconnect(void)
 {
-    if (currConnectionHandle == 0xFFFF || gatts_if_global == ESP_GATT_IF_NONE)
+    if (currConnectionHandle == 0xFFFF)
     {
         return IOT_ERR_INVALID_STATE;
     }
-    return (esp_ble_gatts_close(gatts_if_global, currConnectionHandle) == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
+    return (esp_ble_gap_disconnect(s_connectedPeer) == ESP_OK) ? IOT_OK : IOT_ERR_FAIL;
 }
 
 static iot_err_t bluedroid_registerEventCallback(IOT_BleMgmtEventStatusType_t event, IOT_BleEventCb_t cb, void *arg)

@@ -10,9 +10,13 @@
  *   [02 01 06]                       Flags: LE General Discoverable, BR/EDR not supported
  *   [len 03 lo hi ...]               Complete list of 16-bit service UUIDs (optional)
  *   [len FF cid_lo cid_hi data...]   Manufacturer Specific Data (optional)
+ *   [extraAdv bytes...]              Pre-encoded AD elements from the caller (optional)
  *
  * Scan-response layout:
  *   [len 09 name...]                 Complete Local Name (optional)
+ *   [extraRsp bytes...]              Pre-encoded AD elements from the caller (optional)
+ *
+ * The builder does not parse the extras; the caller is responsible for their encoding.
  */
 #pragma once
 
@@ -31,6 +35,8 @@ extern "C" {
 #define IOT_BLE_AD_TYPE_FLAGS         0x01
 #define IOT_BLE_AD_TYPE_UUID16_CMPL   0x03
 #define IOT_BLE_AD_TYPE_NAME_CMPL     0x09
+#define IOT_BLE_AD_TYPE_NAME_SHORT    0x08
+#define IOT_BLE_AD_TYPE_UUID16_INCMPL 0x02
 #define IOT_BLE_AD_TYPE_MANUFACTURER  0xFF
 
 /** Flags value: LE General Discoverable Mode | BR/EDR Not Supported */
@@ -52,13 +58,13 @@ iot_err_t IOT_BleAdvBuildPayload(const IOT_BleMgmtAdvData_t *adv, uint8_t *buf, 
 /**
  * @brief Build the scan-response payload (Complete Local Name) for the given advertising data
  *
- * Writes nothing and reports a length of 0 when no name is set — callers should skip
- * configuring a scan response in that case.
+ * Writes nothing and reports a length of 0 when there is neither a name nor extraRsp. A driver must then
+ * still set an EMPTY scan response, not skip it, or the previous advert's name and fields stay on air.
  *
  * @param adv     Advertising data to pack
  * @param buf     Destination buffer
  * @param bufSize Size of buf; must be at least the packed length
- * @param outLen  Receives the number of bytes written (0 when there is no name)
+ * @param outLen  Receives the number of bytes written (0 when there is neither a name nor extras)
  *
  * @return IOT_OK on success
  * @return IOT_ERR_INVALID_ARG if any pointer is NULL, or the name does not fit

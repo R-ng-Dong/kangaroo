@@ -43,8 +43,10 @@ iot_err_t IOT_ContractSubscribe(IOT_ContractEventFn fn, void *arg)
     return IOT_OK;
 }
 
-/* True while this task is inside a subscriber. Per task (thread-local), so the task that
- * delivers core events and the timer task can each be delivering at the same time. */
+/* True while this task is inside a subscriber. Per task (thread-local): most events come from
+ * the task that delivers core events, but one caused by a partner call (IOT_ContractLocalChange(),
+ * IOT_ContractSubDeviceReport(), ...) is raised on the caller's task, so two tasks can each be
+ * delivering at the same time. */
 static _Thread_local bool s_delivering;
 
 static void deliver(const IOT_ContractEvent_t *event)
@@ -163,6 +165,17 @@ void IOT_ContractEventDeviceRemoved(uint16_t eid, bool root)
     event.type = IOT_CONTRACT_EVT_DEVICE_REMOVED;
     event.data.deviceRemoved.eid = eid;
     event.data.deviceRemoved.root = root;
+    deliver(&event);
+}
+
+void IOT_ContractEventStatusChanged(IOT_ContractStatus_t status)
+{
+    if (s_numSubscribers == 0)
+        return;
+    IOT_ContractEvent_t event;
+    memset(&event, 0, sizeof(event));
+    event.type = IOT_CONTRACT_EVT_STATUS_CHANGED;
+    event.data.statusChanged.status = status;
     deliver(&event);
 }
 

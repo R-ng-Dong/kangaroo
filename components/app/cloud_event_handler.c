@@ -7,7 +7,7 @@
 #include "IOT_CoreReporter.h"
 #include "IOT_TimerMgmt.h"
 #include "IOT_DaoDeviceMgmt.h"
-#include "IOT_DaoStoresInternal.h"
+#include "dao/IOT_DaoStoresInternal.h"
 #include "IOT_AppManager.h"
 #include "sdkconfig.h"
 #include "esp_heap_caps.h"
@@ -23,7 +23,7 @@
 #include "energy_saving_manager.h"
 
 #include "IOT_Record.h"
-#include "IOT_ContractStateQuery.h"
+#include "services/IOT_ContractStateQuery.h"
 #include "IOT_ContractInternal.h"
 #include "IOT_Contract.h" //IOT_ContractPrepareRestart
 
@@ -841,25 +841,33 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     }
     case DEV_EVENT_PROVISION_COMPLETED:
     {
-        const UI8 status = deviceEvent->data.provisionCompleted.statusCode;
-        IOT_LOGW(TAG, "DEVICE event: PROVISION_COMPLETED, status=%u", status);
-        if (1U == status)
-        {
-            /* Cloud registration finished: the BLE link is no longer needed
-             * and its heap is what the first TLS session wants. */
-            RAL_DeinitBle();
-            CloudSyncStartTdsWhenRoomy();
-        }
-        else
-        {
-            /* The cloud config/cert were saved before the sync walk, so the
-             * supervisor can still bring the session up once the BLE release
-             * timer frees the heap. Keep advertising until then. */
-            IOT_LOGE(TAG, "Provisioning reported failure; retrying cloud after BLE release");
-            LedManagerSetNetworkWaiting();
-        }
+        
+        IOT_LOGW(TAG, "DEVICE event: PROVISION_COMPLETED");
+        /* Cloud registration finished: the BLE link is no longer needed
+         * and its heap is what the first TLS session wants. */
+        RAL_DeinitBle();
+        CloudSyncStartTdsWhenRoomy();
+
+        // const UI8 status = deviceEvent->data.provisionCompleted.statusCode;
+        // if (1U == status)
+        // {
+        //     /* Cloud registration finished: the BLE link is no longer needed
+        //      * and its heap is what the first TLS session wants. */
+        //     RAL_DeinitBle();
+        //     CloudSyncStartTdsWhenRoomy();
+        // }
+        // else
+        // {
+        //     /* The cloud config/cert were saved before the sync walk, so the
+        //      * supervisor can still bring the session up once the BLE release
+        //      * timer frees the heap. Keep advertising until then. */
+        //     IOT_LOGE(TAG, "Provisioning reported failure; retrying cloud after BLE release");
+        //     LedManagerSetNetworkWaiting();
+        // }
         break;
     }
+    case DEV_EVENT_BOOTED:
+        break;
     case DEV_EVENT_PROVISION_CANCELLED:
     {
         /* The phone left before registering. Resume sensing and stay
@@ -869,9 +877,9 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         LedManagerSetNetworkWaiting();
         break;
     }
-    case DEV_EVENT_ERROR:
+    case DEV_EVENT_RESERVED_1:
     {
-        IOT_LOGE(TAG, "DEVICE event: ERROR, code=%d", deviceEvent->data.error.errorCode);
+        IOT_LOGE(TAG, "DEVICE event: ERROR, ");
         TdsTaskStart();
         break;
     }
@@ -969,7 +977,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         break;
     }
 
-    case DEV_EVENT_WIFI_CONNECTED:
+    case DEV_EVENT_NETWORK_CONNECTED:
     {
         if(!s_wifi_connected)
         {
@@ -982,15 +990,15 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
             }
         }
         IOT_LOGW(TAG, "DEVICE event: WIFI_CONNECTED, IP: %08lx",
-                 (unsigned long)deviceEvent->data.wifiConnected.ip);
+                 (unsigned long)deviceEvent->data.networkConnected.ip);
         break;
     }
-    case DEV_EVENT_WIFI_DISCONNECTED:
+    case DEV_EVENT_NETWORK_DISCONNECTED:
     {
         if(s_wifi_connected)
         {
             s_wifi_connected = false;
-            LedManagerSetNetworkWaiting();
+            // LedManagerSetNetworkWaiting();
             if(is_ota_running)
             {
                 LedManagerSetOta();
@@ -998,7 +1006,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         }
         LedManagerSetError();
         IOT_LOGW(TAG, "DEVICE event: WIFI_DISCONNECTED, reason: %d",
-                 deviceEvent->data.wifiDisconnected.reason);
+                 deviceEvent->data.networkDisconnected.reason);
 
         break;
     }
@@ -1039,6 +1047,12 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
                                    : (uint8_t)(100U - ((ramFree * 100U) / ramTotal));
         (void)IOT_CoreRequestReportDeviceStatus(&status);
         IOT_LOGI(TAG, "Device status reported");
+        break;
+    }
+    case DEV_EVENT_PROVISION_STARTED:
+    {
+        IOT_LOGW(TAG, "DEVICE event: DEV_EVENT_PROVISION_STARTED");
+        TdsTaskStop();
         break;
     }
     default:
@@ -1181,7 +1195,7 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
         IOT_LOGE(TAG, "Invalid osEvent pointer");
         return IOT_ERR_INVALID_ARG;
     }
-    if (osEvent->type == OS_EVENT_REBOOT || osEvent->type == OS_EVENT_OTA_REQUESTED)
+    if (osEvent->type == OS_EVENT_REBOOT_REQUESTED || osEvent->type == OS_EVENT_OTA_REQUESTED)
     {
         iot_err_t err = IOT_ContractPrepareRestart();
         if (err != IOT_OK)
@@ -1189,10 +1203,10 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
     }
     switch (osEvent->type)
     {
-    case OS_EVENT_REBOOT:
+    case OS_EVENT_REBOOT_REQUESTED:
         // Deferred rather than immediate: the reply to the command that asked
         // for this reboot still has to leave the device.
-        IOT_LOGW(TAG, "[OS_EVENT_REBOOT] OS event: REBOOT requested, restarting in 500ms");
+        IOT_LOGW(TAG, "[OS_EVENT_REBOOT_REQUESTED] OS event: REBOOT requested, restarting in 500ms");
         if (IOT_TimerInsertCb(app_reboot_timer_cb, NULL, 500) == IOT_TIMER_HANDLE_INVALID)
         {
             IOT_LOGE(TAG, "Failed to schedule reboot timer");

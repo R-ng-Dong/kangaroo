@@ -58,9 +58,13 @@ typedef struct
  * makes the predicate self-sufficient: a caller does not need to know or
  * replicate core's own init order just to ask this question before it runs.
  *
- * True only for IOT_OTA_PENDING_HANDED_OFF. APPLIED (a successful download,
- * verified on the very next boot — the one running the new image), FAILED and
- * DECLINED (both awaiting only a status report on a normal boot with
+ * True only for a request claimed IOT_CORE_OTA_CLAIM_AFTER_REBOOT whose
+ * download has not written its image yet. A request claimed
+ * IOT_CORE_OTA_CLAIM_NOW is never pending: it belongs to the boot that claimed
+ * it, and if that boot ended before the image was written, the next boot is a
+ * normal one that reports the update failed. A successful download (verified
+ * on the very next boot — the one running the new image) and a failed or
+ * declined one (awaiting only a status report on a normal boot with
  * connectivity) all return false: none of them means this boot exists to
  * download.
  */
@@ -130,8 +134,7 @@ iot_err_t IOT_CoreOtaClearPending(void);
  *         erase failure, propagated. A caller that means to reboot afterward
  *         MUST check this for IOT_OK specifically -- on anything else the
  *         record may still be HANDED_OFF with its counter untouched, and
- *         rebooting anyway re-enters whatever put it there. IOT_CoreInit()'s
- *         own OTA path does exactly this check before its own reboot.
+ *         rebooting anyway re-enters whatever put it there.
  */
 iot_err_t IOT_CoreOtaDiscardPending(void);
 

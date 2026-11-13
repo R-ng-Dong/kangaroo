@@ -5,6 +5,7 @@
 #include "IOT_ErrorManager.h"
 #include "IOT_CoreEventTypes.h" /* IOT_SENDER_* */
 #include "IOT_CoreEventHandler.h" /* IOT_CoreEvent_t, IOT_DevJoinPhase_t */
+#include "IOT_CoreState.h"        /* IOT_CoreDeviceStatusData_t */
 #include "IOT_ContractRecord.h"
 
 #ifdef __cplusplus
@@ -12,10 +13,10 @@ extern "C" {
 #endif
 
 /** @brief Contract API version. Changes only with a documented partner-facing change. */
-#define IOT_CONTRACT_VERSION_MAJOR 1
-#define IOT_CONTRACT_VERSION_MINOR 0
+#define IOT_CONTRACT_VERSION_MAJOR 2
+#define IOT_CONTRACT_VERSION_MINOR 2
 #define IOT_CONTRACT_VERSION_PATCH 0
-#define IOT_CONTRACT_VERSION_STRING "1.0.0"
+#define IOT_CONTRACT_VERSION_STRING "2.2.0"
 
 /** @brief The most elements a device can declare in IOT_ContractConfig_t.elementIds. */
 #define IOT_CONTRACT_MAX_ELEMENTS 16
@@ -54,6 +55,9 @@ typedef enum
     IOT_CONTRACT_SOURCE_VOICE,      /**< A voice assistant. */
     IOT_CONTRACT_SOURCE_DEVICE,     /**< A device: this one, or another syncing its state. */
     IOT_CONTRACT_SOURCE_OTHER,      /**< Anything else, including a sender the contract does not know. */
+    IOT_CONTRACT_SOURCE_RESTORE,    /**< The contract replaying the stored state at boot (see
+                                         IOT_ContractRestoreConfigure()): drive the hardware to it;
+                                         nothing is stored, recorded or reported for it. */
 } IOT_ContractSource_t;
 
 /**
@@ -97,13 +101,23 @@ struct IOT_ContractCallbacks
      *  stored. For a sub-device the value is stored without driving it: no apply call, then the
      *  same store, Record, answer and Smart.
      *  Blocks: keep it short and non-blocking -- the next request waits for it. Task: the task
-     *  that delivers core events, or the timer task for an automation's actions (immediate,
-     *  delayed or reverse), which has a small stack; guard hardware you also drive from your own
-     *  tasks. Do not keep req or its value pointer after you return. Required. */
+     *  that delivers core events, always -- an automation's actions too (immediate, delayed or
+     *  reverse); guard hardware you also drive from your own tasks. Do not keep req or its value
+     *  pointer after you return.
+     *  At boot, once IOT_ContractStart() has started core, the stored controls of this device are
+     *  replayed here with source IOT_CONTRACT_SOURCE_RESTORE (see IOT_ContractRestoreConfigure()):
+     *  have your hardware ready before IOT_ContractStart(). Required. */
     iot_err_t (*apply)(const IOT_ContractApply_t *req);
 
     /** Every core event the contract does not handle itself, passed through unchanged. Called
-     *  on the task that delivers core events; do not keep the pointer after you return. NULL:
+     *  on the task that delivers the event. Lifecycle events (setup, network, cloud, WiFi recovery,
+     *  Zigbee, WiFi changed) are queued and arrive on core's own task, one at a time and in order;
+     *  requests from the cloud or the app (identify, device status, reboot, update, IR, mesh keys,
+     *  service messages) are delivered synchronously on core's task too, and the next one waits for
+     *  you. An event caused by your own call into
+     *  core (IOT_ContractStart(), IOT_CoreFactoryReset(), IOT_CoreDispatchEvent()) arrives on
+     *  the calling task before that call returns, so two calls can overlap: guard state they
+     *  share. Do not keep the pointer after you return. NULL:
      *  such events are dropped. The contract handles IOT_EVENT_SMART and, of IOT_EVENT_STATE, the
      *  state command, the state query and the history query (IOT_EVENT_TYPE_STATE_SET, _GET,
      *  _RECORD) itself, so they never arrive here. A sensor-log request
@@ -115,16 +129,27 @@ struct IOT_ContractCallbacks
      *  it holds in RAM (as IOT_ContractPrepareRestart()), so you may restart straight away.
      *  OS_EVENT_OTA_BOOT_STARTED is yours to claim: set data.otaBootStarted.handled here, or
      *  core discards the update (see IOT_CoreEventOs.h).
-     *  Of IOT_EVENT_DEVICE, the contract handles a device joining, a device removed, group bind
-     *  and unbind, and a device attribute set (DEV_EVENT_NEW_DEVICE_JOINED, _DEVICE_REMOVED,
-     *  _GROUP_BIND, _GROUP_UNBIND, _DEVICE_ATTR_SET) itself, so they never arrive here: it
+     *  Of IOT_EVENT_DEVICE, the contract handles a device joining, a device removed, this device's
+     *  own factory reset, group bind and unbind, and a device attribute set
+     *  (DEV_EVENT_NEW_DEVICE_JOINED, _DEVICE_REMOVED, _FACTORY_RESET, _GROUP_BIND, _GROUP_UNBIND,
+     *  _DEVICE_ATTR_SET) itself, so they never arrive here: it
      *  updates its stores and answers core, and you hear of them through onDeviceJoined,
      *  onDeviceRemoving and onDeviceRemoved, and (for an attribute set on the device itself)
      *  through apply.
      *  DEV_EVENT_CLOUD_CONNECTED arrives here after the contract has run its connect duties
      *  (sending history recorded while offline, starting the Smart scheduler, re-syncing
      *  condition groups) and scheduled a report of every device's full state, so do neither. Every other DEVICE event (connection, provisioning, boot,
-     *  identification, the device status request) arrives untouched. */
+     *  identification, the device status request) arrives untouched.
+     *  Some events carry an answer you write back before returning; core owns the event for
+     *  the call, so cast the const away to write it: data.otaBootStarted.handled (above),
+     *  evt.ir.result for an IR send or learn, evt.service.result for a message from your
+     *  backend (IOT_EVENT_SERVICE), evt.os.data.rebootRequested.result for a reboot request,
+     *  evt.device.data.identification.result for an identify request,
+     *  evt.device.data.deviceStatusRequest.result for a device status request (reply with
+     *  IOT_CoreRespondDeviceStatus() on its ctx and write the call's return), and
+     *  evt.mesh.data.keys.result for a mesh key. Every result is preset to
+     *  IOT_ERR_NOT_SUPPORTED, which is what the sender receives if you leave it. A state
+     *  command's result is the contract's: it answers from its own handling. */
     void (*onCoreEvent)(const IOT_CoreEvent_t *event);
 
     /** A device joining this one (a hub's sub-device) reached one phase of its join. Called at
@@ -157,8 +182,9 @@ struct IOT_ContractCallbacks
     /** The device named in onDeviceRemoving is gone from every contract store and, for a removal
      *  the cloud asked for, the cloud has its answer. @p root true: this device was removed and
      *  the contract's stores are wiped (as IOT_ContractFactoryReset()) -- reset your own product
-     *  data and restart the chip from here; the contract does not restart. @p root false: a
-     *  sub-device; do not restart. Called after a failed removal too.
+     *  data, then restart the chip from here, or call IOT_ContractRemovalConfigure(true) at boot
+     *  and the contract restarts it once this returns. @p root false: a sub-device; do not
+     *  restart. Called after a failed removal too.
      *  Blocks: may (a restart does not return). Task: the task that delivers core events. NULL:
      *  nothing to do. */
     void (*onDeviceRemoved)(uint16_t eid, bool root);
@@ -215,12 +241,115 @@ iot_err_t IOT_ContractStart(const IOT_ContractConfig_t *config, const IOT_Contra
 iot_err_t IOT_ContractIrConfigure(bool tx, bool rx, bool detect);
 
 /**
+ * @brief Choose who restarts the device after it is removed. Optional; call before
+ *        IOT_ContractStart().
+ *
+ * When this device is removed (the cloud removed it, or the product called IOT_CoreFactoryReset()),
+ * the contract wipes its stores and calls onDeviceRemoved(eid, true), with the EID the device had. Not called, or @p restart
+ * false: restarting is yours, as before this option existed -- restart the chip from
+ * onDeviceRemoved. @p restart true: the contract calls IOT_ApplicationRestartChip() once
+ * onDeviceRemoved returns (or at once, with no onDeviceRemoved), so you do not restart there. A
+ * callback that restarts the chip itself never returns, so restarting yourself stays possible
+ * either way.
+ *
+ * Only this device: a sub-device's removal never restarts. The value is read at each removal,
+ * so a later call takes effect from the next one.
+ *
+ * Blocks: no. Safe from a timer callback: yes. Task: the boot task (app_main), before
+ * IOT_ContractStart().
+ *
+ * @param restart true: the contract restarts the device after a removal of this device.
+ * @return IOT_OK.
+ */
+iot_err_t IOT_ContractRemovalConfigure(bool restart);
+
+/** What the device does at boot with the controls it had before (a power cut, a restart, an update). */
+typedef enum
+{
+    IOT_CONTRACT_RESTORE_LAST, /**< Default: every control comes back to its last value. */
+    IOT_CONTRACT_RESTORE_OFF,  /**< Every element with on/off comes back off; nothing else is driven. */
+    IOT_CONTRACT_RESTORE_NONE, /**< The contract does nothing at boot; the product restores itself. */
+} IOT_ContractRestorePolicy_t;
+
+/**
+ * @brief Choose what a provisioned device does at boot with its last state. Optional; call before
+ *        IOT_ContractStart().
+ *
+ * IOT_CONTRACT_RESTORE_LAST (the default): once IOT_ContractStart() has started core, the contract replays
+ * this device's stored controls through apply, with source IOT_CONTRACT_SOURCE_RESTORE -- on/off,
+ * brightness, kelvin, colour, level, fan speed and swing, settings, and your own attributes
+ * registered with restore = true. Never a lock, a motor (curtain position or command), an air
+ * conditioner (AC, mode, temperature), an event or a reading: those keep their own state through a
+ * power cut, so replaying them could only move or switch something unasked. Nothing is stored,
+ * recorded, reported or passed to automations for a restore; the cloud learns the state from the
+ * full report the device sends when it connects. The value apply returns is logged and ignored.
+ *
+ * IOT_CONTRACT_RESTORE_OFF (a heater, a pump): every element that has on/off comes back off -- stored as off
+ * and applied as off -- and nothing else is applied. IOT_CONTRACT_RESTORE_NONE: the contract does nothing;
+ * restore your hardware yourself.
+ *
+ * A light: brightness, colour and kelvin are restored even for a light stored off; set them without
+ * switching the light on, and let on/off decide.
+ *
+ * Only this device, only when it is provisioned: an unprovisioned device gets no apply call and
+ * keeps its hardware's power-on state. The restore also runs on the boot that installs an update,
+ * at its start, alongside the download. It runs on the task that delivers core events, so it never
+ * interleaves with a command, and it can arrive from the moment core has started -- possibly before
+ * IOT_ContractStart() returns: have your hardware ready before IOT_ContractStart(). A power cut
+ * loses at most the last second of changes (the stored state is written back once a second).
+ *
+ * Blocks: no. Safe from a timer callback: yes. Task: the boot task (app_main), before
+ * IOT_ContractStart().
+ *
+ * @return IOT_OK, or IOT_ERR_INVALID_ARG for a value outside IOT_ContractRestorePolicy_t (the policy is
+ *         unchanged).
+ */
+iot_err_t IOT_ContractRestoreConfigure(IOT_ContractRestorePolicy_t policy);
+
+/**
+ * @brief Your chance to change the device status the contract is about to send.
+ *
+ * @p status is filled: firmware version, uptime, RAM and storage use, the time of the last state
+ * command (0 until the clock is set), and protocolFlags [IOT_DEVICE_MODE_INDEPENDENT, mesh,
+ * Zigbee, 0, 0, 0], where mesh and Zigbee are 1 only for a hub role this device declared
+ * (IOT_CoreSetHubRole(); Zigbee also needs its coordinator up). Change any field; what is in
+ * @p status when you return is sent. A string you point firmwareVersion at must stay valid until
+ * you return. Do not keep the pointer.
+ *
+ * Blocks: no -- the requester waits for the reply. Task: the task that delivers core events.
+ */
+typedef void (*IOT_ContractDeviceStatusFn)(IOT_CoreDeviceStatusData_t *status);
+
+/**
+ * @brief Adjust the status the contract answers a device status request with. Optional; call
+ *        before IOT_ContractStart().
+ *
+ * The cloud or the app asks for this device's status (DEV_EVENT_DEVICE_STATUS_REQUEST). With
+ * IOT_ContractStart(), the request still reaches cb->onCoreEvent first; when you leave it
+ * unclaimed (its result still IOT_ERR_NOT_SUPPORTED), the contract fills the status itself (see
+ * IOT_ContractDeviceStatusFn), passes it to @p adjust, replies with IOT_CoreRespondDeviceStatus()
+ * and writes the reply's outcome into the result. Answering it yourself still works: reply and
+ * write the result in onCoreEvent, and the contract sends nothing.
+ *
+ * Not called, or @p adjust NULL: the status is sent as filled. A later call replaces the hook and
+ * takes effect at the next request.
+ *
+ * Blocks: no. Safe from a timer callback: yes. Task: the boot task (app_main), before
+ * IOT_ContractStart().
+ *
+ * @param adjust Called with the filled status before each reply; NULL for none.
+ * @return IOT_OK.
+ */
+iot_err_t IOT_ContractDeviceStatusConfigure(IOT_ContractDeviceStatusFn adjust);
+
+/**
  * @brief Wipe every contract store, and nothing else.
  *
  * Not a product's factory reset. A product's own reset (a long press, a console command) calls
- * IOT_CoreFactoryReset(): core wipes its own configuration and reports this device's removal,
- * the contract then wipes its stores (by this function) and calls onDeviceRemoved with root
- * true, where the product resets its own data and restarts. This function wipes only the
+ * IOT_CoreFactoryReset(): core wipes its own configuration and reports the reset
+ * (DEV_EVENT_FACTORY_RESET), the contract then wipes its stores (by this function) and calls onDeviceRemoved with root
+ * true, where the product resets its own data and restarts (or the contract restarts after it,
+ * see IOT_ContractRemovalConfigure()). This function wipes only the
  * contract's stores, for an SDK's own recovery (for example a store found unreadable at boot):
  * core's configuration, the cloud's view of the device and your callbacks are untouched.
  *
@@ -238,13 +367,22 @@ iot_err_t IOT_ContractFactoryReset(void);
 
 /**
  * @brief Write out what the contract holds in RAM before a planned restart (reboot command,
- *        OTA, deinit).
+ *        OTA, deinit), or when the power is about to fail.
  *
- * Synchronous: Record's open blocks, then the Device store's element state, are in storage
- * when this returns. Not needed on a factory reset, which wipes the stores anyway.
+ * Synchronous: Record's held windows are closed early, then Record's open blocks and the Device
+ * store's element state are in storage when this returns. A held value is written the way its
+ * window's close would have written it: only if it differs from the last recorded value, and
+ * stamped from when it arrived. Not needed on a factory reset, which wipes the stores anyway.
  *
- * Blocks: yes -- waits up to about a second for Record's lock, then writes storage. Safe from a
- * timer callback: no. Task: any.
+ * Power about to fail: if your hardware signals it (a supply monitor, a brownout input) and holds
+ * up for a moment, call this from one of your tasks as soon as the signal arrives. An interrupt
+ * should only wake that task. Time it on your own board to be sure it fits the hold-up. The device
+ * may keep running afterwards (the power came back): recording simply carries on, and you may
+ * call this again.
+ *
+ * Blocks: yes -- waits up to about a second for Record's lock, then writes storage (at most
+ * IOT_RECORD_MAX_OPEN_BLOCKS history blocks plus the element state). Safe from a timer callback
+ * or an interrupt: no. Task: any.
  *
  * @return IOT_OK, or the first error from the two flushes (for example IOT_ERR_TIMEOUT); both
  *         are always attempted. The restart may still go ahead; what was not flushed is lost.
@@ -267,9 +405,10 @@ iot_err_t IOT_ContractPrepareRestart(void);
  * @param elemId The element that changed.
  * @param attrId The attribute that changed (IOT_ATTR_*).
  * @param value  The new value bytes. Not NULL.
- * @param len    Number of bytes in value. At least 1.
+ * @param len    Number of bytes in value: the attribute's declared size (IOT_ContractAttrSize()).
  *
- * @return IOT_OK. IOT_ERR_INVALID_ARG for a NULL value or a zero len (nothing done). The Device
+ * @return IOT_OK. IOT_ERR_INVALID_ARG for a NULL value or a zero len, and IOT_ERR_INVALID_SIZE
+ *         when len is not the attribute's declared size (nothing done in either case). The Device
  *         store's error when the change could not be stored (nothing recorded or reported). Or
  *         the report's own error; the change was stored and recorded in that case:
  *         IOT_ERR_DATA_NOT_FOUND or IOT_ERR_NO_MEM when the report could not be assembled from
@@ -280,6 +419,76 @@ iot_err_t IOT_ContractPrepareRestart(void);
  * handles your hardware input).
  */
 iot_err_t IOT_ContractLocalChange(uint16_t eid, uint16_t elemId, uint16_t attrId, const uint8_t *value, uint16_t len);
+
+/** The most fields one attribute value can have in IOT_ContractReportFields(). */
+#define IOT_CONTRACT_REPORT_FIELDS_MAX 8
+
+/**
+ * @brief Report one numeric value of your own hardware without building its wire layout.
+ *
+ * The same as IOT_ContractReportFields() with one field: use it for an attribute whose value is
+ * a single number (on/off, a level, a temperature).
+ *
+ * Blocks: yes (see IOT_ContractLocalChange()). Safe from a timer callback: no. Task: any task
+ * that is not a timer callback.
+ *
+ * @param elemId Your own element number, as declared in IOT_ContractConfig_t.
+ * @param attrId The attribute (IOT_ATTR_*). Its declared size must be one field.
+ * @param value  The new value.
+ *
+ * @return As IOT_ContractReportFields().
+ */
+iot_err_t IOT_ContractReport(uint16_t elemId, uint16_t attrId, uint16_t value);
+
+/**
+ * @brief Report the value of one of this device's own elements, given as numeric fields.
+ *
+ * The contract builds the value bytes (each field is two bytes, the first field first) and runs
+ * IOT_ContractLocalChange() on this device with it: store, Record, report, Smart. @p elemId is
+ * the element number as declared in IOT_ContractConfig_t, the device's own and not the cloud's.
+ *
+ * Before the device is provisioned there is nothing to report to, so the value is held, the
+ * latest one per element and attribute, and sent with the first full state report. That includes
+ * the moment during provisioning when the device is known but its elements are not stored yet.
+ * After the device is removed, values are held again until it is provisioned again. A table full
+ * of different held values refuses a new one with IOT_ERR_NO_MEM; a held one is still replaced.
+ *
+ * An attribute whose layout is not a plain list of 16-bit fields, or a report for a sub-device,
+ * goes through IOT_ContractLocalChange().
+ *
+ * Blocks: yes (see IOT_ContractLocalChange()), and waits for the storing of held values to finish
+ * when it is in progress. Safe from a timer callback: no. Task: any task that is not a timer
+ * callback.
+ *
+ * @param elemId Your own element number.
+ * @param attrId The attribute (IOT_ATTR_*).
+ * @param fields The fields, first field first. Not NULL.
+ * @param count  Number of fields: IOT_ContractAttrSize(attrId) / 2, at most IOT_CONTRACT_REPORT_FIELDS_MAX.
+ *
+ * @return IOT_OK, also when the value was held. IOT_ERR_INVALID_ARG for a NULL fields or a zero
+ *         count, IOT_ERR_INVALID_SIZE when count does not match the attribute (nothing done).
+ *         IOT_ERR_NO_MEM when the value was to be held and the table is full, or when the table's
+ *         lock could not be created (nothing held). When the held values have already been sent
+ *         but this device's own id cannot be read, the error of that read, IOT_ERR_DATA_NOT_FOUND
+ *         when there is none (nothing done).
+ *         Otherwise the result of IOT_ContractLocalChange().
+ */
+iot_err_t IOT_ContractReportFields(uint16_t elemId, uint16_t attrId, const uint16_t *fields, uint8_t count);
+
+/**
+ * @brief Read one numeric field of the value in a state command, from inside your apply callback.
+ *
+ * The counterpart of IOT_ContractReportFields(): field @p index (first field is 0) of
+ * req->value, each field being two bytes.
+ *
+ * @param req   The request your apply callback received.
+ * @param index Which field, from 0.
+ * @param out   Receives the field. Left untouched on an error.
+ *
+ * @return IOT_OK. IOT_ERR_INVALID_ARG for a NULL req or out, or when the value has no field
+ *         @p index.
+ */
+iot_err_t IOT_ContractApplyField(const IOT_ContractApply_t *req, uint8_t index, uint16_t *out);
 
 /**
  * @brief The id the Device store keeps one of your elements under.
@@ -320,7 +529,7 @@ uint16_t IOT_ContractElementStoreId(uint16_t eid, uint16_t elemId);
  *   then Smart with the sender "device". Smart is skipped only when the report could not read the
  *   device (IOT_ERR_DATA_NOT_FOUND).
  *
- * The value must have the attribute's declared size (IOT_AttrGetSize()); a report of any other
+ * The value must have the attribute's declared size (IOT_ContractAttrSize()); a report of any other
  * size is refused, so one malformed report cannot shrink the stored value. @p elemId is the id the
  * hub assigned to the sub-device's element and is used as given. The element must already be known
  * to the Device store; an attribute it does not hold yet is added.
@@ -378,13 +587,36 @@ typedef enum
     IOT_CONTRACT_EVT_RECORD_PUSHED = 3,
     /** A sub-device finished joining and is in the Device store. */
     IOT_CONTRACT_EVT_DEVICE_ADDED = 4,
-    /** A device was removed from every contract store: by the cloud, or because it joined again
-     *  under a new EID. Raised before onDeviceRemoved. */
+    /** A device was removed from every contract store: by the cloud, because this device was
+     *  factory reset, or because it joined again under a new EID. Raised before onDeviceRemoved. */
     IOT_CONTRACT_EVT_DEVICE_REMOVED = 5,
     /** A mirrored on/off command (an automation keeping two devices' switches in step) named an
      *  element this device holds no mirror pairing for, and was ignored. Nothing was applied. */
     IOT_CONTRACT_EVT_MIRROR_REFUSED = 6,
+    /** The device status changed (see IOT_ContractGetStatus()); also raised once when
+     *  IOT_ContractStart() has started core, so a status LED is right from boot. Subscribe before
+     *  IOT_ContractStart() to see that first one, which comes on the task that called it. Later ones
+     *  come on core's event task (a factory reset you call: on your task, before the call returns),
+     *  one at a time and in order. IOT_CONTRACT_STATUS_UPDATING starts when you claim an update request
+     *  (after your onCoreEvent returns; one left unclaimed changes nothing) or at an update boot,
+     *  and lasts until a restart: an update you run yourself must end in one, as a failed one does. */
+    IOT_CONTRACT_EVT_STATUS_CHANGED = 7,
 } IOT_ContractEventType_t;
+
+/**
+ * @brief What a status LED shows: one value derived from provisioning, WiFi, the cloud and
+ *        updates, by precedence (UPDATING, then UNPROVISIONED / PAIRING, then NO_WIFI, then
+ *        NO_CLOUD, then ONLINE), never from the order events happened to arrive in.
+ */
+typedef enum
+{
+    IOT_CONTRACT_STATUS_UNPROVISIONED, /**< Not set up, nothing in progress. */
+    IOT_CONTRACT_STATUS_PAIRING,       /**< Being set up: a phone connected to set it up, not finished yet. */
+    IOT_CONTRACT_STATUS_NO_WIFI,       /**< Set up, WiFi not connected. */
+    IOT_CONTRACT_STATUS_NO_CLOUD,      /**< WiFi connected, the cloud is not. */
+    IOT_CONTRACT_STATUS_ONLINE,        /**< Set up and connected to the cloud. */
+    IOT_CONTRACT_STATUS_UPDATING,      /**< A firmware update is under way (ends in a restart). */
+} IOT_ContractStatus_t;
 
 /** Which path committed a change (IOT_CONTRACT_EVT_STATE_COMMITTED). Values are fixed: new
  *  causes are only ever added at the end. */
@@ -456,6 +688,11 @@ typedef struct
             uint16_t eid;    /**< The device the command named. */
             uint16_t elemId; /**< The first element it named that has no mirror pairing. */
         } mirrorRefused;
+        /** IOT_CONTRACT_EVT_STATUS_CHANGED. */
+        struct
+        {
+            IOT_ContractStatus_t status; /**< The new status. */
+        } statusChanged;
     } data;
 } IOT_ContractEvent_t;
 
@@ -467,9 +704,10 @@ typedef void (*IOT_ContractEventFn)(const IOT_ContractEvent_t *event, void *arg)
  * @brief Subscribe to contract events.
  *
  * Every subscriber receives every event, in subscription order, synchronously on the task that
- * did the action: the task that delivers core events, or the timer task for an automation's
- * actions (immediate, delayed or reverse) and for evaluating automation triggers. Keep the callback short and non-blocking (the timer
- * task has a small stack).
+ * did the action: the task that delivers core events, which also applies an automation's actions
+ * (immediate, delayed or reverse), evaluates its triggers, and runs every automation a timer
+ * starts (an offline schedule, a condition group's timed fire). Keep the callback short and
+ * non-blocking: the next core event waits for it.
  *
  * An event raised from inside your subscriber is not delivered: if the callback causes another
  * contract action (for example IOT_ContractLocalChange()), that action is carried out in full,
@@ -487,6 +725,16 @@ typedef void (*IOT_ContractEventFn)(const IOT_ContractEvent_t *event, void *arg)
  * Blocks: no. Safe from a timer callback: not applicable (boot only). Task: the boot task.
  */
 iot_err_t IOT_ContractSubscribe(IOT_ContractEventFn fn, void *arg);
+
+/**
+ * @brief The current device status (the last one raised as IOT_CONTRACT_EVT_STATUS_CHANGED).
+ *
+ * The raw events behind it still reach you unchanged (onCoreEvent); use the status, the raw events,
+ * or both. Before IOT_ContractStart() has started core it is IOT_CONTRACT_STATUS_UNPROVISIONED.
+ *
+ * Blocks: no. Safe from a timer callback: yes. Task: any.
+ */
+IOT_ContractStatus_t IOT_ContractGetStatus(void);
 
 #ifdef __cplusplus
 }

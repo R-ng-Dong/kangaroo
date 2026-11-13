@@ -9,6 +9,7 @@
 #include "IOT_ContractElements.h"
 #include "IOT_Core.h"
 #include "IOT_Log.h"
+#include "IOT_ContractAttrsInternal.h"
 
 static const char *TAG = "ContractLocal";
 
@@ -18,6 +19,16 @@ iot_err_t IOT_ContractLocalChange(uint16_t eid, uint16_t elemId, uint16_t attrId
     {
         IOT_LOGE(TAG, "Invalid local change");
         return IOT_ERR_INVALID_ARG;
+    }
+
+    /* The store keeps whatever length it is given and every later read answers with that length,
+     * so one short value would permanently shrink the stored attribute. Refuse it up front. */
+    const uint16_t expected = IOT_AttrGetSize(attrId);
+    if (len != expected)
+    {
+        IOT_LOGE(TAG, "Refusing attr %04x local change for EID %04x: %u bytes, expected %u", attrId, eid,
+                 (unsigned) len, (unsigned) expected);
+        return IOT_ERR_INVALID_SIZE;
     }
 
     /* Everything past here speaks the cloud's element numbering. A device element with no cloud

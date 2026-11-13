@@ -45,11 +45,26 @@ typedef struct
 iot_err_t IOT_ContractCommitStore(const IOT_ContractCommit_t *c);
 
 /**
+ * @brief Step 1 alone: write the new value to the Device store, with no Record entry.
+ *
+ * For a value the device held before it was provisioned: it is the element's starting state, not
+ * a change, so it is not part of the history. Same errors as IOT_ContractCommitStore().
+ */
+iot_err_t IOT_ContractCommitStoreOnly(const IOT_ContractCommit_t *c);
+
+/**
  * @brief The step after the report: feed Smart with the request's sender (its loop guard skips
  *        Smart's own output), then raise IOT_CONTRACT_EVT_STATE_COMMITTED with @p cause (the
  *        path that committed the change).
  */
 void IOT_ContractCommitAnnounce(const IOT_ContractCommit_t *c, IOT_ContractCause_t cause);
+
+/**
+ * @brief When a state command (IOT_CONTRACT_CAUSE_STATE_COMMAND) was last announced, in Unix
+ *        seconds: the device status's "last activation". 0 when none was announced since boot
+ *        with the clock set.
+ */
+int64_t IOT_ContractCommitLastActivation(void);
 
 #ifdef __cplusplus
 }

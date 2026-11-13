@@ -425,7 +425,9 @@ static esp_err_t DAO_SetDataBatch_Internal(const char *namespace, const IOT_DaoB
         if (err != ESP_OK)
         {
             IOT_LOGE(TAG, "Batch set fail at %u/%u key=%s: %s", i, count, entries[i].key, esp_err_to_name(err));
-            nvs_close(handle);  // no commit — leave prior state untouched
+            nvs_close(handle);  // NOT a rollback: on ESP-IDF each nvs_set_*() has already reached the
+                            // partition, so the entries before this one STAY -- a failed batch is
+                            // partially applied
             return err;
         }
     }

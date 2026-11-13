@@ -61,7 +61,7 @@ static void TdsPollingTask(void *arg)
 
         if(elapsed_s >= FLUSH_TIME_UPDATE_INTERVAL_S)
         {
-            TdsUpdateFlushTimes(elapsed_s);
+            // TdsUpdateFlushTimes(elapsed_s);
             last_flush_time_update_us = esp_timer_get_time();
         }
 

@@ -11,7 +11,7 @@
 #include "IOT_ContractEcho.h"
 #include "IOT_Log.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
-#include "defines/IOT_AttrDefines.h" /* IOT_AttrGetSize: the product's attribute table */
+#include "IOT_ContractAttrsInternal.h"
 
 static const char *TAG = "ContractSubDev";
 

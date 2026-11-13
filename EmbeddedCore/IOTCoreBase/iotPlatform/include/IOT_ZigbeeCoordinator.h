@@ -85,7 +85,7 @@ typedef struct
  * Linux: connects to the local MQTT broker and subscribes to
  * zigbee2mqtt/bridge/event. Callbacks fire on the mosquitto network thread.
  *
- * Call before IOT_SDKInit() is not required, but must be called before
+ * Call before IOT_CoreInit() is not required, but must be called before
  * any OpenPairing/ClosePairing call.
  *
  * @param cbs  Callback bundle. May be NULL (no events delivered).

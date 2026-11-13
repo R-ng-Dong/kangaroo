@@ -319,7 +319,12 @@ static iot_err_t copy_data(void **dest, uint16_t *dest_len, IOT_DaoType type, vo
     }
 
     memcpy(*dest, src, size);
-    *dest_len = (uint16_t) size;
+    /* A scalar's size comes from its type, so its caller may pass no length (IOT_CacheGet rejects
+     * that for STRING and BLOB only). */
+    if (dest_len)
+    {
+        *dest_len = (uint16_t) size;
+    }
 
     return IOT_OK;
 }
@@ -330,9 +335,8 @@ static iot_err_t copy_data(void **dest, uint16_t *dest_len, IOT_DaoType type, vo
  * IOT_CacheFlush() serializes each dirty entry and calls DAO_SetData(), which hands
  * the write to the DAO task and blocks on a semaphore until the NVS write completes.
  * That does not fit the FreeRTOS timer service task's stack: doing it inline from the
- * timer callback crash-looped all three bench boards on 2026-08-04 ("Stack protection
- * fault ... task Tmr Svc"), and one board reached 7/8 on the boot counter before it
- * was halted. So the timer only raises a flag and pokes a worker that owns a stack
+ * timer callback overflows that stack and crash-loops the device ("Stack protection
+ * fault ... task Tmr Svc"). So the timer only raises a flag and pokes a worker that owns a stack
  * sized for the job.
  * ------------------------------------------------------------------------- */
 
@@ -810,6 +814,20 @@ iot_err_t IOT_CacheSet(const char *nsName, const char *key, IOT_DaoType type, vo
     iot_err_t err = copy_data(&entry->data, &entry->data_len, type, data, len);
     if (err != IOT_OK)
     {
+        /* The old data is already freed above, so the entry cannot stay: a valid entry with no
+         * data would make the next hit copy from NULL. Drop it; a later read reloads from NVS. */
+        lru_remove(ns, entry);
+        hash_remove(ns, entry);
+        free_entry_data(entry);
+        if (entry->dirty && ns->stats.dirty_entries > 0)
+        {
+            ns->stats.dirty_entries--;
+        }
+        entry->valid = false;
+        entry->dirty = false;
+        entry->key[0] = '\0';
+        ns->entry_count--;
+        ns->stats.current_entries = ns->entry_count;
         IOT_OsalMutexUnlock(s_cache_ctx.mutex);
         return err;
     }

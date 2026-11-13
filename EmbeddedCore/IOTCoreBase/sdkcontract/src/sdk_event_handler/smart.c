@@ -7,7 +7,7 @@
 #include "dao/IOT_DaoSmartMgmt.h"
 #include "dao/IOT_DaoSmartScheduleMgmt.h"
 #include "dao/IOT_DaoSmartTriggerMgmt.h"
-#include "defines/IOT_AttrDefines.h"
+#include "IOT_ContractAttrsInternal.h"
 #include "services/IOT_ServiceSmart.h"
 #include "services/IOT_SmartCondGroup.h"
 
@@ -29,6 +29,7 @@ iot_err_t IOT_ContractHandleSmartEvent(IOT_CoreSmartEvent_t *smartEvent)
     {
         IOT_CoreSmartEventRemoveAnnounceData_t *data = &smartEvent->data.removeAnnounce;
         IOT_LOGI(TAG, "SMART event: REMOVE_ANNOUNCE, SMID=%04x", data->smid);
+        SmartService_NoteAutomationChanged(data->smid); // its waiting actions are dropped
         iot_err = IOT_DaoSmartRemoveSmid(data->smid);
         IOT_DaoSmartTriggerRemove(data->smid);
         IOT_DaoSmartScheduleRemove(data->smid);
@@ -440,6 +441,7 @@ iot_err_t IOT_ContractHandleSmartEvent(IOT_CoreSmartEvent_t *smartEvent)
             }
         }
 
+        SmartService_NoteAutomationChanged(trigger.smid); // An action the old version scheduled must not be applied to the new one.
         iot_err = IOT_DaoSmartTriggerSet(trigger.smid, &trigger);
         if (iot_err == IOT_OK)
         {
@@ -488,6 +490,7 @@ iot_err_t IOT_ContractHandleSmartEvent(IOT_CoreSmartEvent_t *smartEvent)
     {
         IOT_CoreSmartEventUnboundTriggerData_t *data = &smartEvent->data.unboundTrigger;
         IOT_LOGI(TAG, "SMART event: UNBOUND_TRIGGER, SMID=%04x", data->smid);
+        SmartService_NoteAutomationChanged(data->smid); // its waiting actions are dropped
         /* Only the leaving device receives the unbind when a condition goes away, so the survivors
          * would keep the old N and wait forever on a seat that no longer exists (for example
          * a 3-of-3 that lost one member and the other two stayed at N=3 K=3). The
@@ -564,6 +567,7 @@ iot_err_t IOT_ContractHandleSmartEvent(IOT_CoreSmartEvent_t *smartEvent)
         }
 
         uint16_t bindCmdCfm = 1;
+        SmartService_NoteAutomationChanged(data->smid); // An action the old version scheduled must not be applied to the new one.
         iot_err = SmartService_StoreBindCmd(data, &bindCmdCfm);
         {
             IOT_CoreSmartCmdResponse_t rsp = {
@@ -580,6 +584,7 @@ iot_err_t IOT_ContractHandleSmartEvent(IOT_CoreSmartEvent_t *smartEvent)
     {
         IOT_CoreSmartEventUnboundCmdData_t *data = &smartEvent->data.unboundCmd;
         IOT_LOGI(TAG, "SMART event: UNBOUND_CMD, SMID=%04x, EID=%04x", data->smid, data->eid);
+        SmartService_NoteAutomationChanged(data->smid); // its waiting actions are dropped
         iot_err = IOT_DaoSmartRemoveBindCmd(data->smid, data->eid);
         {
             IOT_CoreSmartCmdResponse_t rsp = {

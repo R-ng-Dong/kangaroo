@@ -13,7 +13,7 @@
 #include "dao/IOT_DaoSmartTriggerMgmt.h"
 #include "dao/IOT_DaoSmartScheduleMgmt.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
-#include "defines/IOT_AttrDefines.h"
+#include "IOT_ContractAttrsInternal.h"
 #include "services/IOT_SmartCondGroup.h"
 #include "IOT_Contract.h"
 #include "IOT_ContractInternal.h"
@@ -93,9 +93,10 @@ iot_err_t SmartService_ExecuteTriggerDeduped(uint16_t smid, const uint8_t *trigg
 // Eviction is oldest-first: the index only ever advances, so slot age is monotonic and the
 // slot the index points at is the oldest claim in the ring.
 //
-// Entries are read and written from two tasks — the cloud push runs on core's event
-// delivery task, the tick on the timer task — 60 s apart. A 4-field entry is not
-// written atomically, so both the scan and the write sit inside a critical section.
+// Entries are read and written by the cloud push and by the offline tick. Both run on core's
+// task today (the tick's timer only hands its body over), but a 4-field entry is not written
+// atomically, so the scan and the write still sit inside a critical section: a caller on any
+// other task stays safe.
 #define SCHED_DEDUP_SIZE 16
 #define SCHED_DEDUP_MS   180000
 
@@ -297,9 +298,129 @@ typedef struct
     uint16_t attrSize;
     uint8_t attrValue[8]; // 8 matches the smart subsystem's value buffers (trigger record, deferred eval)
     uint16_t reverse; // seconds; 0 = no reverse
+    uint16_t smid;    // the automation this action belongs to
+    uint8_t source;   // SMART_ACTION_FROM_*: where the automation keeps it
+    bool delayed;     // waited on a timer: check the automation still holds it before applying
+    uint32_t generation; // automation change stamp when scheduled (RAM only): a later change drops it
 } smart_control_timer_params_t;
 
-static void dispatchStateSet(smart_control_timer_params_t *params)
+#define SMART_ACTION_FROM_BIND_CMD 0u // a stored command for one device of the automation
+#define SMART_ACTION_FROM_TRIGGER  1u // synthesised from the automation's own trigger
+
+// A full core work queue refuses the hand-off; the action is tried again this soon.
+#define SMART_ACTION_RETRY_MS 100u
+
+// ---- automation change stamps ----------------------------------------------------------------
+//
+// An action waiting for its delay, its reverse or core's task belongs to the automation as it
+// was when the action was scheduled. Checking only that an automation with the same id still
+// exists is not enough: it may have been removed and added again (or edited) meanwhile. So every
+// add, edit and removal takes a new stamp, every action carries the stamp current when it was
+// scheduled, and an action older than its automation's last change is dropped.
+//
+// RAM only: nothing waits across a reboot. The table remembers the most recent changes; a change
+// pushed out of it raises the floor, which every automation not in the table is then assumed to
+// have changed at. That can drop an action whose automation did not change (only when more
+// automations than the table holds change during one wait), never apply one that did.
+// Core's task only, like everything that schedules or applies an action.
+#define SMART_CHANGE_TABLE_SIZE 16u
+
+static struct
+{
+    uint16_t smid;
+    uint32_t stamp; // 0 = unused
+} s_smartChanges[SMART_CHANGE_TABLE_SIZE];
+static uint32_t s_smartChangeStamp; // the last stamp handed out
+static uint32_t s_smartChangeFloor; // the newest stamp pushed out of the table
+
+void SmartService_NoteAutomationChanged(uint16_t smid)
+{
+    uint32_t stamp = ++s_smartChangeStamp;
+    uint8_t slot = 0;
+    for (uint8_t i = 0; i < SMART_CHANGE_TABLE_SIZE; i++)
+    {
+        if (s_smartChanges[i].stamp != 0 && s_smartChanges[i].smid == smid)
+        {
+            slot = i; // already known: just restamp it
+            break;
+        }
+        if (s_smartChanges[i].stamp < s_smartChanges[slot].stamp)
+        {
+            slot = i; // an unused slot (0), else the oldest change
+        }
+    }
+    if (s_smartChanges[slot].stamp != 0 && s_smartChanges[slot].smid != smid &&
+        s_smartChanges[slot].stamp > s_smartChangeFloor)
+    {
+        s_smartChangeFloor = s_smartChanges[slot].stamp;
+    }
+    s_smartChanges[slot].smid = smid;
+    s_smartChanges[slot].stamp = stamp;
+}
+
+static uint32_t automationLastChange(uint16_t smid)
+{
+    for (uint8_t i = 0; i < SMART_CHANGE_TABLE_SIZE; i++)
+    {
+        if (s_smartChanges[i].stamp != 0 && s_smartChanges[i].smid == smid)
+        {
+            return s_smartChanges[i].stamp;
+        }
+    }
+    return s_smartChangeFloor;
+}
+
+// The stamp a newly scheduled action carries.
+static uint32_t automationCurrentStamp(void)
+{
+    return s_smartChangeStamp;
+}
+
+// Whether the automation still holds this action. A delayed action outlives the request that
+// scheduled it, and the automation may have been removed meanwhile.
+static bool actionStillWanted(const smart_control_timer_params_t *params)
+{
+    if (params->source == SMART_ACTION_FROM_TRIGGER)
+    {
+        IOT_SmartTrigger_t trig;
+        return IOT_DaoSmartTriggerGet(params->smid, &trig) == IOT_OK;
+    }
+
+    char **keyList = NULL;
+    uint16_t keyCount = 0;
+    void **dataList = NULL;
+    uint16_t *dataSizes = NULL;
+    uint16_t rootEid = 0;
+    uint16_t prtc = 0;
+    if (IOT_DaoSmartGetBindCmds(params->smid, &keyList, &keyCount, &dataList, &dataSizes, &rootEid, &prtc,
+                                NULL) != IOT_OK)
+    {
+        return false;
+    }
+    bool found = false;
+    for (uint16_t i = 0; i < keyCount; i++)
+    {
+        if (keyList != NULL && keyList[i] != NULL && (uint16_t) strtol(keyList[i], NULL, 16) == params->eid)
+        {
+            found = true;
+        }
+        if (keyList != NULL)
+        {
+            SAFE_FREE(keyList[i]);
+        }
+        if (dataList != NULL)
+        {
+            SAFE_FREE(dataList[i]);
+        }
+    }
+    SAFE_FREE(keyList);
+    SAFE_FREE(dataList);
+    SAFE_FREE(dataSizes);
+    return found;
+}
+
+// Core's task only: apply one action through the product's STATE_SET handler.
+static void applyStateSet(smart_control_timer_params_t *params)
 {
     // Build a single-element STATE_SET event
     elem_set_t elemSet = {
@@ -323,6 +444,7 @@ static void dispatchStateSet(smart_control_timer_params_t *params)
             .senderFrom = IOT_SENDER_AUTOMATION, // prevents trigger re-evaluation loop
         },
         .targetDeviceType = 0,
+        .result = IOT_ERR_NOT_SUPPORTED, /* nobody is answered for an automation; preset as core does */
     };
 
     IOT_CoreEvent_t event = {
@@ -349,6 +471,75 @@ static void dispatchStateSet(smart_control_timer_params_t *params)
     }
 }
 
+// Core's task. The work queue frees the arg afterwards.
+static void stateSetWork(void *arg)
+{
+    smart_control_timer_params_t *params = (smart_control_timer_params_t *) arg;
+    if (params == NULL)
+    {
+        return;
+    }
+    if (automationLastChange(params->smid) > params->generation)
+    {
+        IOT_LOGI(TAG, "SMID=%04x changed since it scheduled its action for EID=%04x elem=%04x: skipped",
+                 params->smid, params->eid, params->elemId);
+        return;
+    }
+    if (params->delayed && !actionStillWanted(params))
+    {
+        IOT_LOGI(TAG, "SMID=%04x no longer holds its delayed action for EID=%04x elem=%04x: skipped",
+                 params->smid, params->eid, params->elemId);
+        return;
+    }
+    applyStateSet(params);
+}
+
+// Timer task (a retry): hand the action to core's task again, or wait a little longer.
+static void stateSetRetryCb(void *userData)
+{
+    smart_control_timer_params_t *job = (smart_control_timer_params_t *) userData;
+    if (job == NULL)
+    {
+        return;
+    }
+    if (IOT_CoreDeferWork(stateSetWork, job) == IOT_OK)
+    {
+        return; // the work queue owns and frees it now
+    }
+    if (IOT_TimerInsertCb(stateSetRetryCb, job, SMART_ACTION_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Action for EID=%04x elem=%04x lost: no timer to retry it", job->eid, job->elemId);
+        SAFE_FREE(job);
+    }
+}
+
+// Any task. Every action is applied on core's task, whatever noticed it: a delay or schedule
+// timer, a cond-group timer, or a request core is handling. The action is copied, so the
+// caller keeps its own record.
+static void queueStateSet(const smart_control_timer_params_t *params)
+{
+    smart_control_timer_params_t *job =
+        (smart_control_timer_params_t *) Mem_SafeMalloc(sizeof(smart_control_timer_params_t), TAG, "action");
+    if (job == NULL)
+    {
+        IOT_LOGE(TAG, "No memory to apply the action for EID=%04x elem=%04x", params->eid, params->elemId);
+        return;
+    }
+    *job = *params;
+    if (IOT_CoreDeferWork(stateSetWork, job) == IOT_OK)
+    {
+        return; // the work queue owns and frees it now
+    }
+    // The action must not be lost: try again shortly.
+    IOT_LOGW(TAG, "Core work queue full: action for EID=%04x elem=%04x retried in %u ms", params->eid,
+             params->elemId, (unsigned) SMART_ACTION_RETRY_MS);
+    if (IOT_TimerInsertCb(stateSetRetryCb, job, SMART_ACTION_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Action for EID=%04x elem=%04x lost: no timer to retry it", params->eid, params->elemId);
+        SAFE_FREE(job);
+    }
+}
+
 static void delayedExecuteCb(void *userData)
 {
     smart_control_timer_params_t *params = (smart_control_timer_params_t *)userData;
@@ -357,7 +548,7 @@ static void delayedExecuteCb(void *userData)
         return;
     }
 
-    dispatchStateSet(params);
+    queueStateSet(params);
 
     // If reverse is set and this is an ONOFF attribute, schedule the flip
     if (params->reverse > 0 && params->attrId == IOT_ATTR_ONOFF)
@@ -375,6 +566,7 @@ static void delayedExecuteCb(void *userData)
 
         uint32_t reverseMs = (uint32_t)params->reverse * 1000;
         params->reverse = 0; // Prevent infinite loop
+        params->delayed = true;
 
         if (!IOT_TimerInsertCb(delayedExecuteCb, params, reverseMs))
         {
@@ -393,15 +585,15 @@ static void delayedExecuteCb(void *userData)
 //
 // Auto-reverse, the stair switch and sync-on-off all do the same thing in the end: set ONE
 // element of ONE device to an ON/OFF value WITHOUT re-evaluating triggers, optionally after
-// a delay, so they share this one helper. dispatchStateSet() tags the change as
+// a delay, so they share this one helper. applyStateSet() tags the change as
 // IOT_SENDER_AUTOMATION, which is what keeps it from re-triggering.
 //
-// An immediate apply uses a stack record and allocates nothing; only a delayed one needs the
-// heap, because the timer outlives this call and delayedExecuteCb() frees it.
+// The action is applied on core's task either way. An immediate one is handed there now; a
+// delayed one waits on the heap for its timer, which hands it over and frees it.
 //
 // @return false only when a delayed apply could not be scheduled.
 // ----------------------------------------------------------------------------
-static bool mirrorOnOffToElement(uint16_t eid, uint16_t elemId, uint16_t attrId,
+static bool mirrorOnOffToElement(uint16_t smid, uint16_t eid, uint16_t elemId, uint16_t attrId,
                                  const uint8_t *value, uint16_t size, uint16_t delaySeconds)
 {
     if (value == NULL || size == 0)
@@ -418,7 +610,11 @@ static bool mirrorOnOffToElement(uint16_t eid, uint16_t elemId, uint16_t attrId,
         params.attrSize = (size <= sizeof(params.attrValue)) ? size : sizeof(params.attrValue);
         Mem_SafeCopy(params.attrValue, sizeof(params.attrValue), value, params.attrSize);
         params.reverse = 0;
-        dispatchStateSet(&params);
+        params.smid = smid;
+        params.source = SMART_ACTION_FROM_TRIGGER;
+        params.delayed = false;
+        params.generation = automationCurrentStamp();
+        queueStateSet(&params);
         return true;
     }
 
@@ -435,6 +631,10 @@ static bool mirrorOnOffToElement(uint16_t eid, uint16_t elemId, uint16_t attrId,
     params->attrSize = (size <= sizeof(params->attrValue)) ? size : sizeof(params->attrValue);
     Mem_SafeCopy(params->attrValue, sizeof(params->attrValue), value, params->attrSize);
     params->reverse = 0;
+    params->smid = smid;
+    params->source = SMART_ACTION_FROM_TRIGGER;
+    params->delayed = true;
+    params->generation = automationCurrentStamp();
 
     if (!IOT_TimerInsertCb(delayedExecuteCb, params, (uint32_t) delaySeconds * 1000u))
     {
@@ -606,6 +806,10 @@ iot_err_t SmartService_ExecuteCommandsEx(uint16_t smid,
             params->attrSize = (attrSize <= sizeof(params->attrValue)) ? attrSize : sizeof(params->attrValue);
             Mem_SafeCopy(params->attrValue, sizeof(params->attrValue), attrValue, params->attrSize);
             params->reverse = reverse;
+            params->smid = smid;
+            params->source = SMART_ACTION_FROM_BIND_CMD;
+            params->delayed = (delay != 0);
+            params->generation = automationCurrentStamp();
 
             // Resolve sync attributes (311/312): override stored value with trigger's current value
             resolveSyncAttr(&params->attrId, params->attrValue, &params->attrSize,
@@ -994,7 +1198,7 @@ static void fireReverseOnOff(const IOT_SmartTrigger_t *trig)
 
     uint8_t inverseValue[2] = {HIGH_BYTE(inverse), LOW_BYTE(inverse)};
 
-    if (!mirrorOnOffToElement(trig->eid, trig->elmId, IOT_ATTR_ONOFF, inverseValue,
+    if (!mirrorOnOffToElement(trig->smid, trig->eid, trig->elmId, IOT_ATTR_ONOFF, inverseValue,
                               sizeof(inverseValue), trig->timCfgValue))
     {
         IOT_LOGE(TAG, "  SMID=%04x: auto-reverse could not be scheduled", trig->smid);
@@ -1044,7 +1248,7 @@ static void fireStairSwitch(const IOT_SmartTrigger_t *trig, const uint8_t *attrV
         // than publishing a frame addressed back to ourselves.
         IOT_LOGI(TAG, "  SMID=%04x: stair switch (same root) -> eid=%04x elm=%04x", trig->smid,
                  trig->eidMix, trig->elemIdMix);
-        mirrorOnOffToElement(trig->eidMix, trig->elemIdMix, IOT_ATTR_ONOFF, attrValue, attrSize, 0);
+        mirrorOnOffToElement(trig->smid, trig->eidMix, trig->elemIdMix, IOT_ATTR_ONOFF, attrValue, attrSize, 0);
         return;
     }
 
@@ -1138,6 +1342,76 @@ void SmartService_CondGroupFire(const IOT_SmartTrigger_t *trig,
 
 static bool s_condResyncPending;
 
+// ---- timer -> core's task hand-off for the cond-group timers ----------------------------------
+// Re-sync, re-ask, re-announce and the deferred SYNC answer all read the trigger store and send
+// a message, which the timer task's stack must not carry. Their timers only hand the work to
+// core's task; a full work queue refuses it and a short timer tries again.
+
+typedef struct
+{
+    void (*body)(uintptr_t ctx); // core's task
+    void (*lost)(uintptr_t ctx); // optional: the work could not be handed over at all; only
+                                 // releases what ctx holds (light: any task)
+    uintptr_t ctx;               // not owned: a smid, or a pointer into a static pool
+} smart_core_job_t;
+
+// Core's task. The work queue frees the job afterwards.
+static void smartCoreJobWork(void *arg)
+{
+    smart_core_job_t *job = (smart_core_job_t *) arg;
+    if (job != NULL && job->body != NULL)
+    {
+        job->body(job->ctx);
+    }
+}
+
+static void smartCoreJobLost(smart_core_job_t *job)
+{
+    if (job->lost != NULL)
+    {
+        job->lost(job->ctx);
+    }
+}
+
+// Timer task (or a retry): hand the job to core's task, or try again shortly. Light work only.
+static void smartCoreJobHandOff(void *userData)
+{
+    smart_core_job_t *job = (smart_core_job_t *) userData;
+    if (job == NULL)
+    {
+        return;
+    }
+    if (IOT_CoreDeferWork(smartCoreJobWork, job) == IOT_OK)
+    {
+        return; // the work queue owns and frees it now
+    }
+    if (IOT_TimerInsertCb(smartCoreJobHandOff, job, SMART_ACTION_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Cond-group work lost: core queue full and no timer free");
+        smartCoreJobLost(job);
+        SAFE_FREE(job);
+    }
+}
+
+// Timer task: run body(ctx) on core's task.
+static void smartRunOnCoreTask(void (*body)(uintptr_t ctx), void (*lost)(uintptr_t ctx), uintptr_t ctx)
+{
+    smart_core_job_t *job = (smart_core_job_t *) Mem_SafeMalloc(sizeof(smart_core_job_t), TAG, "core job");
+    if (job == NULL)
+    {
+        IOT_LOGE(TAG, "No memory to hand cond-group work to core's task");
+        if (lost != NULL)
+        {
+            lost(ctx);
+        }
+        return;
+    }
+    job->body = body;
+    job->lost = lost;
+    job->ctx = ctx;
+    smartCoreJobHandOff(job);
+}
+
 // Bounded re-ask of the boot SYNC. A SYNC answer goes to the requester alone and may be
 // lost; if it is, the requester stays stale. We therefore re-send the SYNC GET a fixed,
 // small number of times. The GET re-announces our own (still-stale) view, so a peer that
@@ -1230,9 +1504,11 @@ static uint16_t condResyncCollectGroups(uint16_t **outSmids)
 // Bounded re-ask: re-send ONLY the SYNC GET (no own-bit SET re-flood). The GET
 // re-announces our own view, so a peer that still differs answers again — recovering a
 // lost answer. Stops after COND_SYNC_MAX_RETRIES regardless of what came back.
-static void condResyncRetryTimerCb(void *userData)
+static void condResyncRetryTimerCb(void *userData);
+
+static void condResyncRetryBody(uintptr_t ctx)
 {
-    (void) userData;
+    (void) ctx;
     if (s_condResyncRetriesLeft == 0)
         return;
     s_condResyncRetriesLeft--;
@@ -1247,9 +1523,17 @@ static void condResyncRetryTimerCb(void *userData)
         IOT_TimerInsertCb(condResyncRetryTimerCb, NULL, COND_SYNC_RETRY_INTERVAL_MS);
 }
 
-static void condResyncTimerCb(void *userData)
+// Timer task: only hands the re-ask over.
+static void condResyncRetryTimerCb(void *userData)
 {
     (void) userData;
+    smartRunOnCoreTask(condResyncRetryBody, NULL, 0);
+}
+
+// Core's task: the boot / re-enable re-sync.
+static void condResyncBody(uintptr_t ctx)
+{
+    (void) ctx;
     s_condResyncPending = false;
 
     uint16_t *smids = NULL;
@@ -1284,6 +1568,20 @@ static void condResyncTimerCb(void *userData)
     s_condResyncRetriesLeft = COND_SYNC_MAX_RETRIES;
     if (groupCount > 0 && COND_SYNC_MAX_RETRIES > 0)
         IOT_TimerInsertCb(condResyncRetryTimerCb, NULL, COND_SYNC_RETRY_INTERVAL_MS);
+}
+
+// The re-sync never reached core's task: let the next request schedule one again.
+static void condResyncLost(uintptr_t ctx)
+{
+    (void) ctx;
+    s_condResyncPending = false;
+}
+
+// Timer task: only hands the re-sync over.
+static void condResyncTimerCb(void *userData)
+{
+    (void) userData;
+    smartRunOnCoreTask(condResyncBody, condResyncLost, 0);
 }
 
 void SmartService_CondGroupSyncSchedule(void)
@@ -1324,10 +1622,16 @@ bool SmartService_CondGroupOnEnableChange(uint16_t smid, bool enabled)
 // observed (higher-version peer report or a fresh cond-group BIND). Re-announces THIS
 // device's own bit only (no fire) so every member re-floods its bit at the new
 // generation and the full mask converges. The jitter spreads a location-wide flood.
+static void condReannounceBody(uintptr_t ctx)
+{
+    uint16_t smid = (uint16_t) ctx;
+    condResyncAnnounce(&smid, 1);
+}
+
+// Timer task: only hands the re-announce over.
 static void condReannounceTimerCb(void *userData)
 {
-    uint16_t smid = (uint16_t)(uintptr_t) userData;
-    condResyncAnnounce(&smid, 1);
+    smartRunOnCoreTask(condReannounceBody, NULL, (uintptr_t) userData);
 }
 
 void SmartService_CondGroupScheduleReannounce(uint16_t smid)
@@ -1342,8 +1646,8 @@ void SmartService_CondGroupScheduleReannounce(uint16_t smid)
 // jitter window, so it can't live on the stack — but it also must not churn the heap on
 // this hot path. Instead it lives in a fixed static pool: bounded RAM, leak-free by
 // construction, and correctness is independent of the pool size (a full pool just answers
-// immediately instead of deferring — no drop). Guarded by its own mutex because requests
-// arrive on core's event delivery task while timers fire on the timer task.
+// immediately instead of deferring — no drop). Guarded by its own mutex: requests and the
+// answers both run on core's task now, but a lost hand-off releases its slot from the timer task.
 #define COND_ANSWER_SLOTS 8
 
 typedef struct
@@ -1427,15 +1731,30 @@ static void answerRelease(cond_answer_slot_t *slot)
     answerUnlock();
 }
 
-static void condAnswerTimerCb(void *userData)
+// Core's task: send the deferred answer and free its slot.
+static void condAnswerBody(uintptr_t ctx)
 {
-    cond_answer_slot_t *slot = (cond_answer_slot_t *) userData;
+    cond_answer_slot_t *slot = (cond_answer_slot_t *) ctx;
     if (slot == NULL)
         return;
     // Answer the requester — but ONLY for groups where our view actually differs from the
     // status it announced, and unicast to that device (not the whole location).
     SmartService_CondGroupAnswerSync(slot->groups, slot->count, slot->requesterEid);
     answerRelease(slot);
+}
+
+// The answer never reached core's task: free its slot so the pool is not consumed for good.
+// The requester re-asks if it still needs the answer.
+static void condAnswerLost(uintptr_t ctx)
+{
+    answerRelease((cond_answer_slot_t *) ctx);
+}
+
+// Timer task (after the jitter): only hands the answer over. The slot stays claimed until
+// core's task has sent it, so a repeat GET meanwhile still coalesces into it.
+static void condAnswerTimerCb(void *userData)
+{
+    smartRunOnCoreTask(condAnswerBody, condAnswerLost, (uintptr_t) userData);
 }
 
 void SmartService_CondGroupHandleCheckQuery(const IOT_CoreSmartCondStatus_t *reqGroups,
@@ -1743,7 +2062,7 @@ static void evalSyncOnOff(uint16_t smid, const IOT_SmartTrigger_t *trig,
                 continue; // this bound element is the source of the change
             }
 
-            mirrorOnOffToElement(trig->eid, bound[b], trig->attrId, devSetInfo->attrValue,
+            mirrorOnOffToElement(trig->smid, trig->eid, bound[b], trig->attrId, devSetInfo->attrValue,
                                  devSetInfo->attrSize, 0);
         }
     }
@@ -1913,7 +2232,7 @@ iot_err_t SmartService_ApplySyncOnOff(uint16_t smid, uint16_t attrId,
     {
         IOT_LOGI(TAG, "SyncOnOff SMID=%04x: applying attr=%04x size=%u to EID=%04x elm=%04x", smid,
                  attrId, attrSize, trig.eid, bound[b]);
-        mirrorOnOffToElement(trig.eid, bound[b], attrId, attrValue, attrSize, 0);
+        mirrorOnOffToElement(smid, trig.eid, bound[b], attrId, attrValue, attrSize, 0);
     }
     return IOT_OK;
 }
@@ -1938,7 +2257,8 @@ typedef struct
     uint8_t *heapAttrValue;
 } deferred_trigger_eval_t;
 
-static void deferredTriggerEvalCb(void *userData)
+// Core's task. The work queue frees ctx itself afterwards; its buffers are freed here.
+static void deferredTriggerEvalWork(void *userData)
 {
     deferred_trigger_eval_t *ctx = (deferred_trigger_eval_t *)userData;
     if (ctx == NULL)
@@ -1959,7 +2279,39 @@ static void deferredTriggerEvalCb(void *userData)
 
     SAFE_FREE(ctx->heapElemList);
     SAFE_FREE(ctx->heapAttrValue);
+}
+
+static void freeDeferredEval(deferred_trigger_eval_t *ctx)
+{
+    SAFE_FREE(ctx->heapElemList);
+    SAFE_FREE(ctx->heapAttrValue);
     SAFE_FREE(ctx);
+}
+
+// Hand the evaluation to core's task; a full work queue arms a short retry instead.
+// Light enough for the timer task. @return false when the evaluation was dropped (ctx freed).
+static bool queueDeferredEval(deferred_trigger_eval_t *ctx);
+
+static void deferredTriggerEvalRetryCb(void *userData)
+{
+    (void) queueDeferredEval((deferred_trigger_eval_t *) userData);
+}
+
+static bool queueDeferredEval(deferred_trigger_eval_t *ctx)
+{
+    if (IOT_CoreDeferWork(deferredTriggerEvalWork, ctx) == IOT_OK)
+    {
+        return true; // the work queue owns and frees it now
+    }
+    if (IOT_TimerInsertCb(deferredTriggerEvalRetryCb, ctx, SMART_ACTION_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Trigger evaluation for EID=%04x lost: core queue full and no timer free", ctx->eid);
+        freeDeferredEval(ctx);
+        return false;
+    }
+    IOT_LOGW(TAG, "Core work queue full: trigger evaluation for EID=%04x retried in %u ms", ctx->eid,
+             (unsigned) SMART_ACTION_RETRY_MS);
+    return true;
 }
 
 iot_err_t SmartService_TriggerEvaluateDeferred(uint16_t eid, dev_set_info_t *devSetInfo)
@@ -2019,12 +2371,9 @@ iot_err_t SmartService_TriggerEvaluateDeferred(uint16_t eid, dev_set_info_t *dev
                      devSetInfo->attrValue, devSetInfo->attrSize);
     }
 
-    if (!IOT_TimerInsertCb(deferredTriggerEvalCb, ctx, 0))
+    // On core's task, after the caller's work: never nested inside it, never on the timer task.
+    if (!queueDeferredEval(ctx))
     {
-        IOT_LOGE(TAG, "Failed to schedule deferred trigger eval for EID=%04x", eid);
-        SAFE_FREE(ctx->heapElemList);
-        SAFE_FREE(ctx->heapAttrValue);
-        SAFE_FREE(ctx);
         return IOT_ERR_FAIL;
     }
 
@@ -2062,12 +2411,11 @@ iot_err_t SmartService_GetCurrentUtcMinuteOfWeek(uint64_t unixMs, uint16_t *outM
     return IOT_OK;
 }
 
-static void schedulerTickCb(void *userData)
+// Core's task: the tick's body. It reads the schedule store and runs every automation due
+// this minute, which is far too much for the timer task's stack.
+static void schedulerTickWork(void *arg)
 {
-    (void)userData;
-
-    // Re-register for next tick (pseudo-periodic via single-shot timer)
-    IOT_TimerInsertCb(schedulerTickCb, NULL, 60000);
+    (void)arg;
 
     // Scheduled times are absolute minute-of-week values; comparing them against
     // a pre-SNTP 1970 clock would fire at the wrong time. Require a synced clock.
@@ -2144,6 +2492,29 @@ static void schedulerTickCb(void *userData)
     SAFE_FREE(smids);
     SAFE_FREE(timeLists);
     SAFE_FREE(timeCounts);
+}
+
+// Timer task (the tick, or a retry): hand the tick's body to core's task, or try again shortly.
+// A tick that is late because of a retry is harmless: the body is deduped per minute.
+static void schedulerTickHandOff(void *userData)
+{
+    (void)userData;
+    if (IOT_CoreDeferWork(schedulerTickWork, NULL) == IOT_OK)
+    {
+        return;
+    }
+    if (IOT_TimerInsertCb(schedulerTickHandOff, NULL, SMART_ACTION_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        IOT_LOGE(TAG, "Schedule tick lost: core queue full and no timer free");
+    }
+}
+
+// Timer task: re-arm the next tick (pseudo-periodic via single-shot timer) and hand this one over.
+static void schedulerTickCb(void *userData)
+{
+    (void)userData;
+    IOT_TimerInsertCb(schedulerTickCb, NULL, 60000);
+    schedulerTickHandOff(NULL);
 }
 
 void SmartService_SchedulerStart(void)
