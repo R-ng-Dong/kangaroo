@@ -8,10 +8,10 @@
 /*
  * Record V2 responses.
  *
- * The SDK hands over facts; core owns every wire byte. Nothing here is a serialised
+ * The SDK hands over facts; core owns the encoding. Nothing here is a serialised
  * form: do not pre-pack entries, do not byte-swap, and do not pad to a block size. Core
- * writes the 24-byte header, converts to big-endian, swaps the power pair into the order
- * the cloud reads, and stops at the reply budget.
+ * builds the header, converts byte order, orders the power pair the way the cloud reads
+ * it, and stops at the reply budget.
  *
  * attrId crosses this boundary as an opaque number. Core never switches on it -- which is
  * why valueCount is a parameter rather than something core derives.
@@ -40,8 +40,8 @@ typedef struct
      *   valueCount == 1:  [value][diffSeconds]
      *   valueCount == 2:  [value1][value2][diffSeconds]
      *
-     * Natural order, NOT wire order -- the cloud writes value2 first and core does that
-     * swap. Entries run oldest to newest, which is the opposite of the block order.
+     * Natural order, NOT the cloud's order -- core does the reordering for you. Entries run
+     * oldest to newest, which is the opposite of the block order.
      *
      * Borrowed for the duration of the call; core copies what it sends, so one scratch
      * buffer may be refilled between blocks.
@@ -77,7 +77,7 @@ typedef struct
     uint16_t eid;
     uint16_t elemId;
     uint16_t attrId;
-    /** 1, or 2 for the power pair. Use IOT_AttrRecordValueCount(attrId). */
+    /** 1, or 2 for a two-field attribute (the power pair); never more. IOT_ATTR_OPEN_CLOSE_CTL keeps 1. */
     uint8_t valueCount;
     IOT_CoreRecordBlock_t block;
 } IOT_CoreRecordStateBlock_t;
@@ -97,7 +97,7 @@ typedef struct
     uint16_t eid;
     uint16_t elemId;
     uint16_t attrId;
-    /** 1, or 2 for the power pair. Use IOT_AttrRecordValueCount(attrId). */
+    /** 1, or 2 for a two-field attribute (the power pair); never more. IOT_ATTR_OPEN_CLOSE_CTL keeps 1. */
     uint8_t valueCount;
     /** Newest first. At least one, always. */
     const IOT_CoreRecordBlock_t *blocks;
@@ -131,7 +131,7 @@ typedef struct
     uint16_t eid;
     uint16_t elemId;
     uint16_t attrId;
-    /** 1, or 2 for the power pair. Use IOT_AttrRecordValueCount(attrId). */
+    /** 1, or 2 for a two-field attribute (the power pair); never more. IOT_ATTR_OPEN_CLOSE_CTL keeps 1. */
     uint8_t valueCount;
     /** OLDEST first -- the opposite of IOT_CoreRecordResponse_t. 1..IOT_CORE_RECORD_PUSH_BLOCKS_MAX. */
     const IOT_CoreRecordBlock_t *blocks;
@@ -140,11 +140,12 @@ typedef struct
 
 /**
  * Send closed reels to the cloud, unsolicited. All or nothing: never trims.
+ * The message also carries the device's current time, so the cloud can check the device clock.
  * @return IOT_OK once the message is handed to the MQTT client;
  *         IOT_ERR_INVALID_ARG for null, blockCount 0 or > MAX, valueCount outside 1..2;
  *         an encoder error for a malformed block;
  *         IOT_ERR_INVALID_STATE when the cloud session is not fully up yet (later than the MQTT
- *         connect event) -- retry soon;
+ *         connect event), or the device clock has not synced -- retry soon;
  *         any other non-OK = not sent, retry later.
  *
  * Blocking: it waits on the MQTT publish. Call it from a task, never from a timer callback.

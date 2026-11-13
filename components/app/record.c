@@ -19,7 +19,7 @@
 #include "IOT_ContractRecord.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
 
-#include "defines/IOT_AttrDefines.h"
+#include "IOT_ContractAttrs.h"
 
 #include "device_element_manager.h"
 #include "energy_saving_manager.h"
@@ -70,7 +70,7 @@ static void app_on_device_removed(uint16_t eid, bool root)
     if(root)
     {
         ESP_LOGW(TAG, "Root device removed, clearing energy saving config and restarting");
-        EnergySavingManagerClearConfig();
+        // EnergySavingManagerClearConfig();
         IOT_ApplicationRestartChip();
     }
 }
@@ -160,7 +160,7 @@ _bool app_update_water_consumption(uint32_t water_consumption)
     value[3] = water_consumption & 0xff;
 
     (void)DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_INFOMATION_WATER_CONSUMER, value, 4);
-    return AppUpdateAttributeU32(ELEMENT_ID_1, IOT_ATTR_APP_WATER_CONSUMPTION, water_consumption) == IOT_OK ? D_TRUE : D_FALSE;
+    return AppUpdateAttributeU32(ELEMENT_ID_1, IOT_ATTR_INFO_WATER_CONSUMED, water_consumption) == IOT_OK ? D_TRUE : D_FALSE;
 }
 
 _bool app_update_energy_consumption(uint32_t energy_consumption)

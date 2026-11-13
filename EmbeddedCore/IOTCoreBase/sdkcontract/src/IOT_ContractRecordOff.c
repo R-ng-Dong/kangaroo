@@ -15,7 +15,7 @@
 #include "IOT_ContractRecord.h"
 #include "IOT_CoreRecord.h"
 #include "dao/IOT_DaoRecord.h"
-#include "defines/IOT_AttrDefines.h"
+#include "IOT_ContractAttrsInternal.h"
 
 // ---- public API ------------------------------------------------------------------
 

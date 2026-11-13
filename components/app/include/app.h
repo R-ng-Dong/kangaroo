@@ -28,6 +28,9 @@ void AppRspToCloud(UI8 elem_id, UI16 attr_id);
 void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm);
 void AppPushWarningToCloud(void);
 
+_bool ModelConfigStore(WaterPurifierType model);
+_bool ModelConfigGet(WaterPurifierType *model);
+
 _bool IsOtaReady(void);
 
 #endif

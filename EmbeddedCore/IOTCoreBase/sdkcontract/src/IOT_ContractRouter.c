@@ -6,8 +6,13 @@
  * category the contract does not own yet forwards to the product's onCoreEvent unchanged.
  */
 #include "IOT_Contract.h"
+#include "IOT_ContractAttrsInternal.h"
+#include "IOT_ContractStatus.h"
+#include "IOT_ContractRestore.h"
 #include "IOT_ContractInternal.h"
 #include "IOT_ContractElements.h"
+#include "IOT_ContractPending.h"
+#include "IOT_ContractDeviceStatus.h"
 
 #include <stddef.h>
 #include "IOT_Core.h"
@@ -51,7 +56,9 @@ static void routeState(const IOT_CoreEvent_t *event)
     switch (state->type)
     {
     case IOT_EVENT_TYPE_STATE_SET:
+        /* The contract's handling is the answer core sends to an acknowledged command. */
         err = IOT_ContractStateHandleSet(&state->data.setRequest, s_cb.apply);
+        state->data.setRequest.result = err;
         break;
     case IOT_EVENT_TYPE_STATE_GET:
         err = IOT_ContractStateRespondGet(&state->data.getRequest);
@@ -78,7 +85,7 @@ static void routeOs(const IOT_CoreEvent_t *event)
     /* The product restarts the chip from its hook, so what the contract holds in RAM is written
      * out first. The OTA boot is not a restart request: the product claims it unchanged. */
     IOT_CoreOsEventType_t type = event->evt.os.type;
-    if (type == OS_EVENT_REBOOT || type == OS_EVENT_OTA_REQUESTED)
+    if (type == OS_EVENT_REBOOT_REQUESTED || type == OS_EVENT_OTA_REQUESTED)
     {
         iot_err_t err = IOT_ContractPrepareRestart();
         if (err != IOT_OK)
@@ -112,29 +119,41 @@ void RAL_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event)
 
 static void routeDevice(const IOT_CoreEvent_t *event)
 {
-    /* Joins, removals, group bind/unbind and the attribute set are store work the contract
+    /* Joins, removals, a local factory reset, group bind/unbind and the attribute set are store work the contract
      * answers itself; the product hears of them through its device hooks. On a cloud connect the
-     * contract runs its own duties, then the product gets the event. Everything else (connection,
-     * provisioning, the status request, identification) is the product's, unchanged. Core owns the
-     * event for the duration of the callback. */
+     * contract runs its own duties, then the product gets the event. A status request goes to the
+     * product, and the contract answers it when the product did not. Everything else (connection,
+     * provisioning, identification) is the product's, unchanged. Core owns the event for the
+     * duration of the callback. */
     IOT_CoreDeviceEvent_t *device = (IOT_CoreDeviceEvent_t *) &event->evt.device;
     switch (device->type)
     {
     case DEV_EVENT_NEW_DEVICE_JOINED:
     case DEV_EVENT_DEVICE_REMOVED:
+    case DEV_EVENT_FACTORY_RESET:
     case DEV_EVENT_GROUP_BIND:
     case DEV_EVENT_GROUP_UNBIND:
     case DEV_EVENT_DEVICE_ATTR_SET:
     {
-        printf("DEV_EVENT_DEVICE_ATTR_SET \n");
-        RAL_ContractHandleDeviceEvent(device);
-        // iot_err_t err = IOT_ContractHandleDeviceEvent(device, &s_cb);
-        // if (err != IOT_OK)
-        //     IOT_LOGW(TAG, "Device event %d answered with %d", (int) device->type, (int) err);
+        iot_err_t err = IOT_ContractHandleDeviceEvent(device, &s_cb);
+        if (err != IOT_OK)
+            IOT_LOGW(TAG, "Device event %d answered with %d", (int) device->type, (int) err);
         break;
     }
+    case DEV_EVENT_DEVICE_STATUS_REQUEST:
+        /* The product answers it if it wants to; one it leaves unclaimed the contract answers. */
+        routeForward(event);
+        IOT_ContractDeviceStatusAnswer(&device->data.deviceStatusRequest);
+        break;
     case DEV_EVENT_CLOUD_CONNECTED:
         IOT_ContractOnCloudConnected();
+        /* Values reported before provisioning are stored before the full state goes out, so it
+         * carries them. A root that is not known yet has none to write. */
+        {
+            uint16_t rootEid = 0;
+            if (IOT_CoreGetRootEid(&rootEid) == IOT_OK)
+                IOT_ContractPendingFlush(rootEid);
+        }
         /* Changes made while offline (local control, automations) reach the cloud. */
         IOT_ContractStateSyncSchedule();
         routeForward(event);
@@ -157,6 +176,12 @@ static void contractRouter(void *arg, const IOT_CoreEvent_t *event)
     (void) arg;
     if (event == NULL)
         return;
+    /* First, so a subscriber sees the new status before the event's own work (the cloud-connected
+     * full-state report, a forwarded event). An update request is the exception: it is a claim, so
+     * the status takes it after the product has answered, and a declined one never shows UPDATING. */
+    bool afterRoute = (event->category == IOT_EVENT_OS && event->evt.os.type == OS_EVENT_OTA_REQUESTED);
+    if (!afterRoute)
+        IOT_ContractStatusOnCoreEvent(event);
     int category = (int) event->category;
     ContractRouteFn route = NULL;
     if (category >= 0 && category <= (int) IOT_EVENT_CATEGORY_LAST)
@@ -164,12 +189,17 @@ static void contractRouter(void *arg, const IOT_CoreEvent_t *event)
     if (route == NULL)
         route = routeForward;
     route(event);
+    if (afterRoute)
+        IOT_ContractStatusOnCoreEvent(event);
 }
 
 iot_err_t IOT_ContractStart(const IOT_ContractConfig_t *config, const IOT_ContractCallbacks_t *cb)
 {
     if (config == NULL || config->modelId == NULL || cb == NULL || cb->apply == NULL)
         return IOT_ERR_INVALID_ARG;
+
+    /* The product's attributes are registered by now; from here every task reads the table. */
+    IOT_ContractAttrsFreeze();
 
     iot_err_t err = IOT_ContractInit(config);
     if (err != IOT_OK)
@@ -190,5 +220,13 @@ iot_err_t IOT_ContractStart(const IOT_ContractConfig_t *config, const IOT_Contra
     //     }
     // }
 
-    return IOT_CoreInit(config->modelId);
+    err = IOT_CoreInit(config->modelId);
+    if (err != IOT_OK)
+        return err;
+
+    /* Provisioning is known now (core read it while starting). The stored controls go back to the
+     * hardware on core's own task, after anything already queued and before what comes next, so a
+     * restore never interleaves with a command; on an update boot this still precedes the download. */
+    IOT_ContractRestoreSchedule(&s_cb);
+    return IOT_OK;
 }

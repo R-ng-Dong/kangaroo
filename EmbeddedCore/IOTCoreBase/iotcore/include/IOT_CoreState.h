@@ -156,15 +156,36 @@ typedef struct
 } IOT_CoreDeviceStatusData_t;
 
 /**
- * @brief Build and send a device status report message.
+ * @brief Build and send an unsolicited device status report.
  *
  * Reports firmware version, uptime, last activation time, protocol capabilities
- * and memory stats to the cloud over MQTT.
+ * and memory stats to the cloud. Use it for the periodic report (e.g. after the
+ * cloud connects). To answer DEV_EVENT_DEVICE_STATUS_REQUEST use
+ * IOT_CoreRespondDeviceStatus() instead, which replies to whoever asked.
  *
  * @param status Device status data (SDK retains ownership)
  * @return IOT_OK on success
  */
 iot_err_t IOT_CoreRequestReportDeviceStatus(const IOT_CoreDeviceStatusData_t *status);
+
+/**
+ * @brief Answer a device status request.
+ *
+ * Sends the same status as IOT_CoreRequestReportDeviceStatus(), but as the reply
+ * to DEV_EVENT_DEVICE_STATUS_REQUEST: on the transport the request arrived on
+ * (BLE, LAN or cloud), to whoever asked, with the request's transaction id. Call
+ * it from your handler, before returning, and write its return value into the
+ * event's `data.deviceStatusRequest.result`.
+ *
+ * Blocks: briefly, while the message is sent. Task: your DEV_EVENT_DEVICE_STATUS_REQUEST
+ * handler, on the task that delivers core events.
+ *
+ * @param ctx    The request's context, `data.deviceStatusRequest.ctx`, unchanged
+ * @param status Device status data (SDK retains ownership)
+ * @return IOT_OK when the reply was sent; IOT_ERR_INVALID_ARG for a NULL argument;
+ *         otherwise the error that stopped it
+ */
+iot_err_t IOT_CoreRespondDeviceStatus(const IOT_RequestContext_t *ctx, const IOT_CoreDeviceStatusData_t *status);
 
 /* ============================
  *  DEVICE Command Response Enum

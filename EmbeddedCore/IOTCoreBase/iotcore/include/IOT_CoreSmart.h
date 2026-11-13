@@ -61,7 +61,7 @@ typedef struct
 } IOT_CoreSmartSyncOnOffReport_t;
 
 /**
- * @brief Broadcast a sync-on-off activation to the location command topic.
+ * @brief Broadcast a sync-on-off activation to every device in the location.
  *
  * Carries the SMID, the new value, and this device's own root EID so peers can
  * suppress the echo of their own broadcast. Peers holding a sync-on-off trigger
@@ -77,15 +77,15 @@ iot_err_t IOT_CoreRequestSmartSyncOnOffReport(const IOT_CoreSmartSyncOnOffReport
  *
  * This is NOT a general cross-device control, and deliberately cannot become one: there is
  * no attribute id and no value buffer, so the only thing it can express is the on/off
- * mirror that subSmartType 64 needs. The attribute it sends (313) and the frame shape are
- * fixed by the old partner's wire format.
+ * mirror that subSmartType 64 needs. The attribute it sends is fixed by the legacy
+ * protocol it serves.
  *
- * It unicasts to @p pairRootEid 's own command topic, not the location topic.
+ * It is sent to @p pairRootEid alone, not broadcast to the location.
  *
  * A legacy compatibility layer. It is not compiled into the shipped library, where this
  * call is a stub returning IOT_ERR_NOT_SUPPORTED -- use sync-on-off (subSmartType 71).
  *
- * @param pairRootEid Device that receives the frame; 0 is rejected, having no topic.
+ * @param pairRootEid Device that receives the frame; 0 is rejected, having no address.
  * @param pairEid     EID written into the frame's element block.
  * @param pairElemId  Element to drive on that device.
  * @param on          The value to mirror.
@@ -108,7 +108,7 @@ typedef struct
 {
     uint16_t smid;
     uint16_t eid;       // element/device EID this group's condition belongs to (identity block)
-    uint16_t version;   // config generation (2 bytes on the wire)
+    uint16_t version;   // config generation (16-bit)
     uint8_t condCount;  // N (<= 8)
     uint8_t fireCount;  // K
     uint8_t condIndex;  // this device's bit position (0..7)

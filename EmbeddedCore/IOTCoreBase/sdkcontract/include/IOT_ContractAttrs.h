@@ -1,73 +1,31 @@
 #pragma once
 
 /**
- * @file IOT_AttrDefines.h
- * @brief REFERENCE attribute IDs, device type constants, and attribute value enums.
+ * @file IOT_ContractAttrs.h
+ * @brief The attribute table: attribute ids, their value constants, device types.
  *
- * ---------------------------------------------------------------------------
- * THIS IS REFERENCE MATERIAL, NOT PART OF THE PROTOCOL ENGINE.
+ * This is the cloud's attribute vocabulary, shared by every device, the cloud and the app. It
+ * ships with the contract and is not edited: a product that needs attributes of its own
+ * registers them with IOT_ContractRegisterAttrs() (ids 0xF700-0xFEFF).
  *
- * Attribute semantics belong to YOUR SDK, not to iotcore. Core moves attribute
- * values through unchanged: it hands you an `attrId` and the raw value bytes in
- * an event, and sends back whatever bytes you report. Nothing in `iotcore.a`
- * includes this header, and no core API takes these constants as a type.
+ *   - IOT_ATTR_*    -- attribute ids
+ *   - IOT_DEVTYPE_* -- element types
+ *   - iot_attr_*_t  -- attribute value constants (IOT_ON/IOT_OFF, fan speeds, modes, ...)
  *
- * Copy this file into your own SDK and keep only the attributes your devices
- * actually expose. It is provided so you do not have to transcribe the ids by
- * hand — the definitive list, with sizes and value encodings, is
- * `docs/core/Attribute_Reference.md`.
- *
- * The ids and value encodings here must match what the cloud and the mobile app
- * expect; the C names are ours and yours to rename freely.
- *
- * ADDING YOUR OWN ATTRIBUTES
- *
- * Define them here — but NEVER reuse a value that already appears below. Ids are
- * one flat namespace, so a duplicate fails silently rather than loudly: the value
- * is parsed as the OTHER attribute, at that attribute's size, corrupting the rest
- * of the message when the sizes differ. The deprecated ids at the end are still
- * reserved (old automation data parses through them), and the list is grouped by
- * purpose rather than sorted, so scanning one block does not prove a number is
- * free. Allocate custom ids from the partner range 0xF700-0xFEFF, and give any
- * multi-field attribute a case in IOT_AttrGetSize() — the default is 2*1 (two
- * bytes) and nothing warns you when it is wrong.
- *
- * A custom id only becomes fully useful once the cloud and the app know it too;
- * send its definition to us to register before relying on it end to end. The full
- * procedure is in `docs/core/Custom_Attributes.md`.
- * ---------------------------------------------------------------------------
- *
- * Contents:
- *   - IOT_ATTR_*    — attribute IDs
- *   - IOT_DEVTYPE_* — device type constants for an element's type field
- *   - iot_attr_*_t  — attribute value enums (IOT_ON/IOT_OFF, fan speeds, modes, etc.)
- *
- * Attribute sizes: call IOT_AttrGetSize(attrId). The size matters — an attribute
- * id does not carry a length, so a wrong size misparses the value. Multi-byte
- * values are big-endian.
- *
- * SIZES COUNT 16-BIT FIELDS, NOT BYTES: every size is 2*N, so a single-field
- * attribute is 2 bytes and sizes are always even.
- * Common sizes: ONOFF=2, BRIGHTNESS=2, KELVIN=2, FAN_SPEED=2, MODE=2,
- *               POSITION=2, COLOR_HSV=6, TEMP_HUMID_EVT=4, OPEN_CLOSE_CTL=4,
- *               AC=10, PRESENCE_MULTI_ZONE_EVT=24.
+ * Sizes count 16-bit fields: an attribute of N fields carries 2*N bytes. Ask the table rather
+ * than assuming: IOT_ContractAttrSize().
  */
 
-#include <stdint.h>
 #include <stdbool.h>
-#include <string.h>
-#include <inttypes.h>
+#include <stddef.h> /* NULL: a registered attribute with no default */
+#include <stdint.h>
+
 #include "IOT_ErrorManager.h"
-
-// ============================================================================
-// Attribute IDs
-// ============================================================================
-
-// Action attributes
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #define IOT_ATTR_NONE                   0
 #define IOT_ATTR_ONOFF                  1
 #define IOT_ATTR_OPEN_CLOSE_CTL         2
@@ -118,7 +76,7 @@ extern "C" {
 
 /* Product attributes: Record keeps the leading 32-bit cumulative counter. */
 #define IOT_ATTR_APP_TDS_STATUS        160
-#define IOT_ATTR_APP_WATER_CONSUMPTION 45569
+// #define IOT_ATTR_APP_WATER_CONSUMPTION 45569
 #define IOT_ATTR_APP_ENERGY            63233
 
 // Device info attributes
@@ -132,9 +90,8 @@ extern "C" {
 #define IOT_ATTR_SYNC_ONOFF_REVERSING       312
 #define IOT_ATTR_SYNC_ONOFF_STAIR_SWITCH    313
 #define IOT_ATTR_SYNC_ONOFF_NO_TRIGGER      314
-// Sync-on-off element list: value = N x uint16 (big-endian) element ids. Carried
-// in the primary attr-value of a subSmartType-71 bind (not a device attribute) —
-// see "Sync On/Off" in docs/core/API_Document.md.
+// Sync-on-off element list: a list of element ids used by a sync-on-off automation (not a
+// device attribute).
 #define IOT_ATTR_SYNC_ONOFF_ELEMENTS        315
 
 // Step control attributes
@@ -166,6 +123,12 @@ extern "C" {
 #define IOT_ATTR_SETTING_LOCK_BUTTON            61952  // 0xF200
 #define IOT_ATTR_STT_WORKING_PARAMS             61984  // 0xF220
 #define IOT_ATTR_SETTING_PRESENCE_ZONE_SENSITIVE 61986 // 0xF222
+#define IOT_ATTR_SETTING_PRODUCT_REPLACE        62624  // 0xF4A0, 11 fields: new-model flag, expire time, product id
+
+// Device information attributes (0xB0xx-0xB4xx range)
+#define IOT_ATTR_INFO_PRODUCT_USAGE_TIME        45568  // 0xB200, 12 fields: product id, expire time, used time
+#define IOT_ATTR_INFO_WATER_CONSUMED            45569  // 0xB201, 2 fields: 32-bit total
+#define IOT_ATTR_INFO_CURRENT_ISSUES_STATUS     46096  // 0xB410, 2 fields: 32-bit issue mask
 
 // Deprecated (keep for old automation compatibility)
 #define IOT_ATTR_SINGLE_PRESS_EVT_DEPRECATED            90
@@ -285,76 +248,77 @@ typedef enum
 #define IOT_DEVTYPE_IR_CONTROLLER       99
 #define IOT_DEVTYPE_GATE                100
 #define IOT_DEVTYPE_WATER_PURIFIER      112
+#define IOT_DEVTYPE_WATER_FILTER_CARTRIDGE 113
 #define IOT_DEVTYPE_GATEWAY             192
 
 // ============================================================================
-// Attribute Utilities
+// Your own attributes
 // ============================================================================
 
-uint16_t IOT_AttrGetSize(uint16_t attrId);
+#define IOT_CONTRACT_ATTR_ID_MIN     0xF700 /* first id a product may register */
+#define IOT_CONTRACT_ATTR_ID_MAX     0xFEFF /* last id a product may register */
+#define IOT_CONTRACT_ATTR_FIELDS_MAX 8      /* widest value: 8 fields, 16 bytes */
+
+/** One attribute of your own. */
+typedef struct
+{
+    uint16_t id;                 /* IOT_CONTRACT_ATTR_ID_MIN..IOT_CONTRACT_ATTR_ID_MAX */
+    uint8_t fieldCount;          /* 16-bit fields in its value: 1..IOT_CONTRACT_ATTR_FIELDS_MAX */
+    const uint8_t *defaultValue; /* fieldCount * 2 bytes, big-endian; NULL: all zeros */
+    bool restore;                /* true: a control the user sets, replayed through apply at boot
+                                    (see IOT_ContractRestoreConfigure()); false (default): never */
+} IOT_ContractAttrDef_t;
 
 /**
- * @brief Is this an attribute id this SDK defines?
+ * @brief Register your product's own attributes. Optional; call before IOT_ContractStart().
  *
- * IOT_AttrGetSize() cannot answer this: it ends in `default: return 2*1`, so an
- * attribute nobody has defined is sized at 2 and becomes indistinguishable from a
- * known single-field one. The join path uses this predicate to warn when the cloud
- * declares something we do not implement, instead of storing two zero bytes in
- * silence.
+ * The standard attributes ship with the contract; register only ids of your own, in
+ * 0xF700-0xFEFF, the same ids the cloud has for your product. The contract copies @p defs,
+ * so the array may live on the stack. Each call adds to what earlier calls registered.
  *
- * IOT_ATTR_NONE (0) is NOT known — it is the absence of an attribute.
- * The *_DEPRECATED ids ARE known: we recognise them and retired them deliberately.
+ * A registered attribute is sized fieldCount * 2 bytes, starts at defaultValue, is never a
+ * push-notification trigger, and keeps up to two fields per history entry.
  *
- * Keep this in step with the IOT_ATTR_* ids above when you add one.
+ * All or nothing: if any entry is refused, nothing in the call is registered, and an error
+ * naming the id is logged.
+ *
+ * Blocks: no. Safe from a timer callback: no. Task: the boot task (app_main), before
+ * IOT_ContractStart().
+ *
+ * @param defs  Your attributes.
+ * @param count Number of entries; 0 does nothing.
+ * @return IOT_OK;
+ *         IOT_ERR_INVALID_ARG    defs is NULL with count > 0, an id outside 0xF700-0xFEFF, or a
+ *                                fieldCount of 0 or more than IOT_CONTRACT_ATTR_FIELDS_MAX;
+ *         IOT_ERR_ALREADY_EXISTS an id given twice, or registered by an earlier call;
+ *         IOT_ERR_INVALID_STATE  called after IOT_ContractStart();
+ *         IOT_ERR_NO_MEM         no memory for the copy.
  */
-bool IOT_AttrIsKnown(uint16_t attrId);
+iot_err_t IOT_ContractRegisterAttrs(const IOT_ContractAttrDef_t *defs, uint16_t count);
+
+// ============================================================================
+// Reading the table
+// ============================================================================
 
 /**
- * @brief 16-bit fields one Record entry keeps for this attribute.
+ * @brief Size in bytes of an attribute's value (2 per 16-bit field).
  *
- * The app sizes a record entry from attrId alone -- an entry is
- * [BE16 value][BE16 diffSeconds] for 1, and [BE16 value2][BE16 value1][BE16 diffSeconds]
- * for 2 -- so this is part of the wire contract, not an internal detail.
+ * Standard attributes first, then the ones registered with IOT_ContractRegisterAttrs(). An id
+ * that is neither is sized as one field (2 bytes) and logs a warning once.
  *
- * Derived from IOT_AttrGetSize() rather than kept as a second table, so the two cannot
- * disagree. The coupling is deliberate and it is the thing to watch: correcting a
- * declared size moves the record width with it.
- *
- * Deriving the width yourself gets IOT_ATTR_OPEN_CLOSE_CTL wrong -- its wire value is
- * command + position percentage, and a record keeps only the command. Call this instead.
- *
- * @param attrId Attribute ID.
- * @return 1 or 2; never 0.
+ * Blocks: no. Safe from a timer callback: yes. Task: any.
  */
-uint8_t IOT_AttrRecordValueCount(uint16_t attrId);
-
-
-iot_err_t IOT_AttrFillDefault(uint16_t attrId, uint8_t *buffer);
-
-/* Example policy, NOT protocol: whether a value is worth a push notification.
- * The thresholds in the reference implementation are ours — replace them with
- * your own product's rules. */
-bool IOT_AttrIsNotifyWorthy(uint16_t attrId, uint8_t *attrValue, uint16_t attrSize);
+uint16_t IOT_ContractAttrSize(uint16_t attrId);
 
 /**
- * @brief Rewrite a "sync-on-off carrier" attribute to plain ON/OFF.
+ * @brief Is this attribute id known: in the standard table or registered?
  *
- * 311 (SYNC_ONOFF_NORMAL) and 313 (SYNC_ONOFF_STAIR_SWITCH) are not real attributes a
- * device stores. They are carriers meaning "apply this ON/OFF value, but do NOT evaluate
- * your own triggers for it". The caller is responsible for the second half: suppressing
- * trigger evaluation for this change.
+ * IOT_ATTR_NONE (0) is not known: it is the absence of an attribute. The *_DEPRECATED ids are
+ * known.
  *
- * Without that suppression two stair-switch partners, each holding a COND_ANY trigger on
- * its own element, would mirror each other forever.
- *
- * 312 (SYNC_ONOFF_REVERSING) is deliberately NOT a carrier — it is a stored-bind-command
- * transform that inverts a value, and never arrives as an incoming control.
- *
- * @param[in,out] attrId  Rewritten to IOT_ATTR_ONOFF when it is a carrier; untouched
- *                        otherwise.
- * @return true if attrId was a carrier (and was rewritten), false otherwise.
+ * Blocks: no. Safe from a timer callback: yes. Task: any.
  */
-bool IOT_AttrResolveSyncOnOffCarrier(uint16_t *attrId);
+bool IOT_ContractAttrIsKnown(uint16_t attrId);
 
 #ifdef __cplusplus
 }

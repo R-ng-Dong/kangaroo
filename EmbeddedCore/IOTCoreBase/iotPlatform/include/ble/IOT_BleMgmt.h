@@ -262,10 +262,17 @@ typedef struct
     uint8_t *manufactureData;   /**< Pointer to manufacturer-specific data */
     uint8_t manufactureDataLen; /**< Length of manufacturer data */
     const char *name;           /**< Optional device name, sent in the SCAN RESPONSE as the
-                                     Complete Local Name (AD type 0x09). NULL to omit the scan
-                                     response entirely. Not required to be NUL-terminated —
+                                     Complete Local Name (AD type 0x09). NULL omits the name;
+                                     with no extraRsp either, the driver sets an empty scan
+                                     response so nothing from a previous advert lingers. Not required to be NUL-terminated —
                                      nameLen bytes are copied. Must stay valid while advertising. */
-    uint8_t nameLen;            /**< Length of name in bytes. 0 omits the scan response. */
+    uint8_t nameLen;            /**< Length of name in bytes. 0 omits the name. */
+    const uint8_t *extraAdv;    /**< Pre-encoded AD elements appended after core's fields in the
+                                     advertising packet; NULL/0 = none */
+    uint8_t extraAdvLen;
+    const uint8_t *extraRsp;    /**< Pre-encoded AD elements appended after the name in the scan
+                                     response; NULL/0 = none */
+    uint8_t extraRspLen;
 } IOT_BleMgmtAdvData_t;
 
 /* ============================

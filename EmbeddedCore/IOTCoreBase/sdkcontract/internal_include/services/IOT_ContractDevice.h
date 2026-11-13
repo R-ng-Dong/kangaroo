@@ -27,6 +27,8 @@ extern "C" {
  *   first, through the removal hooks), call onDeviceJoined, answer core.
  * DEVICE_REMOVED: onDeviceRemoving, then the store delete (root: every contract store), answer
  *   core, then onDeviceRemoved.
+ * FACTORY_RESET: this device's own reset: as the root's DEVICE_REMOVED, without an answer to core
+ *   (nobody asked); the hooks get the EID the device had.
  * GROUP_BIND / GROUP_UNBIND: update the Group store, answer core.
  * DEVICE_ATTR_SET: apply (with the device's own element id) -> commit (store, Record) -> answer
  *   core -> Smart with the request's sender.

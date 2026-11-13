@@ -7,10 +7,12 @@
 
 #include <string.h>
 
+#include "IOT_AppManager.h"
 #include "IOT_Common.h"
 #include "IOT_ContractCommit.h"
 #include "IOT_ContractElements.h"
 #include "IOT_ContractEvents.h"
+#include "IOT_ContractPending.h"
 #include "IOT_Core.h"
 #include "IOT_CoreReporter.h"
 #include "IOT_Log.h"
@@ -18,9 +20,18 @@
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "dao/IOT_DaoStoresInternal.h"
 #include "dao/IOT_DaoGroupMgmt.h"
-#include "defines/IOT_AttrDefines.h" /* attribute sizes and defaults: the product's attribute table */
+#include "IOT_ContractAttrsInternal.h"
 
 static const char *TAG = "ContractDevice";
+
+/* Who restarts after this device is removed: the product (false, the default) or the contract. */
+static bool s_restartOnRemoval = false;
+
+iot_err_t IOT_ContractRemovalConfigure(bool restart)
+{
+    s_restartOnRemoval = restart;
+    return IOT_OK;
+}
 
 #define MAC_LEN 6
 
@@ -55,28 +66,58 @@ static void removalDone(uint16_t eid, bool root, iot_err_t err, const IOT_Contra
         cb->onDeviceRemoved(eid, root);
 }
 
+/* This device is gone from the cloud's side, one way or the other: every contract store goes,
+ * the product resets its own data from the hooks, then it restarts there, or the contract does
+ * when the product opted in. */
+static void rootGone(uint16_t eid, const IOT_ContractCallbacks_t *cb)
+{
+    if (cb->onDeviceRemoving != NULL)
+        cb->onDeviceRemoving(eid, true);
+    (void) IOT_ContractFactoryReset();
+}
+
+static void rootGoneDone(uint16_t eid, iot_err_t err, const IOT_ContractCallbacks_t *cb)
+{
+    removalDone(eid, true, err, cb);
+
+    if (s_restartOnRemoval)
+    {
+        /* The stores were just wiped, so there is nothing of the contract's to write out; the
+         * platform restart writes out its own cache. */
+        IOT_LOGI(TAG, "This device was removed: restarting");
+        iot_err_t restartErr = IOT_ApplicationRestartChip();
+        if (restartErr != IOT_OK)
+            IOT_LOGW(TAG, "Restart after removal failed: %d", (int) restartErr);
+    }
+}
+
 static iot_err_t handleRemoved(const IOT_CoreDeviceEventDeviceRemovedData_t *d, const IOT_ContractCallbacks_t *cb)
 {
     iot_err_t err = IOT_OK;
     IOT_LOGI(TAG, "Device removed: EID %04x, root %d", d->eid, (int) d->isRootDevice);
 
     if (d->isRootDevice)
-    {
-        /* This device itself: every contract store goes. The product resets its own data and
-         * restarts from onDeviceRemoved, after core has its answer. */
-        if (cb->onDeviceRemoving != NULL)
-            cb->onDeviceRemoving(d->eid, true);
-        (void) IOT_ContractFactoryReset();
-    }
+        rootGone(d->eid, cb);
     else
-    {
         err = removeOneDevice(d->eid, cb);
-    }
 
     respond(IOT_DEVICE_CMD_SYNC_DEV_REMOVED, d->cmdData2, err, d->ctx);
 
-    removalDone(d->eid, d->isRootDevice, err, cb);
+    if (d->isRootDevice)
+        rootGoneDone(d->eid, err, cb);
+    else
+        removalDone(d->eid, false, err, cb);
     return err;
+}
+
+/* A local factory reset: the same end state as the root's removal, but nobody asked, so nobody is
+ * answered. Core wiped its identity before this event; it carries the EID this device had. */
+static iot_err_t handleFactoryReset(const IOT_CoreDeviceEventFactoryResetData_t *d, const IOT_ContractCallbacks_t *cb)
+{
+    IOT_LOGI(TAG, "Factory reset (was provisioned: %d)", (int) d->wasProvisioned);
+    rootGone(d->rootEid, cb);
+    rootGoneDone(d->rootEid, IOT_OK, cb);
+    return IOT_OK;
 }
 
 /* ---- join ---- */
@@ -169,12 +210,15 @@ static iot_err_t buildAttrList(uint16_t eid, const IOT_DevJoinElmInfo_t *elmInfo
     for (uint8_t a = 0; a < elmInfo->numOfAttr; a++)
     {
         uint16_t attrId = elmInfo->attrIdList[a];
+        bool known = IOT_AttrIsKnown(attrId);
+        if (!known)
+            IOT_ContractAttrMarkWarned(attrId); /* warned below, with the element: not twice */
         uint16_t attrSize = IOT_AttrGetSize(attrId);
 
         /* The table cannot say "I do not know this one": an attribute it does not define gets the
          * default size, zero-filled, and is stored like any other. Say so, once per attribute per
          * join, in hex and decimal (the cloud's tools speak decimal). */
-        if (!IOT_AttrIsKnown(attrId))
+        if (!known)
         {
             IOT_LOGW(TAG,
                      "EID %04x elem %04x: cloud declared attribute 0x%04x (%u) that the attribute "
@@ -233,6 +277,12 @@ static iot_err_t joinElmInfo(const IOT_CoreDeviceEventNewDeviceJoinedData_t *joi
         if (err != IOT_OK)
             return err;
     }
+
+    /* The root's elements now exist: values the product reported before it was provisioned become
+     * their starting state. A sub-device's join leaves them alone. */
+    uint16_t rootEid = 0;
+    if (IOT_CoreGetRootEid(&rootEid) == IOT_OK && rootEid == eid)
+        IOT_ContractPendingFlush(eid);
     return IOT_OK;
 }
 
@@ -402,6 +452,8 @@ iot_err_t IOT_ContractHandleDeviceEvent(IOT_CoreDeviceEvent_t *event, const IOT_
         return handleJoined(&event->data.newDeviceJoined, cb);
     case DEV_EVENT_DEVICE_REMOVED:
         return handleRemoved(&event->data.deviceRemoved, cb);
+    case DEV_EVENT_FACTORY_RESET:
+        return handleFactoryReset(&event->data.factoryReset, cb);
     case DEV_EVENT_GROUP_BIND:
         return handleGroupBind(&event->data.groupBind);
     case DEV_EVENT_GROUP_UNBIND:

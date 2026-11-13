@@ -85,6 +85,17 @@ iot_err_t IOT_BleAdvBuildPayload(const IOT_BleMgmtAdvData_t *adv, uint8_t *buf, 
         pos = (uint8_t) (pos + adv->manufactureDataLen);
     }
 
+    /* Caller-encoded extras follow core's fields untouched */
+    if (adv->extraAdv != NULL && adv->extraAdvLen > 0)
+    {
+        if ((uint32_t) pos + adv->extraAdvLen > bufSize)
+        {
+            return IOT_ERR_INVALID_ARG;
+        }
+        memcpy(&buf[pos], adv->extraAdv, adv->extraAdvLen);
+        pos = (uint8_t) (pos + adv->extraAdvLen);
+    }
+
     *outLen = pos;
     return IOT_OK;
 }
@@ -98,15 +109,24 @@ iot_err_t IOT_BleAdvBuildScanRsp(const IOT_BleMgmtAdvData_t *adv, uint8_t *buf, 
 
     *outLen = 0;
 
-    if (adv->name == NULL || adv->nameLen == 0)
+    uint8_t pos = 0;
+    if (adv->name != NULL && adv->nameLen > 0)
     {
-        return IOT_OK;
+        if (!appendAdElement(buf, bufSize, &pos, IOT_BLE_AD_TYPE_NAME_CMPL, (const uint8_t *) adv->name,
+                             adv->nameLen))
+        {
+            return IOT_ERR_INVALID_ARG;
+        }
     }
 
-    uint8_t pos = 0;
-    if (!appendAdElement(buf, bufSize, &pos, IOT_BLE_AD_TYPE_NAME_CMPL, (const uint8_t *) adv->name, adv->nameLen))
+    if (adv->extraRsp != NULL && adv->extraRspLen > 0)
     {
-        return IOT_ERR_INVALID_ARG;
+        if ((uint32_t) pos + adv->extraRspLen > bufSize)
+        {
+            return IOT_ERR_INVALID_ARG;
+        }
+        memcpy(&buf[pos], adv->extraRsp, adv->extraRspLen);
+        pos = (uint8_t) (pos + adv->extraRspLen);
     }
 
     *outLen = pos;

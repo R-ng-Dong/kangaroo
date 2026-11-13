@@ -10,7 +10,7 @@
 #include "IOT_Core.h"
 #include "IOT_Contract.h"
 #include "IOT_ContractInternal.h"
-#include "IOT_ContractStateQuery.h"
+#include "services/IOT_ContractStateQuery.h"
 #include "IOT_Log.h"
 
 #include "esp_heap_caps.h"
@@ -98,7 +98,7 @@ static void CloudSyncPublishReady(void)
                      ((UI64)(esp_random() % 30000U) * 1000ULL);
 
     IOT_ContractOnCloudConnected();   /* Record kick + Smart scheduler */
-    IOT_ContractStateSyncSchedule();  /* contract full-state sync (3 s) */
+    // IOT_ContractStateSyncSchedule();  /* contract full-state sync (3 s) */
 
     IOT_LOGI(TAG, "cloud ready: device state published");
 }
@@ -199,7 +199,7 @@ void CloudSyncTick(void)
         /* Periodic service/RAL report, after the connect jitter above. */
         if ((0U != s_nextReportUs) && (nowUs >= s_nextReportUs))
         {
-            UI32 intervalMs = SystemConfigGetReportIntervalMs();
+            UI32 intervalMs = 15000;//SystemConfigGetReportIntervalMs();
             if (intervalMs < 60000U)
             {
                 intervalMs = 60000U;

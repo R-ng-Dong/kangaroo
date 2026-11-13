@@ -2,6 +2,7 @@
 #include "IOT_Memory.h"
 #include "IOT_Log.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -9,6 +10,8 @@
 #include "mqtt_client.h"
 #include "esp_tls.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "IOT_Osal.h"
 #include "sys/param.h"
 
 static const char *TAG = "ESP_MQTT";
@@ -39,7 +42,74 @@ struct IOT_MqttClient
     char *pem;
     IOT_MqttCbMgmt_t cbs[IOT_MQTT_EVENT_MAX];
     volatile bool isConnected;
+    volatile bool isStarted;       /* esp-mqtt task running: between a start and a stop/destroy */
+    IOT_OsalTaskHandle_t mqttTask; /* esp-mqtt's own task, learned from the events it dispatches */
 };
+
+/* A controlled reboot closes every started session before WiFi goes down.
+ *
+ * esp_restart() runs its shutdown handlers in reverse registration order. WiFi registers
+ * esp_wifi_stop when the network comes up, before any client connects, so the handler
+ * registered at connect runs first. Without it, WiFi stops under an esp-mqtt task blocked in a
+ * TLS read, and that read fails with four E lines from esp-tls and esp-mqtt on every factory
+ * reset of a connected device. */
+#define IOT_MQTT_SHUTDOWN_SLOTS 4
+static struct IOT_MqttClient *s_liveClients[IOT_MQTT_SHUTDOWN_SLOTS];
+
+static void trackClient(struct IOT_MqttClient *client)
+{
+    int freeSlot = -1;
+    for (int i = 0; i < IOT_MQTT_SHUTDOWN_SLOTS; i++)
+    {
+        if (s_liveClients[i] == client)
+        {
+            return;
+        }
+        if (s_liveClients[i] == NULL && freeSlot < 0)
+        {
+            freeSlot = i;
+        }
+    }
+    if (freeSlot < 0)
+    {
+        IOT_LOGW(TAG, "No shutdown slot left: this client is not stopped before a reboot");
+        return;
+    }
+    s_liveClients[freeSlot] = client;
+}
+
+static void untrackClient(struct IOT_MqttClient *client)
+{
+    for (int i = 0; i < IOT_MQTT_SHUTDOWN_SLOTS; i++)
+    {
+        if (s_liveClients[i] == client)
+        {
+            s_liveClients[i] = NULL;
+        }
+    }
+}
+
+static void mqttShutdownHandler(void)
+{
+    IOT_OsalTaskHandle_t self = IOT_OsalTaskGetCurrent();
+    for (int i = 0; i < IOT_MQTT_SHUTDOWN_SLOTS; i++)
+    {
+        struct IOT_MqttClient *client = s_liveClients[i];
+        if (client == NULL || !client->isStarted || client->espClient == NULL)
+        {
+            continue;
+        }
+        /* A reboot started from the esp-mqtt task itself (a cloud removal) has no other task
+         * reading the socket, and esp-mqtt refuses a stop from there with an E of its own. */
+        if (client->mqttTask != NULL && client->mqttTask == self)
+        {
+            continue;
+        }
+        client->isStarted = false;
+        client->isConnected = false;
+        (void) esp_mqtt_client_stop(client->espClient);
+    }
+}
 
 static IOT_MqttEventStatus_t getEventTypeFromEspMqttEvent(esp_mqtt_event_id_t espEventId)
 {
@@ -77,6 +147,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         IOT_LOGE(TAG, "MQTT event handler called with NULL context");
         return;
     }
+    ctx->mqttTask = IOT_OsalTaskGetCurrent();
 
     IOT_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%" PRIi32, base, event_id);
     esp_mqtt_event_handle_t event = event_data;
@@ -188,11 +259,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
     case MQTT_EVENT_ERROR:
     {
-        IOT_LOGI(TAG, "MQTT_EVENT_ERROR");
+        IOT_LOGW(TAG, "MQTT_EVENT_ERROR");
         if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
         {
-            IOT_LOGI(TAG, "Last error code reported from esp-tls: 0x%x", event->error_handle->esp_tls_last_esp_err);
-            IOT_LOGI(TAG, "Last tls stack error number: 0x%x", event->error_handle->esp_tls_stack_err);
+            IOT_LOGW(TAG, "Last error code reported from esp-tls: 0x%x", event->error_handle->esp_tls_last_esp_err);
+            IOT_LOGW(TAG, "Last tls stack error number: 0x%x", event->error_handle->esp_tls_stack_err);
             /* The single most diagnostic field, and it was not being logged. esp-tls captures
              * the X.509 verify flags but only PRINTS them under CONFIG_LOG_DEFAULT_LEVEL_DEBUG
              * and at ESP_LOGD (esp_tls_mbedtls.c:444), so a release-level capture of a failing
@@ -202,20 +273,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
              * Decode: 0x01 EXPIRED, 0x02 REVOKED, 0x04 CN_MISMATCH, 0x08 NOT_TRUSTED,
              * 0x200 FUTURE. CN_MISMATCH means the server's name does not cover the host we
              * asked for; NOT_TRUSTED means the CA we were provisioned with did not issue it. */
-            IOT_LOGI(TAG, "TLS cert verify flags: 0x%x%s%s%s%s",
+            IOT_LOGW(TAG, "TLS cert verify flags: 0x%x%s%s%s%s",
                      event->error_handle->esp_tls_cert_verify_flags,
                      (event->error_handle->esp_tls_cert_verify_flags & 0x01) ? " EXPIRED" : "",
                      (event->error_handle->esp_tls_cert_verify_flags & 0x04) ? " CN_MISMATCH" : "",
                      (event->error_handle->esp_tls_cert_verify_flags & 0x08) ? " NOT_TRUSTED" : "",
                      (event->error_handle->esp_tls_cert_verify_flags & 0x200) ? " FUTURE" : "");
-            IOT_LOGI(TAG,
+            IOT_LOGW(TAG,
                      "Last captured errno : %d (%s)",
                      event->error_handle->esp_transport_sock_errno,
                      strerror(event->error_handle->esp_transport_sock_errno));
         }
         else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED)
         {
-            IOT_LOGI(TAG, "Connection refused error: 0x%x", event->error_handle->connect_return_code);
+            IOT_LOGW(TAG, "Connection refused error: 0x%x", event->error_handle->connect_return_code);
         }
         else
         {
@@ -227,6 +298,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         IOT_LOGI(TAG, "Other event id:%d", event->event_id);
         break;
     }
+}
+
+/* The one place in the platform layer that touches esp_log; everything else logs through
+ * IOT_Log.h. ESP-IDF's own component tags log an E line on every dying MQTT
+ * socket (WiFi drop) and on every failed connect (broker unreachable). Those are expected network
+ * events that MQTT_EVENT_ERROR above already reports -- esp-tls code, X.509 verify flags, errno --
+ * at W, so the duplicates only drown real errors. NONE, not WARN: WARN would leave the E lines.
+ * Tags checked against the ESP-IDF sources (esp_tls.c, esp_tls_mbedtls.c, transport_ssl.c,
+ * mqtt_client.c, esp_mbedtls_dynamic_impl.c). Idempotent, so every IOT_MqttInit() may call it. */
+static void silenceIdfNetworkTags(void)
+{
+    esp_log_level_set("esp-tls", ESP_LOG_NONE);
+    esp_log_level_set("esp-tls-mbedtls", ESP_LOG_NONE);
+    esp_log_level_set("transport_base", ESP_LOG_NONE);
+    esp_log_level_set("mqtt_client", ESP_LOG_NONE);
+    esp_log_level_set("Dynamic Impl", ESP_LOG_NONE);
 }
 
 iot_err_t IOT_MqttInit(IOT_MqttClientHandle_t *outHandle)
@@ -245,6 +332,7 @@ iot_err_t IOT_MqttInit(IOT_MqttClientHandle_t *outHandle)
     }
     memset(client, 0, sizeof(struct IOT_MqttClient));
 
+    silenceIdfNetworkTags();
     *outHandle = client;
     return IOT_OK;
 }
@@ -312,6 +400,7 @@ iot_err_t IOT_MqttConfigClient(IOT_MqttClientHandle_t handle, const IOT_MqttClie
     /* Destroy previous client if reconfiguring (e.g., after WiFi switch) */
     if (handle->espClient != NULL)
     {
+        handle->isStarted = false; /* destroy stops a running client itself */
         esp_mqtt_client_destroy(handle->espClient);
         handle->espClient = NULL;
     }
@@ -337,6 +426,8 @@ iot_err_t IOT_MqttDeinit(IOT_MqttClientHandle_t handle)
     {
         return IOT_OK;
     }
+    untrackClient(handle);
+    handle->isStarted = false;
     if (handle->espClient != NULL)
     {
         esp_mqtt_client_destroy(handle->espClient);
@@ -369,6 +460,13 @@ iot_err_t IOT_MqttConnect(IOT_MqttClientHandle_t handle)
         IOT_LOGE(TAG, "Failed to start MQTT client: %s", esp_err_to_name(err));
         return IOT_ERR_FAIL;
     }
+    handle->isStarted = true;
+    trackClient(handle);
+    esp_err_t regErr = esp_register_shutdown_handler(mqttShutdownHandler);
+    if (regErr != ESP_OK && regErr != ESP_ERR_INVALID_STATE) /* INVALID_STATE: already registered */
+    {
+        IOT_LOGW(TAG, "MQTT shutdown handler not registered: %s", esp_err_to_name(regErr));
+    }
     return IOT_OK;
 }
 
@@ -389,7 +487,15 @@ iot_err_t IOT_MqttDisconnect(IOT_MqttClientHandle_t handle)
     {
         return IOT_OK; /* Not initialized — nothing to disconnect */
     }
+    if (!handle->isStarted)
+    {
+        /* Already stopped, or never started (a connect held for the clock): nothing to stop.
+         * esp-mqtt would refuse the stop with a W and ESP_FAIL, and this would log an E. */
+        handle->isConnected = false;
+        return IOT_OK;
+    }
     handle->isConnected = false;
+    handle->isStarted = false;
     esp_err_t err = esp_mqtt_client_stop(handle->espClient);
     if (err != ESP_OK)
     {

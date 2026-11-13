@@ -41,6 +41,9 @@ void IOT_ContractEventDeviceRemoved(uint16_t eid, bool root);
 /** A mirrored on/off command for @p eid was refused at element @p cloudElemId. */
 void IOT_ContractEventMirrorRefused(uint16_t eid, uint16_t cloudElemId);
 
+/** IOT_CONTRACT_EVT_STATUS_CHANGED. */
+void IOT_ContractEventStatusChanged(IOT_ContractStatus_t status);
+
 #ifdef __cplusplus
 }
 #endif

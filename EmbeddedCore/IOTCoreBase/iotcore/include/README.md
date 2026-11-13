@@ -23,6 +23,7 @@ header in this directory; anything not in it is not part of the API.
 | Outbound | `IOT_CoreIr.h` | IR sub-device data request |
 | Outbound | `IOT_CoreOta.h` | the OTA surface (included by `IOT_Core.h`) |
 | Outbound | `IOT_CoreServiceMsg.h` | partner business messages: publish an opaque, partner-defined payload on one of your service channels (receiving: `IOT_CoreEventService.h`) |
+| Capability declaration | `IOT_CoreBleAdv.h` | your own fields and name in core's BLE adverts |
 | Capability declaration | `IOT_CoreHubRole.h` | hub-role startup (Zigbee lifecycle still core-owned) |
 | Capability declaration | `IOT_CoreHubRoleFlags.h` | which hub roles the SDK declares (included by `IOT_CoreHubRole.h`) |
 | Diagnostics (dev only) | `IOT_CoreHeapProbe.h` | heap sampling around a scope; bodies compile out unless `CONFIG_IOT_HEAP_PROBE_ENABLED` |

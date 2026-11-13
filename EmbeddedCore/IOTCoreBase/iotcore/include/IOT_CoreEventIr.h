@@ -65,9 +65,12 @@ typedef struct
      * `result` means "the window was opened", not "a code was captured". The SDK
      * owns the window on a task of its own and reports the capture later through
      * IOT_CoreReportIrDetected(), so the reply needs the ORIGINAL requester's
-     * routing — this dispatch is long over by then. */
+     * routing — this dispatch is long over by then. `ctx` is only borrowed: its senderId and
+     * requestId point into core's message buffer and are gone when the handler returns. A reply
+     * from a task of your own therefore needs a DEEP copy: the struct, plus the bytes senderId
+     * and requestId point to, with the copy's pointers aimed at your own buffers. */
     uint8_t learnMode;        ///< 0x01 = capture raw without decoding; otherwise decode
-    IOT_RequestContext_t ctx; ///< routing for the deferred reply
+    IOT_RequestContext_t ctx; ///< routing for the deferred reply; borrowed, deep-copy it (see above)
 } IOT_CoreIrEvent_t;
 #ifdef __cplusplus
 }

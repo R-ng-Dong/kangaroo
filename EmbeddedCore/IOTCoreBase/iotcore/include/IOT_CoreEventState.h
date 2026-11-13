@@ -110,12 +110,18 @@ typedef struct
         {
             uint8_t *devId;     // 12-byte device ID from cloud
             uint16_t devIdLen;
-            uint16_t groupEid;  // Group override carried by the voice command (>= IOT_GROUP_EID_BASE), or 0 if none
+            uint16_t groupEid;  // Not used: a voice command that names a group reaches you as LOCATION or GROUP
         } voice;
     } target;
     dev_set_info_t devSetInfo;  // elemList, attrId, attrValue (eid field unused — use target instead)
     IOT_RequestContext_t ctx;
     uint8_t targetDeviceType;
+    /** Your answer to the command. Core presets it to IOT_ERR_NOT_SUPPORTED, dispatches
+     *  synchronously and reads it when your callback returns: an acknowledged command is answered
+     *  success for IOT_OK and failure with the code otherwise. Leaving it untouched, or registering
+     *  no IOT_EVENT_STATE handler, answers "not supported". With sdkcontract the contract writes it
+     *  from its handling of the command (see IOT_ContractStart()). */
+    iot_err_t result;
 } IOT_EventStateSetRequest_t;
 
 typedef struct

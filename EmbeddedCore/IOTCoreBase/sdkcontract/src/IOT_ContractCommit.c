@@ -12,10 +12,28 @@
 #include "IOT_ContractEvents.h"
 #include "IOT_Log.h"
 #include "IOT_Memory.h"
+#include "IOT_TimerMgmt.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "dao/IOT_DaoStoresInternal.h"
 
 static const char *TAG = "ContractCommit";
+
+/* Unix seconds of the last state command committed; 0 until one is committed with the clock set.
+ * Written and read on the task that delivers core events (state commands and the status request
+ * both arrive there). */
+static int64_t s_lastActivationS;
+
+int64_t IOT_ContractCommitLastActivation(void)
+{
+    return s_lastActivationS;
+}
+
+static void markActivation(void)
+{
+    uint64_t nowMs = 0;
+    if (IOT_TimerIsTimeSynced() && IOT_TimerGetU64UnixTimeMs(&nowMs) == IOT_OK)
+        s_lastActivationS = (int64_t) (nowMs / 1000ULL);
+}
 
 static bool commitIsValid(const IOT_ContractCommit_t *c)
 {
@@ -66,7 +84,7 @@ static iot_err_t buildStoreState(const IOT_ContractCommit_t *c, IOT_DaoDeviceEle
     return IOT_OK;
 }
 
-iot_err_t IOT_ContractCommitStore(const IOT_ContractCommit_t *c)
+iot_err_t IOT_ContractCommitStoreOnly(const IOT_ContractCommit_t *c)
 {
     if (!commitIsValid(c))
         return IOT_ERR_INVALID_ARG;
@@ -76,6 +94,16 @@ iot_err_t IOT_ContractCommitStore(const IOT_ContractCommit_t *c)
     if (err == IOT_OK)
         err = IOT_DaoDeviceUpdateElementState(c->eid, &state);
     IOT_DaoDeviceFreeElemsInfo(&state);
+    return err;
+}
+
+iot_err_t IOT_ContractCommitStore(const IOT_ContractCommit_t *c)
+{
+    /* A malformed commit is refused quietly, as before; every error past it is logged. */
+    if (!commitIsValid(c))
+        return IOT_ERR_INVALID_ARG;
+
+    iot_err_t err = IOT_ContractCommitStoreOnly(c);
     if (err != IOT_OK)
     {
         IOT_LOGE(TAG, "EID %04x: state not stored (%d), not recorded", c->eid, (int) err);
@@ -91,6 +119,9 @@ void IOT_ContractCommitAnnounce(const IOT_ContractCommit_t *c, IOT_ContractCause
 {
     if (!commitIsValid(c))
         return;
+
+    if (cause == IOT_CONTRACT_CAUSE_STATE_COMMAND)
+        markActivation();
 
     IOT_ContractStateChange_t change = asChange(c);
     (void) IOT_ContractEvaluateSmart(&change);

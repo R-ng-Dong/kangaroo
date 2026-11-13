@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include "IOT_Common.h"
 #include "IOT_Log.h"
+#include "IOT_ContractStatus.h"
+#include "IOT_ContractPending.h"
 #include "IOT_Record.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "dao/IOT_DaoGroupMgmt.h"
@@ -49,6 +51,10 @@ iot_err_t IOT_ContractInit(const IOT_ContractConfig_t *config)
      * dispatch a condition-group callback. */
     SmartService_CondGroupInit();
     SmartService_CondAnswerPoolInit();
+    /* The holding table's lock, for the same reason. */
+    IOT_ContractPendingInit();
+    /* And the device status's lock. */
+    IOT_ContractStatusInit();
     /* Unconditional: a partner's Kconfig never declares an IR option, and the store costs nothing
      * until a product writes IR data. */
     IOT_DaoIRInit();
@@ -113,6 +119,10 @@ iot_err_t IOT_ContractFactoryReset(void)
 
     IOT_DaoDeviceFactoryReset();
     IOT_DaoGroupFactoryReset();
+
+    /* The device has no root any more (a root removal runs this reset too, and the product may not
+     * restart): reports are held again until the next provisioning. */
+    IOT_ContractPendingReset();
     return IOT_OK;
 }
 

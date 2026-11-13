@@ -17,7 +17,7 @@
 #include "IOT_Memory.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "dao/IOT_DaoGroupMgmt.h"
-#include "defines/IOT_AttrDefines.h" /* IOT_AttrIsNotifyWorthy: the product's attribute table */
+#include "IOT_ContractAttrsInternal.h"
 
 static const char *TAG = "ContractStateSet";
 
@@ -275,6 +275,10 @@ iot_err_t IOT_ContractStateApplySet(const uint16_t *eids, uint16_t numDevices, I
     if (!rootKnown)
         IOT_LOGW(TAG, "Root EID unknown: no sub-device echo is noted for this command");
 
+    /* The first device error that is not "not on this device": the answer when nothing moved. */
+    iot_err_t firstDevErr = IOT_OK;
+    bool anyApplied = false;
+
     /* Every array is zeroed the moment it exists (calloc), so the cleanup below is safe after a
      * failure at any of these allocations: a pointer slot is either NULL or a real block. */
     deviceData = (IOT_CoreStateChangeDeviceData_t *) Mem_SafeCalloc(
@@ -352,12 +356,16 @@ iot_err_t IOT_ContractStateApplySet(const uint16_t *eids, uint16_t numDevices, I
         if (perDevChangedElemIds[d] == NULL)
         {
             IOT_LOGE(TAG, "Skipping device EID %04x — out of memory", eid);
+            if (firstDevErr == IOT_OK)
+                firstDevErr = IOT_ERR_NO_MEM;
             continue;
         }
 
         iot_err_t devErr = handleSingleDeviceSet(eid, rootEid, rootKnown, setData, elems, numElems, apply,
                                                  perDevChangedElemIds[d], &perDevNumElems[d],
                                                  &fullStates[validDeviceCount], &identities[validDeviceCount]);
+        if (perDevNumElems[d] > 0)
+            anyApplied = true; /* the hardware moved, even if its report could not be built */
         if (devErr != IOT_OK)
         {
             /* NOT_FOUND means the EID belongs to another board (a multi-device control reaches
@@ -365,7 +373,11 @@ iot_err_t IOT_ContractStateApplySet(const uint16_t *eids, uint16_t numDevices, I
             if (devErr == IOT_ERR_NOT_FOUND)
                 IOT_LOGD(TAG, "Skipping EID %04x — not on this device", eid);
             else
+            {
                 IOT_LOGE(TAG, "Failed processing device EID %04x, continuing", eid);
+                if (firstDevErr == IOT_OK)
+                    firstDevErr = devErr;
+            }
             IOT_DaoDeviceFreeElemsInfo(&fullStates[validDeviceCount]);
             IOT_DaoDeviceFreeIdentityInfo(&identities[validDeviceCount]);
             memset(&fullStates[validDeviceCount], 0, sizeof(IOT_DaoDeviceElemsAttrsInfo_t));
@@ -401,10 +413,17 @@ iot_err_t IOT_ContractStateApplySet(const uint16_t *eids, uint16_t numDevices, I
             .numDevices = validDeviceCount,
             .ctx = setData->ctx,
         };
-        iot_err = IOT_CoreRequestReportStateChanged(&report);
-        if (iot_err != IOT_OK)
-            IOT_LOGE(TAG, "Failed to send state report: %d", iot_err);
+        /* Not the answer: the change happened whether or not its report left the device. */
+        iot_err_t reportErr = IOT_CoreRequestReportStateChanged(&report);
+        if (reportErr != IOT_OK)
+            IOT_LOGE(TAG, "Failed to send state report: %d", reportErr);
     }
+
+    /* A command for one device that moved nothing answers why. A group or location command
+     * answers success: its members that are not on this device, or not of the targeted type, are
+     * expected to do nothing here. */
+    if (!anyApplied && (setData->targetType == IOT_SET_TARGET_DEVICE || setData->targetType == IOT_SET_TARGET_VOICE))
+        iot_err = firstDevErr;
 
     // ---- Smart, per committed device, with the request's sender ----
 

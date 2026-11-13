@@ -46,6 +46,8 @@ static const char *TAG = "APP";
 
 #define SYSTEM_NVS_NAMESPACE "water_machine"
 #define SYSTEM_NVS_KEY "boot_count"
+#define SYSTEM_NVS_KEY_MODEL "model"
+
 #define LOG_INTERVAL_MS (8UL * 60UL * 60UL * 1000UL)
 #define LOG_CHECK_INTERVAL_MS (30UL * 1000UL)
 
@@ -80,6 +82,53 @@ void AppSetModel(WaterPurifierType model)
     if(WATER_PURIFIER_TYPE_STANDARD != model && WATER_PURIFIER_TYPE_HOT_COLD != model)
         return;
     s_model = model;
+}
+
+_bool ModelConfigStore(WaterPurifierType model)
+{
+    if(WATER_PURIFIER_TYPE_STANDARD != model && WATER_PURIFIER_TYPE_HOT_COLD != model)
+        return D_FALSE;
+
+    UI8 model_u8 = (UI8)model;
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+    {
+        return D_FALSE;
+    }
+
+    err = nvs_set_u8(handle, SYSTEM_NVS_KEY_MODEL, model_u8);
+    if (err == ESP_OK)
+    {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (err != ESP_OK)
+    {
+        return D_FALSE;
+    }
+    return D_TRUE;
+}
+
+_bool ModelConfigGet(WaterPurifierType *model)
+{
+    nvs_handle_t handle = 0;
+    UI8 model_u8;
+    esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK)
+    {
+        return D_FALSE;
+    }   
+    err = nvs_get_u8(handle, SYSTEM_NVS_KEY_MODEL, &model_u8);
+
+    if (err != ESP_OK)
+    {
+        nvs_close(handle);
+        return D_FALSE;
+    }
+    nvs_close(handle);
+    *model = (WaterPurifierType)model_u8;
+    return D_TRUE;
 }
 
 static void ResetBootCount(void)
@@ -986,18 +1035,26 @@ static void AppCheckEnergyChanges(void)
 
 WaterPurifierType AppCheckModel(void)
 {
-    WaterProfileInit(); // init UART
     ESP_LOGI(TAG, " ^-^ Waiting for check product model ... ^-^");
-    vTaskDelay(pdMS_TO_TICKS(2500));
-    if(HasMessageType1() || HasMessageTypeA())
+
+    WaterPurifierType model = WATER_PURIFIER_TYPE_STANDARD; 
+    // if(ModelConfigStore(WATER_PURIFIER_TYPE_HOT_COLD) != D_TRUE)
+    // {
+    //     ESP_LOGE(TAG, "Failed to set model");
+    // }
+
+    if(ModelConfigGet(&model) != D_TRUE)
     {
-        AppSetModel(WATER_PURIFIER_TYPE_HOT_COLD);
+        ESP_LOGE(TAG, "Failed to get model, use model default: WATER_PURIFIER_TYPE_STANDARD");
+    }
+
+    if(WATER_PURIFIER_TYPE_HOT_COLD == model)
+    {
+        WaterProfileInit(); // init UART
         WaterControllerResetSystem();
     }
-    else
-    {
-        AppSetModel(WATER_PURIFIER_TYPE_STANDARD);
-    }
+    AppSetModel(model);
+
     ESP_LOGW(TAG, "[MODEL]: %s", s_model == WATER_PURIFIER_TYPE_HOT_COLD ? \
                  "WATER_PURIFIER_TYPE_HOT_COLD" : "WATER_PURIFIER_TYPE_STANDARD");
     return AppGetModel();

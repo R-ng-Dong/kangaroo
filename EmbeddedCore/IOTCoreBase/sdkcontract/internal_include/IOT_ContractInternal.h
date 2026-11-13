@@ -79,14 +79,11 @@ typedef struct
  * the pairing is checked, so a refused request can already read as the ordinary on/off
  * attribute. Never act on a refused request, whatever it now says.
  *
- * Who answers when it returns false: not you. Return from your handler as you would for a
- * request you handled (IOT_OK). A refusal is normal -- a device that holds no pairing for the
- * named elements is the common case -- not an error. Core answers the sender itself, whatever your
- * handler returns: an acknowledged request gets its acknowledgement and a success result, an
- * unacknowledged one gets no reply. Send no state report for a refused request.
- *
- * Your attribute table must provide IOT_AttrResolveSyncOnOffCarrier() (it is in the reference
- * attribute table); an older table without it does not link.
+ * What to answer when it returns false: success. Write IOT_OK into the request's `result` and
+ * return as you would for a request you handled. A refusal is normal -- a device that holds no
+ * pairing for the named elements is the common case -- not an error. Core sends the answer from
+ * `result` (preset to IOT_ERR_NOT_SUPPORTED): an acknowledged request gets its acknowledgement
+ * and the result, an unacknowledged one gets no reply. Send no state report for a refused request.
  *
  * Blocks: only for a sync-on-off request, which reads the Smart trigger store; an ordinary
  * request does not. Safe from a timer callback: no. Task: your STATE_SET handler, on the task
@@ -125,7 +122,7 @@ iot_err_t IOT_ContractRecordStateChange(const IOT_ContractStateChange_t *change)
  * Precondition: the new state is already written to the Device DAO. Condition-group
  * evaluation re-reads element state from it.
  *
- * Blocks: no -- the change is copied and the evaluation runs later on the timer task. Safe from
+ * Blocks: no -- the change is copied and the evaluation runs later on core's task. Safe from
  * a timer callback: yes. Task: any.
  *
  * @return IOT_OK (also when the loop guard skips the evaluation), IOT_ERR_INVALID_ARG as for

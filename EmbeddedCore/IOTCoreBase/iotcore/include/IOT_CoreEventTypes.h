@@ -79,13 +79,23 @@ typedef enum
  *
  * @field protocol        Transport the request arrived on (BLE, TCP, MQTT)
  * @field senderFrom    Sender type (IOT_SENDER_*)
- * @field senderId      Identity bytes (e.g., voice user ID, app UUID). NULL for local.
+ * @field senderId      Identity bytes (e.g., voice user ID, app UUID). NULL for local. BORROWED: it points
+ *                      into core's message buffer and is valid only until the event handler returns.
+ *                      To answer later (from another task, after a delay), deep-copy these bytes along
+ *                      with the rest of the context and point the copy's senderId at your own buffer.
  * @field senderSize    Length of senderId. 0 when senderId is NULL.
  * @field tcpPort       TCP port for direct response routing (0 if not applicable)
  * @field tid           Transaction ID echoed back in responses
- * @field requestId     Optional cloud request correlation ID (NULL if none)
+ * @field requestId     Optional cloud request correlation ID (NULL if none). BORROWED like senderId:
+ *                      valid only until the handler returns; deep-copy it to keep it.
  * @field requestIdLen  Length of requestId. 0 when requestId is NULL.
- * @field requiresResponse  true if the sender expects a response; false = Reporter APIs no-op
+ * @field requiresResponse  true if the sender is owed an answer: core sets it for every query (GET),
+ *                          every acknowledged command (SET with ack) and the requests that carry
+ *                          a `result`; false for an unacknowledged command and for a request core
+ *                          raises itself (countdown, automation). Read only by
+ *                          IOT_CoreRespondDeviceCmd(), IOT_CoreRespondSmartCmd() and
+ *                          IOT_CoreRespondSmartCheckSync(), which send nothing when it is false;
+ *                          every other reply is sent whatever it says.
  */
 typedef struct
 {
@@ -97,7 +107,7 @@ typedef struct
     uint16_t tid;
     uint8_t *requestId;
     uint16_t requestIdLen;
-    bool requiresResponse; /**< false = sender expects no response; Reporter APIs no-op silently */
+    bool requiresResponse; /**< true = the sender is owed an answer (see @field above for who reads it) */
 } IOT_RequestContext_t;
 
 /* ============================

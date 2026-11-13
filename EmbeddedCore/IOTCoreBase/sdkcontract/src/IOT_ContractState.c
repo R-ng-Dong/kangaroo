@@ -8,7 +8,7 @@
 #include "IOT_Record.h"
 #include "IOT_ContractEvents.h"
 #include "IOT_ContractSenderCheck.h"
-#include "defines/IOT_AttrDefines.h" /* IOT_AttrResolveSyncOnOffCarrier: the partner's attribute table */
+#include "IOT_ContractAttrsInternal.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "services/IOT_ServiceSmart.h"
 #if defined(__has_include)

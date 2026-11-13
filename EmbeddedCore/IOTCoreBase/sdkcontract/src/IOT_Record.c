@@ -3,7 +3,7 @@
 #include <string.h>
 #include "IOT_Log.h"
 #include "dao/IOT_DaoRecord.h"
-#include "defines/IOT_AttrDefines.h"
+#include "IOT_ContractAttrsInternal.h"
 #include "IOT_Common.h"
 #include "IOT_TimerMgmt.h"
 #include "IOT_Osal.h"
@@ -101,6 +101,8 @@ static RecordElementOverride_t *findOverride(uint16_t eid, uint16_t elemId, uint
     return NULL;
 }
 
+static void resolveTiming(const IOT_ContractRecordRule_t *rule, uint16_t attrId,
+                          uint16_t *outMinInterval, uint16_t *outHeartbeat);
 
 iot_err_t IOT_ContractRecordRegisterRule(const IOT_ContractRecordRule_t *rule)
 {
@@ -121,6 +123,20 @@ iot_err_t IOT_ContractRecordRegisterRule(const IOT_ContractRecordRule_t *rule)
                       "whole chain in hours for a sensor that never changed.",
                  rule->attrId, (unsigned) rule->heartbeatSec,
                  (unsigned) CONFIG_IOT_RECORD_MIN_HEARTBEAT_SEC);
+    }
+
+    /* A heartbeat no longer than the window cannot fire on time: closing a window does not
+     * look at the heartbeat, so the repeat waits for the first report after the window.
+     * Accepted (it still works), but said once, here. Compared after defaults and the floor,
+     * because that is what will run. */
+    uint16_t minInterval = 0, heartbeat = 0;
+    resolveTiming(rule, rule->attrId, &minInterval, &heartbeat);
+    if (minInterval != IOT_CONTRACT_RECORD_EVERY_CHANGE && heartbeat != IOT_CONTRACT_RECORD_NO_HEARTBEAT
+        && heartbeat <= minInterval)
+    {
+        IOT_LOGW(TAG, "Record attr %04x heartbeat %u s is not longer than its %u s window; "
+                      "the repeat waits for the first report after the window",
+                 rule->attrId, (unsigned) heartbeat, (unsigned) minInterval);
     }
 
     for (uint8_t i = 0; i < IOT_RECORD_MAX_RULES; i++)
@@ -397,8 +413,8 @@ static uint8_t s_openBlocks;
  * One mutex over the whole table, held for any append, window close, flush, rotation or
  * read.
  *
- * Three tasks touch RecordState_t: whichever delivers the event, the timer task, and the
- * core work task serving a GET. Without the lock, a rotation that has updated
+ * More than one task touches RecordState_t: whichever delivers the event, and the core work
+ * task sweeping windows or serving a GET. Without the lock, a rotation that has updated
  * `checkpoint` but not yet cleared `fieldCount` can be observed mid-flight, and the
  * reader ships the new checkpoint with the old block's entries -- every diffSeconds
  * measured from the wrong origin, and a chart offset by the block's whole lifetime.
@@ -409,7 +425,7 @@ static uint8_t s_openBlocks;
 static IOT_OsalMutexHandle_t s_recordMutex;
 
 /* Set when IOT_RecordInit() could not create the mutex. Recording is then OFF rather
- * than unlocked: three tasks racing the instance table produce exactly the
+ * than unlocked: tasks racing the instance table produce exactly the
  * half-rotated-block corruption the mutex exists to prevent, and the caller may ignore
  * IOT_RecordInit()'s return. */
 static bool s_recordDisabled;
@@ -418,6 +434,9 @@ static bool s_recordDisabled;
  * pending, nothing armed: a periodic tick would wake the CPU 86,400 times a day to find
  * no work. */
 static IOT_TimerHandle_t s_recordTimer;
+/* When s_recordTimer fires, in Record's epoch seconds; 0 = not known, so the next
+ * rearmTimer() arms afresh. See rearmTimer() for why an armed wake is never moved later. */
+static int32_t s_recordTimerDueSec;
 
 #define RECORD_LOCK_TIMEOUT_MS 1000
 
@@ -908,12 +927,40 @@ iot_err_t IOT_RecordFlushAll(void)
     return err;
 }
 
+static void closeHeldWindowLocked(RecordState_t *inst, int32_t nowSec);
+
+/* The last write -- a planned restart, or the power about to go -- also closes every held
+ * window early. A held value lives only in the instance, not in the block, so flushing dirty
+ * blocks alone would lose it. Corrected first, as the sweep does, so the close compares and
+ * re-arms on the real timebase. */
+static void closeHeldWindowsNowLocked(void)
+{
+    for (uint8_t i = 0; i < CONFIG_IOT_RECORD_MAX_INSTANCES; i++)
+    {
+        correctIfSyncedLocked(&s_instances[i]);
+    }
+    uint64_t nowMs = 0;
+    if (recordNowMs(&nowMs, NULL) != IOT_OK)
+    {
+        return;
+    }
+    const int32_t nowSec = msToSec(nowMs);
+    for (uint8_t i = 0; i < CONFIG_IOT_RECORD_MAX_INSTANCES; i++)
+    {
+        if (s_instances[i].used && s_instances[i].pending)
+        {
+            closeHeldWindowLocked(&s_instances[i], nowSec);
+        }
+    }
+}
+
 iot_err_t IOT_RecordFlushAllSync(void)
 {
     if (!recordLock())
     {
         return IOT_ERR_TIMEOUT;
     }
+    closeHeldWindowsNowLocked();
     const iot_err_t err = flushAllLockedMode(false);
     recordUnlock();
     return err;
@@ -1231,6 +1278,44 @@ static iot_err_t recordOneAttr(const IOT_ContractRecordEvent_t *event, const IOT
     return IOT_OK;
 }
 
+/* Close one held window: write the settled value if it differs from the last recorded one,
+ * stamped from when it arrived. Shared by the timer's sweep (the window's own deadline) and
+ * the last write before a restart or a power loss, which closes it early. */
+static void closeHeldWindowLocked(RecordState_t *inst, int32_t nowSec)
+{
+    const uint16_t minInterval = inst->minIntervalSec;
+    const uint16_t heartbeat = inst->heartbeatSec;
+
+    const bool differs = !inst->haveLastValue
+        || !valuesEqual(inst->pendingValue, inst->lastValue, inst->valueCount);
+    inst->pending = false;
+
+    if (differs && inst->fields != NULL)
+    {
+        /* Stamped from when it ARRIVED, not from now. Stamping at close would
+         * move every held value forward by up to a whole window. */
+        appendEntry(inst, inst->pendingValue, inst->pendingTimeSec);
+
+        /* A close that WRITES re-arms both deadlines: it is a recorded value
+         * like any other. Without this the rate limit evaporates after one
+         * window -- with minInterval 60 and a change every 2 s, the close at
+         * t=60 would leave no window open and t=62 would record immediately.
+         *
+         * A close that writes NOTHING must re-arm neither, which is the whole
+         * reason this sits inside the branch. Re-arming the heartbeat on a
+         * no-write close would push its deadline forward by a window every
+         * window, so for a sensor reporting faster than minIntervalSec it would
+         * advance exactly as fast as the clock and NEVER BE REACHED: one entry
+         * and then silence forever. Re-arming the window on a no-write close
+         * would make a genuine change arriving a second later wait another full
+         * window. */
+        inst->windowDeadline = (minInterval == IOT_CONTRACT_RECORD_EVERY_CHANGE)
+                                   ? nowSec : (int32_t) (nowSec + minInterval);
+        inst->heartbeatDeadline = (heartbeat == IOT_CONTRACT_RECORD_NO_HEARTBEAT)
+                                      ? INT32_MAX : (int32_t) (nowSec + heartbeat);
+    }
+}
+
 /**
  * @brief Close any window whose deadline has passed, writing the settled value.
  *
@@ -1271,37 +1356,7 @@ static int32_t serviceWindowsLocked(void)
         }
         if (nowSec >= inst->windowDeadline)
         {
-            const uint16_t minInterval = inst->minIntervalSec;
-            const uint16_t heartbeat = inst->heartbeatSec;
-
-            const bool differs = !inst->haveLastValue
-                || !valuesEqual(inst->pendingValue, inst->lastValue, inst->valueCount);
-            inst->pending = false;
-
-            if (differs && inst->fields != NULL)
-            {
-                /* Stamped from when it ARRIVED, not from now. Stamping at close would
-                 * move every held value forward by up to a whole window. */
-                appendEntry(inst, inst->pendingValue, inst->pendingTimeSec);
-
-                /* A close that WRITES re-arms both deadlines: it is a recorded value
-                 * like any other. Without this the rate limit evaporates after one
-                 * window -- with minInterval 60 and a change every 2 s, the close at
-                 * t=60 would leave no window open and t=62 would record immediately.
-                 *
-                 * A close that writes NOTHING must re-arm neither, which is the whole
-                 * reason this sits inside the branch. Re-arming the heartbeat on a
-                 * no-write close would push its deadline forward by a window every
-                 * window, so for a sensor reporting faster than minIntervalSec it would
-                 * advance exactly as fast as the clock and NEVER BE REACHED: one entry
-                 * and then silence forever. Re-arming the window on a no-write close
-                 * would make a genuine change arriving a second later wait another full
-                 * window. */
-                inst->windowDeadline = (minInterval == IOT_CONTRACT_RECORD_EVERY_CHANGE)
-                                           ? nowSec : (int32_t) (nowSec + minInterval);
-                inst->heartbeatDeadline = (heartbeat == IOT_CONTRACT_RECORD_NO_HEARTBEAT)
-                                              ? INT32_MAX : (int32_t) (nowSec + heartbeat);
-            }
+            closeHeldWindowLocked(inst, nowSec);
         }
         else if (earliest == 0 || inst->windowDeadline < earliest)
         {
@@ -1366,50 +1421,108 @@ static void recordTimerCb(void *unused);
 
 /* Arm the one-shot for the earliest pending deadline, or arm nothing. Caller holds the
  * lock. */
-static void rearmTimer(int32_t earliestDeadlineSec)
+static void cancelTimer(void)
 {
-    /* Cancel first. Re-arming without cancelling would leave one live timer per append,
-     * all for the same deadline, and the timer task would run this callback once for each,
-     * back to back, every run taking the mutex and sweeping the whole table. Cancelling an
-     * already-fired handle is safe; it returns NOT_FOUND. */
+    /* Cancelling an already-fired handle is safe; it returns NOT_FOUND. */
     if (s_recordTimer != IOT_TIMER_HANDLE_INVALID)
     {
         IOT_TimerCancel(s_recordTimer);
     }
     s_recordTimer = IOT_TIMER_HANDLE_INVALID;
+    s_recordTimerDueSec = 0;
+}
+
+static void rearmTimer(int32_t earliestDeadlineSec)
+{
     if (earliestDeadlineSec == 0)
     {
+        cancelTimer();
         return;
     }
     uint64_t nowMs = 0;
     if (recordNowMs(&nowMs, NULL) != IOT_OK)
     {
+        cancelTimer();
         return;
     }
-    int32_t delaySec = earliestDeadlineSec - msToSec(nowMs);
+    const int32_t nowSec = msToSec(nowMs);
+    int32_t delaySec = earliestDeadlineSec - nowSec;
     if (delaySec < 1) delaySec = 1;
+    const int32_t dueSec = nowSec + delaySec;
+
+    /*
+     * Never move an armed wake LATER. Every append re-arms, and a dirty block's flush
+     * deadline is "now + FLUSH_INTERVAL" at each call -- so re-arming to the new value would
+     * push the flush back on every event, and a device reporting more often than the
+     * interval would keep its block in RAM until it filled (or forever, for a value that
+     * never changes). Keeping the earlier wake makes the interval a bound on what a power
+     * cut loses, counted from the first unwritten entry. A wake that turns out to have
+     * nothing due is harmless: the sweep is idempotent and re-arms for what remains.
+     *
+     * dueSec >= nowSec rejects a handle that has already fired, and a due time left on the
+     * monotonic timebase before the clock synced (it is far below an epoch now).
+     */
+    if (s_recordTimer != IOT_TIMER_HANDLE_INVALID && s_recordTimerDueSec != 0
+        && s_recordTimerDueSec >= nowSec && s_recordTimerDueSec <= dueSec)
+    {
+        return;
+    }
+
+    /* Cancel before inserting. Re-arming without cancelling would leave one live timer per
+     * append, each handing a sweep to core's task, back to back. */
+    cancelTimer();
     s_recordTimer = IOT_TimerInsertCb(recordTimerCb, NULL, (uint32_t) delaySec * 1000u);
+    if (s_recordTimer != IOT_TIMER_HANDLE_INVALID)
+    {
+        s_recordTimerDueSec = dueSec;
+    }
 }
 
+/* A full core work queue refuses the sweep; it is handed over again this soon. */
+#define RECORD_SWEEP_RETRY_MS 100u
+
 /*
- * Runs on the TIMER task, which has a small stack -- no heavy work here.
- * Both jobs are safe: closing a window is a RAM append, and the flush goes through
- * IOT_DaoStorageSetAsync(), which copies before queueing and
- * therefore does its flash write on the DAO task, outside this lock.
+ * Runs on core's task: close the windows that are due, flush what is dirty, and re-arm the
+ * one-shot for the next deadline. The flush goes through IOT_DaoStorageSetAsync(), which
+ * copies before queueing and therefore does its flash write on the DAO task, outside this
+ * lock.
  *
- * One-shot, re-armed in its own callback. No new task, and no periodic tick.
+ * One-shot, re-armed here. No new task, and no periodic tick.
  */
-static void recordTimerCb(void *unused)
+static void recordSweepWork(void *unused)
 {
     (void) unused;
     if (!recordLock())
     {
         return;
     }
+    /* The one-shot that brought us here has fired: forget its due time, so the re-arm
+     * below is not mistaken for an earlier wake that is still pending. */
+    s_recordTimerDueSec = 0;
     const int32_t earliest = serviceWindowsLocked();
     flushAllLockedMode(true);
     rearmTimer(earliest);
     recordUnlock();
+}
+
+/*
+ * Runs on the TIMER task, which has a small stack: it only hands the sweep to core's task
+ * (taking the record lock and walking the instance table is not for this stack). A refused
+ * hand-off is retried shortly on its own one-shot, not on s_recordTimer: an append meanwhile
+ * may re-arm that for a later deadline, and the sweep it would then run is idempotent.
+ */
+static void recordTimerCb(void *unused)
+{
+    (void) unused;
+    if (IOT_CoreDeferWork(recordSweepWork, NULL) == IOT_OK)
+    {
+        return;
+    }
+    if (IOT_TimerInsertCb(recordTimerCb, NULL, RECORD_SWEEP_RETRY_MS) == IOT_TIMER_HANDLE_INVALID)
+    {
+        /* The windows stay open until the next append re-arms the timer. */
+        IOT_LOGE(TAG, "Record sweep lost: core queue full and no timer free");
+    }
 }
 
 // ---- serving a GET ---------------------------------------------------------------
@@ -1692,7 +1805,7 @@ iot_err_t IOT_ContractRecordServeGet(uint16_t eid, uint16_t elemId, uint16_t att
      * The send can block on a congested connection. Holding the table across it would
      * make the event task's IOT_RecordAppend() wait at recordLock(), time out after
      * RECORD_LOCK_TIMEOUT_MS and silently drop the reading: a sensor value lost because
-     * somebody opened a chart. The timer task would be held off the same way.
+     * somebody opened a chart. The window sweep would be held off the same way.
      *
      * Safe to unlock here because `blocks` and `scratch` are file-static and this
      * function is the only writer of them -- a second concurrent GET would be serialised
@@ -1936,9 +2049,11 @@ static bool recordPushOnce(iot_err_t *outSendErr)
 #define RECORD_PUSH_GAP_MS   500
 #define RECORD_PUSH_RETRY_MS (5 * 60 * 1000)
 
-/* DEV_EVENT_CLOUD_CONNECTED can fire before the cloud session is fully up, so the first
- * attempt after a reconnect may be refused with IOT_ERR_INVALID_STATE. Retry that soon, a
- * few times, before settling for the long retry (a genuinely offline device). */
+/* DEV_EVENT_CLOUD_CONNECTED means the session is subscribed, so the push it kicks is normally
+ * accepted the first time. It can still be refused with IOT_ERR_INVALID_STATE: the session can
+ * drop again before this push runs, and core refuses a history send while the clock is not synced
+ * (it holds the cloud connect for the clock only up to a cap). Retry that soon, a few times, before
+ * settling for the long retry (a genuinely offline device). */
 #define RECORD_PUSH_NOT_READY_MS    5000
 #define RECORD_PUSH_NOT_READY_TRIES 6
 
@@ -2391,8 +2506,8 @@ iot_err_t IOT_RecordInit(void)
     const int32_t earliest = serviceWindowsLocked();
     rearmTimer(earliest);
     recordUnlock();
-    /* A boot with a backlog drains once the cloud connects; this is the first look. */
-    IOT_RecordPushKick();
+    /* No push kick here: the contract runs this before core creates its work queue, so a
+     * kick could only fail. A boot backlog drains on the cloud-connect kick. */
     return IOT_OK;
 }
 

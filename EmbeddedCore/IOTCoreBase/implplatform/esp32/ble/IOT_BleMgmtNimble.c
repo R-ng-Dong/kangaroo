@@ -80,7 +80,7 @@ _Static_assert(IOT_BLE_ADV_INST_CONN < BLE_ADV_INSTANCES && IOT_BLE_ADV_INST_BEA
  * is why most targets still ship MAX_CONNECTIONS=3 safely. Extended advertising
  * puts four sets in play and makes the whole range reachable -- so the constraint
  * is asserted here, where enabling EXT_ADV on a target sized for legacy becomes a
- * build error instead of a crash on the bench. Raising MAX_CONNECTIONS on targets
+ * build error instead of a crash on the device. Raising MAX_CONNECTIONS on targets
  * that do not use EXT_ADV would cost RAM for a handle they can never be issued. */
 #if defined(CONFIG_BT_CTRL_BLE_MAX_ACT)
 _Static_assert(CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1 >= CONFIG_BT_CTRL_BLE_MAX_ACT,
@@ -136,7 +136,9 @@ typedef struct
 static ble_cb_mgmt_t *callbackMgmt = NULL;
 static uint8_t numberOfGattServices = 0;
 static iot_gatt_service_access_diff_t *gatt_svc_access_diff = NULL;
-static uint16_t currConnectionHandle = 0;
+/* BLE_HS_CONN_HANDLE_NONE (0xFFFF) means "no connection": 0 is a valid NimBLE handle, usually the
+ * first connection's, so it cannot double as "none". */
+static uint16_t currConnectionHandle = BLE_HS_CONN_HANDLE_NONE;
 static bool isBleConnected = false;
 
 /* Persisted wrappers for services added via IOT_BleAddServices */
@@ -624,7 +626,7 @@ static int internalGapCb(struct ble_gap_event *event, void *arg)
 
     case BLE_MGMT_EVENT_STATUS_TYPE_DISCONNECT:
     {
-        currConnectionHandle = 0;
+        currConnectionHandle = BLE_HS_CONN_HANDLE_NONE;
         isBleConnected = false;
         if (callbackMgmt[evType].isRegistered)
         {
@@ -727,7 +729,7 @@ static iot_err_t nimble_setDeviceName(const char *name)
 /* ── Advertising API compatibility shim ────────────────────────────────────────
  *
  * CONFIG_BLE_MESH_USE_BLE_50 selects CONFIG_BT_NIMBLE_EXT_ADV, and NimBLE then
- * compiles ble_gap_adv_set_fields / _rsp_set_fields / _start / _stop down to stubs
+ * compiles ble_gap_adv_set_data / _rsp_set_data / _start / _stop down to stubs
  * that return BLE_HS_ENOTSUP. Nothing fails to build and nothing crashes — the
  * device simply never advertises. So once mesh asks for BLE 5.0 the extended API
  * is mandatory, not optional.
@@ -737,10 +739,9 @@ static iot_err_t nimble_setDeviceName(const char *name)
  * ADV_NONCONN_IND as before and phones see no difference. Without EXT_ADV they
  * are a thin pass-through to the legacy calls.
  *
- * They also close a leak the legacy code carried: ble_gap_adv_set_fields() keeps
- * pointers into the caller's uuid16/mfg buffers, so those had to outlive the
- * advert and were never freed. Serialising into a flat 31-byte payload copies the
- * bytes up front, which lets every caller free immediately.
+ * They take the raw AD bytes built by the shared IOT_BleAdvBuild*() builder, so
+ * NimBLE puts on air exactly what Bluedroid and BlueZ do (Flags included), and
+ * every path copies the bytes before returning, so callers keep them on the stack.
  *
  * Both return a NimBLE rc (0 = success), not an iot_err_t, so callers keep their
  * existing error handling and logging.
@@ -748,23 +749,13 @@ static iot_err_t nimble_setDeviceName(const char *name)
 
 #if MYNEWT_VAL(BLE_EXT_ADV)
 /**
- * @brief Serialize adv fields and hand them to one extended advertising set.
+ * @brief Hand raw advertising bytes to one extended advertising set.
  *
  * ble_gap_ext_adv_set_data()/_rsp_set_data() take ownership of the mbuf on every
  * path, success or failure — freeing it here would be a double free.
  */
-static int iotAdvSetData(uint8_t instance, const struct ble_hs_adv_fields *fields, bool isScanRsp)
+static int iotAdvSetData(uint8_t instance, const uint8_t *buf, uint8_t len, bool isScanRsp)
 {
-    uint8_t buf[BLE_HS_ADV_MAX_SZ];
-    uint8_t len = 0;
-
-    int rc = ble_hs_adv_set_fields(fields, buf, &len, sizeof(buf));
-    if (rc != 0)
-    {
-        IOT_LOGE(TAG, "Failed to serialize %s fields: %d", isScanRsp ? "scan response" : "advertising", rc);
-        return rc;
-    }
-
     /* The exact bytes handed to the controller. BlueZ merges every report from one
      * address into a single device, so a device advertising on two sets (ours plus
      * BLE Mesh's) cannot be read back field-by-field from a scan — this is the only
@@ -780,7 +771,7 @@ static int iotAdvSetData(uint8_t instance, const struct ble_hs_adv_fields *field
         return BLE_HS_ENOMEM;
     }
 
-    rc = isScanRsp ? ble_gap_ext_adv_rsp_set_data(instance, om) : ble_gap_ext_adv_set_data(instance, om);
+    int rc = isScanRsp ? ble_gap_ext_adv_rsp_set_data(instance, om) : ble_gap_ext_adv_set_data(instance, om);
     if (rc != 0)
     {
         IOT_LOGE(TAG, "Failed to set %s data on instance %u: %d", isScanRsp ? "scan response" : "advertising",
@@ -831,7 +822,9 @@ static int legacyAdvApply(bool connectable, uint8_t ownAddrType, const uint8_t *
     int rc = ble_gap_adv_set_data(adv, advLen);
     if (rc != 0)
         return rc;
-    if (rspLen > 0)
+    /* A connectable advert is scannable: always write its scan response, empty when it has
+     * none, or the controller keeps answering scans with the previous advert's response. */
+    if (connectable)
     {
         rc = ble_gap_adv_rsp_set_data(rsp, rspLen);
         if (rc != 0)
@@ -914,14 +907,25 @@ int __wrap_bt_le_adv_stop(void)
  *
  * @param instance    advertising set id; ignored on a legacy build, which has only one.
  * @param connectable true for ADV_IND, false for ADV_NONCONN_IND.
- * @param fields      advertising payload.
- * @param rspFields   scan-response payload, or NULL. Connectable adverts only —
+ * @param adv         raw advertising payload (AD elements), copied before return.
+ * @param advLen      length of adv, at most IOT_BLE_ADV_MAX_LEN.
+ * @param rsp         raw scan-response payload, or NULL. Connectable adverts only —
  *                    a non-connectable legacy PDU is not scannable.
+ * @param rspLen      length of rsp; 0 = no scan response. A connectable advert always
+ *                    writes its scan response, empty when rspLen is 0, so a previous
+ *                    advert's response never stays on air.
  * @return NimBLE rc, 0 on success.
  */
-static int iotAdvStart(uint8_t instance, bool connectable, const struct ble_hs_adv_fields *fields,
-                       const struct ble_hs_adv_fields *rspFields)
+static int iotAdvStart(uint8_t instance, bool connectable, const uint8_t *adv, uint8_t advLen, const uint8_t *rsp,
+                       uint8_t rspLen)
 {
+    static const uint8_t noRsp[1] = {0};
+    if (rsp == NULL)
+    {
+        rsp = noRsp; /* NimBLE copies from it even at length 0 */
+        rspLen = 0;
+    }
+
     uint8_t own_addr_type;
     int rc = ble_hs_id_infer_auto(0, &own_addr_type);
     if (rc != 0)
@@ -956,15 +960,17 @@ static int iotAdvStart(uint8_t instance, bool connectable, const struct ble_hs_a
     }
     IOT_BleExtAdvMarkConfigured(instance);
 
-    rc = iotAdvSetData(instance, fields, false);
+    rc = iotAdvSetData(instance, adv, advLen, false);
     if (rc != 0)
     {
         return rc;
     }
 
-    if (rspFields != NULL)
+    /* Scannable sets only (NimBLE refuses a response on the others). Written even when
+     * empty: configuring a set does not clear the response its last advert left behind. */
+    if (shape.scannable)
     {
-        rc = iotAdvSetData(instance, rspFields, true);
+        rc = iotAdvSetData(instance, rsp, rspLen, true);
         if (rc != 0)
         {
             return rc;
@@ -980,19 +986,6 @@ static int iotAdvStart(uint8_t instance, bool connectable, const struct ble_hs_a
 #else
 #if CONFIG_IOT_MESH_ADV_RESTORE
     {
-        uint8_t adv[BLE_HS_ADV_MAX_SZ];
-        uint8_t advLen = 0;
-        uint8_t rsp[BLE_HS_ADV_MAX_SZ];
-        uint8_t rspLen = 0;
-        rc = ble_hs_adv_set_fields(fields, adv, &advLen, sizeof(adv));
-        if (rc == 0 && rspFields != NULL)
-            rc = ble_hs_adv_set_fields(rspFields, rsp, &rspLen, sizeof(rsp));
-        if (rc != 0)
-        {
-            IOT_LOGE(TAG, "Failed to serialise advertising fields: %d", rc);
-            return rc;
-        }
-
         /* Record before starting: mesh can preempt the very first advert. Held across the
          * whole record-apply-(forget on failure) sequence -- see s_advRestoreApplyMutex's
          * comment for the interleaving this closes if it is not. */
@@ -1052,19 +1045,21 @@ static int iotAdvStart(uint8_t instance, bool connectable, const struct ble_hs_a
     (void) instance;
 #endif
 
-    rc = ble_gap_adv_set_fields(fields);
+    rc = ble_gap_adv_set_data(adv, advLen);
     if (rc != 0)
     {
-        IOT_LOGE(TAG, "Failed to set advertising fields: %d", rc);
+        IOT_LOGE(TAG, "Failed to set advertising data: %d", rc);
         return rc;
     }
 
-    if (rspFields != NULL)
+    /* Connectable = scannable: always write the response, empty when there is none, or the
+     * controller keeps the previous advert's response. */
+    if (shape.connectable)
     {
-        rc = ble_gap_adv_rsp_set_fields(rspFields);
+        rc = ble_gap_adv_rsp_set_data(rsp, rspLen);
         if (rc != 0)
         {
-            IOT_LOGE(TAG, "Failed to set scan response fields: %d", rc);
+            IOT_LOGE(TAG, "Failed to set scan response data: %d", rc);
             return rc;
         }
     }
@@ -1144,53 +1139,18 @@ static iot_err_t nimble_startBeaconAdvertising(IOT_BleMgmtAdvData_t *adv_require
     if (hostErr != IOT_OK)
         return hostErr;
 
-    struct ble_hs_adv_fields fields;
-    memset(&fields, 0, sizeof(fields));
-
-    ble_uuid16_t *uuid16 = NULL;
-    uint8_t *mfg = NULL;
-
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-
-    /* 16-bit Service UUIDs */
-    if (adv_requirements->uuids != NULL && adv_requirements->numUuids > 0)
+    /* Flags, 16-bit service UUIDs, then manufacturer data: the same order NimBLE's field
+     * encoder used, so the beacon's bytes are unchanged. Non-connectable, so no scan response. */
+    uint8_t adv[IOT_BLE_ADV_MAX_LEN];
+    uint8_t advLen = 0;
+    iot_err_t err = IOT_BleAdvBuildPayload(adv_requirements, adv, sizeof(adv), &advLen);
+    if (err != IOT_OK)
     {
-        uuid16 = Mem_SafeMalloc(sizeof(ble_uuid16_t) * adv_requirements->numUuids, TAG, "beacon adv UUID16");
-        if (uuid16 == NULL)
-        {
-            return IOT_ERR_NO_MEM;
-        }
-        for (uint8_t i = 0; i < adv_requirements->numUuids; i++)
-        {
-            uint16_t val = BYTES_TO_U16_BE(adv_requirements->uuids[i][0], adv_requirements->uuids[i][1]);
-            uuid16[i] = (ble_uuid16_t) BLE_UUID16_INIT(val);
-        }
-        fields.uuids16           = uuid16;
-        fields.num_uuids16       = adv_requirements->numUuids;
-        fields.uuids16_is_complete = 1;
+        IOT_LOGE(TAG, "Beacon advertising payload does not fit: %d", err);
+        return IOT_ERR_INVALID_ARG;
     }
 
-    /* Manufacturer Specific Data — prepend company ID in LE order */
-    if (adv_requirements->manufactureData != NULL && adv_requirements->manufactureDataLen > 0)
-    {
-        mfg = Mem_SafeMalloc(adv_requirements->manufactureDataLen + 2, TAG, "beacon adv mfg data");
-        if (mfg == NULL)
-        {
-            SAFE_FREE(uuid16);
-            return IOT_ERR_NO_MEM;
-        }
-        mfg[0] = adv_requirements->manufactureId & 0xFF;        /* company ID low byte */
-        mfg[1] = (adv_requirements->manufactureId >> 8) & 0xFF; /* company ID high byte */
-        memcpy(mfg + 2, adv_requirements->manufactureData, adv_requirements->manufactureDataLen);
-        fields.mfg_data = mfg;
-        fields.mfg_data_len = adv_requirements->manufactureDataLen + 2;
-    }
-
-    int rc = iotAdvStart(IOT_BLE_ADV_INST_BEACON, false /* non-connectable */, &fields, NULL);
-
-    /* iotAdvStart() serialises the payload, so the source buffers are dead either way. */
-    SAFE_FREE(uuid16);
-    SAFE_FREE(mfg);
+    int rc = iotAdvStart(IOT_BLE_ADV_INST_BEACON, false /* non-connectable */, adv, advLen, NULL, 0);
 
 #if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
     if (rc == ADV_RC_SLOT_TAKEN)
@@ -1578,7 +1538,7 @@ static iot_err_t nimble_deinit(void)
      * the driver skip ble_gap_ext_adv_configure() and advertise nothing at all. */
     IOT_BleExtAdvForgetAll();
     numberOfGattServices = 0;
-    currConnectionHandle = 0;
+    currConnectionHandle = BLE_HS_CONN_HANDLE_NONE;
     isBleConnected = false;
 
     /* Handles returned by searchAttrhandleByUuid() belong to the destroyed session.
@@ -1996,67 +1956,42 @@ static iot_err_t nimble_startAdvertising(IOT_BleMgmtAdvData_t *adv_requirements)
     /* Ensure local MTU is set (may have been altered by BLE mesh stack) */
     ble_att_set_preferred_mtu(256);
 
-    struct ble_hs_adv_fields fields;
-    memset(&fields, 0, sizeof(fields));
-
-    ble_uuid16_t *uuid16 = NULL;
-    uint8_t *mfg = NULL;
-
-    if (adv_requirements->uuids != NULL && adv_requirements->numUuids > 0)
+    /* The advert packet is nearly full, so the device name goes in the scan response.
+     * A connectable undirected advert is scannable. */
+    uint8_t adv[IOT_BLE_ADV_MAX_LEN];
+    uint8_t advLen = 0;
+    iot_err_t err = IOT_BleAdvBuildPayload(adv_requirements, adv, sizeof(adv), &advLen);
+    if (err != IOT_OK)
     {
-        uuid16 = Mem_SafeMalloc(sizeof(ble_uuid16_t) * adv_requirements->numUuids, TAG, "adv UUID16");
-        if (uuid16 == NULL)
-        {
-            return IOT_ERR_NO_MEM;
-        }
-        for (uint8_t i = 0; i < adv_requirements->numUuids; i++)
-        {
-            uint16_t val = BYTES_TO_U16_BE(adv_requirements->uuids[i][0], adv_requirements->uuids[i][1]);
-            uuid16[i] = (ble_uuid16_t) BLE_UUID16_INIT(val);
-            IOT_LOGI(TAG, "Advertising 16-bit UUID[%d]: 0x%04X", i, val);
-        }
-        fields.uuids16           = uuid16;
-        fields.num_uuids16       = adv_requirements->numUuids;
-        fields.uuids16_is_complete = 1;
+        IOT_LOGE(TAG, "Advertising payload does not fit: %d", err);
+        return IOT_ERR_INVALID_ARG;
     }
 
-    if (adv_requirements->manufactureData != NULL && adv_requirements->manufactureDataLen > 0)
+    uint8_t rsp[IOT_BLE_ADV_MAX_LEN];
+    uint8_t rspLen = 0;
+    err = IOT_BleAdvBuildScanRsp(adv_requirements, rsp, sizeof(rsp), &rspLen);
+    if (err != IOT_OK)
     {
-        mfg = Mem_SafeMalloc(adv_requirements->manufactureDataLen + 2, TAG, "adv mfg data");
-        if (mfg == NULL)
-        {
-            SAFE_FREE(uuid16);
-            return IOT_ERR_NO_MEM;
-        }
-        mfg[0] = adv_requirements->manufactureId & 0xFF;        /* company ID low byte */
-        mfg[1] = (adv_requirements->manufactureId >> 8) & 0xFF; /* company ID high byte */
-        memcpy(mfg + 2, adv_requirements->manufactureData, adv_requirements->manufactureDataLen);
-        IOT_LOGI(TAG, "Adv productId:");
-        LOG_HEX_INLINE(LOG_LEVEL_DEBUG, adv_requirements->manufactureData, adv_requirements->manufactureDataLen, TAG);
-        fields.mfg_data = mfg;
-        fields.mfg_data_len = adv_requirements->manufactureDataLen + 2;
+        IOT_LOGE(TAG, "Scan response payload does not fit: %d", err);
+        return IOT_ERR_INVALID_ARG;
     }
 
-    /* The advert packet is full (21-26 of 31 bytes), so the device name goes in the
-     * scan response instead. A connectable undirected advert is scannable. */
-    struct ble_hs_adv_fields rsp_fields;
-    struct ble_hs_adv_fields *rsp = NULL;
-    if (adv_requirements->name != NULL && adv_requirements->nameLen > 0)
+    /* The exact bytes on air, one line per packet: BlueZ merges the advert and the scan
+     * response into one device, so a scan cannot tell which field came from which. */
+    IOT_LOGI(TAG, "Adv payload (%u B):", (unsigned) advLen);
+    LOG_HEX_INLINE(LOG_LEVEL_INFO, adv, advLen, TAG);
+    if (rspLen > 0)
     {
-        memset(&rsp_fields, 0, sizeof(rsp_fields));
-        rsp_fields.name             = (const uint8_t *) adv_requirements->name;
-        rsp_fields.name_len         = adv_requirements->nameLen;
-        rsp_fields.name_is_complete = 1;
-        rsp                         = &rsp_fields;
-
-        IOT_LOGI(TAG, "Adv scan-response name: %.*s", adv_requirements->nameLen, adv_requirements->name);
+        IOT_LOGI(TAG, "Adv scan response (%u B):", (unsigned) rspLen);
+        LOG_HEX_INLINE(LOG_LEVEL_INFO, rsp, rspLen, TAG);
+    }
+    else
+    {
+        IOT_LOGI(TAG, "Adv scan response: empty");
     }
 
-    int rc = iotAdvStart(IOT_BLE_ADV_INST_CONN, true /* connectable */, &fields, rsp);
-
-    /* iotAdvStart() serialises the payload, so the source buffers are dead either way. */
-    SAFE_FREE(uuid16);
-    SAFE_FREE(mfg);
+    int rc = iotAdvStart(IOT_BLE_ADV_INST_CONN, true /* connectable */, adv, advLen, (rspLen > 0) ? rsp : NULL,
+                         rspLen);
 
 #if CONFIG_IOT_MESH_ADV_RESTORE && !MYNEWT_VAL(BLE_EXT_ADV)
     if (rc == ADV_RC_SLOT_TAKEN)
@@ -2136,7 +2071,7 @@ static iot_err_t nimble_notifyToCharacteristic(const char *addr, const uint8_t *
         return IOT_ERR_NO_MEM;
     }
 
-    int rc = ble_gattc_notify_custom(currConnectionHandle, char_handle, om);
+    int rc = ble_gatts_notify_custom(currConnectionHandle, char_handle, om);
     if (rc != 0)
     {
         IOT_LOGE(TAG, "Failed to send notification: %d", rc);
@@ -2176,7 +2111,7 @@ static iot_err_t nimble_isConnected(bool *isConnected)
 
 static iot_err_t nimble_disconnect(void)
 {
-    if (!isBleConnected || currConnectionHandle == 0)
+    if (!isBleConnected || currConnectionHandle == BLE_HS_CONN_HANDLE_NONE)
     {
         return IOT_ERR_INVALID_STATE;
     }

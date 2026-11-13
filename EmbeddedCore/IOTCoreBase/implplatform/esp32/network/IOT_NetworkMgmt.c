@@ -499,7 +499,10 @@ iot_err_t IOT_NwkRegisterEventCb(IOT_NetworkIface nwkInf, IOT_NwkEventStatus_t e
         }
         if (ethIfaceEventCallbackMgmts == NULL)
         {
-            IOT_LOGE("iot_eth", "Ethernet interface not initialized");
+            /* Ethernet support is compiled in, but this board did not bring it up in
+             * IOT_NwkInit(). An expected answer, not a fault: core asks on every boot so it can
+             * watch an Ethernet link when there is one. The return code tells the caller. */
+            IOT_LOGD("iot_eth", "Ethernet interface not initialized");
             return IOT_ERR_NOT_INITIALIZED;
         }
         mgmt = ethIfaceEventCallbackMgmts;

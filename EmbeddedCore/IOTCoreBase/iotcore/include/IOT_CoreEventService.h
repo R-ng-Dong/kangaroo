@@ -10,6 +10,9 @@
  * never parsed or validated -- and acknowledges receipt to the sender with whatever the
  * SDK writes into `result`. Register for IOT_EVENT_SERVICE with IOT_DevCoreRegisterEventCb();
  * with no handler registered the sender is told the device does not support it.
+ *
+ * On sdkcontract, do not register: IOT_ContractStart() owns core's callbacks and forwards
+ * this event to your onCoreEvent, where you write `result` the same way.
  */
 
 #ifdef __cplusplus

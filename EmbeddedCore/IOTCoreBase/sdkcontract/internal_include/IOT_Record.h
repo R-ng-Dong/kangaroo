@@ -133,11 +133,15 @@ void IOT_RecordGetAttrDefaults(uint16_t attrId, uint16_t *outMinIntervalSec,
 iot_err_t IOT_RecordFlushAll(void);
 
 /**
- * @brief Flush every dirty open block, BLOCKING until each write completes.
+ * @brief The last write: close every held window early, then flush every dirty open block,
+ *        BLOCKING until each write completes.
  *
- * For the one case that cannot tolerate a queued write: deinit or a planned restart
- * (IOT_ContractPrepareRestart()), after which anything still queued may be dropped.
- * Everywhere else use IOT_RecordFlushAll(), which queues and returns.
+ * For the cases that cannot tolerate a queued write or a value left in a window: deinit, a
+ * planned restart, or power about to fail (all through IOT_ContractPrepareRestart()), after
+ * which anything still queued or held may be lost. A held value is written as its close would
+ * have written it: only if it differs from the last recorded one, stamped from its arrival,
+ * and a fresh window opens after it. Everywhere else use IOT_RecordFlushAll(), which queues,
+ * returns, and leaves held windows to their own deadline.
  */
 iot_err_t IOT_RecordFlushAllSync(void);
 

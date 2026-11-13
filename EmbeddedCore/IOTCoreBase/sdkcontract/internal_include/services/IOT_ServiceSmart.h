@@ -91,6 +91,14 @@ iot_err_t SmartService_ExecuteTriggerDeduped(uint16_t smid, const uint8_t *trigg
 iot_err_t SmartService_ExecuteSchedule(uint16_t smid, uint16_t minuteOfWeek);
 
 /**
+ * Note that the automation @p smid was added, edited or removed. An action it scheduled
+ * earlier (a delay or a reverse still waiting, or one queued for core's task) is then
+ * dropped instead of applied: it belongs to the automation as it was, even when one with
+ * the same id exists again. Core's task (the smart request handler) only.
+ */
+void SmartService_NoteAutomationChanged(uint16_t smid);
+
+/**
  * Serialize and persist bind commands. Returns the device-owned cfm.
  */
 iot_err_t SmartService_StoreBindCmd(IOT_CoreSmartEventBindCmdData_t *data, uint16_t *outCfm);

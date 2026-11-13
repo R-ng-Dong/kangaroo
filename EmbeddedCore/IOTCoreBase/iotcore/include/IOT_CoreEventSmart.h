@@ -22,8 +22,9 @@ extern "C" {
 typedef enum
 {
     /* Broadcast commands — sent to all devices in the location; only the device that
-     * owns the smid should respond. Send nothing (no Reporter call) if smid not found locally.
-     * TODO: implement execution-completed Reporter calls for these (currently generic notify). */
+     * owns the smid should act. Core expects no answer to any of them: run the automation, or do
+     * nothing if the smid is not found locally. Delivered on core's task as part of a request;
+     * every pointer in the data is borrowed (valid only until the handler returns). */
     SMART_EVENT_ACTIVE_BY_USER,
     SMART_EVENT_ACTIVE_BY_TRIGGER,
     SMART_EVENT_ACTIVE_BY_SCHEDULE,
@@ -43,7 +44,7 @@ typedef enum
     /* DAO-completed — call IOT_CoreRespondSmartCheckSync(&rsp) after DAO read. */
     SMART_EVENT_CHECK_SYNC,
 
-    /* Broadcast — location-topic sync-on-off (subSmartType 71). Receivers apply
+    /* Broadcast — location-wide sync-on-off (subSmartType 71). Receivers apply
      * the ON/OFF value to EVERY element in their trigger's elemList; no Reporter
      * response. */
     SMART_EVENT_ACTIVE_BY_SYNC_ON_OFF,
@@ -75,11 +76,13 @@ typedef struct {
 } IOT_CoreSmartBlockTriggerKey_t;
 
 typedef struct {
-    // No additional data for now
-    uint16_t minuteOfWeekScheduleUTC0;
+    uint16_t minuteOfWeekScheduleUTC0; /**< the slot to run: minute of the week (0..10079), UTC */
     uint16_t smid;
+    /** Identity bytes of the sender that asked for this run (the id the request came from, e.g.
+     *  an app or cloud user). It is NOT a schedule or automation identifier; the SMID and the
+     *  minute above are the key. Borrowed: valid only until the handler returns. */
     uint8_t *uuidv4;
-    uint16_t uuidv4Len;
+    uint16_t uuidv4Len; /**< length of uuidv4 in bytes; 0 when absent */
 } IOT_CoreSmartEventActiveByScheduleData_t;
 typedef struct {
     uint16_t attrId;
@@ -91,7 +94,6 @@ typedef struct {
     uint16_t timCfgValue;
 } IOT_CoreSmartBlockTimeConfig_t;
 typedef struct {
-    // No additional data for now
     uint16_t smid;
     uint16_t triggerType;
     // triggerKey
@@ -102,7 +104,7 @@ typedef struct {
     IOT_CoreSmartBlockTimeConfig_t timeConfig;
     uint8_t activeSection;
     uint8_t controlCount;
-    // TODO: continue
+    /* attrValue.attrValue is borrowed: valid only until the handler returns. */
 } IOT_CoreSmartEventActiveByTriggerData_t;
 
 /* Sync-on-off (subSmartType 71) broadcast payload. Receivers apply the ON/OFF
@@ -122,7 +124,7 @@ typedef struct {
     uint16_t smid;
     uint16_t eid;           /* element/device EID the condition belongs to (identity block) */
     uint16_t senderRootEid; /* sender's root EID (identity block) — echo suppression; 0 = absent */
-    uint16_t version;       /* sender's config generation for this smid (2 bytes on the wire) */
+    uint16_t version;       /* sender's config generation for this smid (16-bit) */
     uint8_t condCount;      /* N (<= 8) */
     uint8_t fireCount;      /* K */
     uint8_t condIndex;      /* sender's bit position (0..7) */
@@ -200,7 +202,6 @@ typedef struct {
     uint16_t cfm;
 } IOT_CoreSmartDataBlockTriggerElmInfo_t;
 typedef struct {
-    // No additional data for now
     bool isDeviceUtc;
     float timeZoneFraction; // if isDeviceUtc == false, this value is ignored
     // bindTriggerKey
@@ -227,7 +228,7 @@ typedef struct {
     uint8_t condIndex; // this device's bit in the group (0..7)
     uint8_t condCount; // N: total conditions in the group (max 8)
     uint8_t fireCount; // K: fire when >= K of N are true
-    uint16_t condVersion; // cloud-assigned config generation (2 bytes on the wire)
+    uint16_t condVersion; // cloud-assigned config generation (16-bit)
 } IOT_CoreSmartEventBindTriggerData_t;
 typedef struct {
     uint16_t eid;
@@ -235,12 +236,12 @@ typedef struct {
     IOT_RequestContext_t ctx;
     // cond-group — the shape the group has AFTER this removal, when the sender supplies it.
     // The unbind is addressed to the removed device ONLY, so this is the sole copy of the new
-    // N/K anywhere on the wire: the remaining members are never told. hasCondGroup=0 when the
+    // N/K anywhere in the message: the remaining members are never told. hasCondGroup=0 when the
     // unbind carries no cond-group shape (an ordinary automation, or an older sender).
     uint8_t hasCondGroup;
     uint8_t condCount;    // N after the removal
     uint8_t fireCount;    // K after the removal
-    uint16_t condVersion; // cloud-assigned config generation (2 bytes on the wire)
+    uint16_t condVersion; // cloud-assigned config generation (16-bit)
 } IOT_CoreSmartEventUnboundTriggerData_t;
 typedef struct {
     uint16_t smid;
