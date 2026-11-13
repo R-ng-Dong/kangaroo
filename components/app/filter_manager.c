@@ -530,6 +530,7 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
     }
     else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
+        WaterRuntimeRefresh();
         if(WaterRuntimeHasValue())
         {
             DeviceRuntimeSnapshot_t snapshot = WaterRuntimeGetSnapshot();
@@ -542,7 +543,7 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
 
 
     FlushCycleState_t state_out;
-    if(FlushCycleStateGet(&state_out))
+    if(!FlushCycleStateGet(&state_out))
     {
         return 0;
     }

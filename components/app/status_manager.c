@@ -74,12 +74,19 @@ void StatusManagerCheckWarnings(void)
 
     StatusManagerUpdateWarning(WARNING_ID_ER00055_RO_PUMP_RUNTIME_OVER_60_MIN,
                                s_snapshot.ro_status == RO_STATUS_PUMP_RUNNING_TOO_LONG);
-    StatusManagerUpdateWarning(WARNING_ID_ER00067_HEATER_SENSOR_FAULT,
-                               s_snapshot.hot_tank_status == HOT_TANK_STATUS_TEMPERATURE_SENSOR_ERROR);
+    if(s_snapshot.hot_tank_status != HOT_TANK_STATUS_HEATER_DISABLED)
+    {
+        StatusManagerUpdateWarning(WARNING_ID_ER00067_HEATER_SENSOR_FAULT,
+                                s_snapshot.hot_tank_status == HOT_TANK_STATUS_TEMPERATURE_SENSOR_ERROR);
+    }
+
     StatusManagerUpdateWarning(WARNING_ID_ER00068_HEATER_RUNTIME_OVER_1H,
                                s_snapshot.hot_tank_status == HOT_TANK_STATUS_HEATER_RUNNING_TOO_LONG);
-    StatusManagerUpdateWarning(WARNING_ID_ER00069_COOLER_SENSOR_FAULT,
-                               s_snapshot.cold_tank_status == COLD_TANK_STATUS_TEMPERATURE_SENSOR_ERROR);
+    if(s_snapshot.cold_tank_status != COLD_TANK_STATUS_COMPRESSOR_DISABLED)
+    {
+        StatusManagerUpdateWarning(WARNING_ID_ER00069_COOLER_SENSOR_FAULT,
+                                   s_snapshot.cold_tank_status == COLD_TANK_STATUS_TEMPERATURE_SENSOR_ERROR);
+    }
     StatusManagerUpdateWarning(WARNING_ID_ER00070_COOLER_RUNTIME_OVER_2H,
                                s_snapshot.cold_tank_status == COLD_TANK_STATUS_COMPRESSOR_RUNNING_TOO_LONG);
 }
