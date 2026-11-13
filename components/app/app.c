@@ -398,14 +398,32 @@ static void EventHandler(EventID event_id, void *data)
         ESP_LOGW(TAG, "EVENT_OUTPUT_WATER_QUALITY_WARNING");
         break;
     case EVENT_HEATER_SENSOR_FAULT:
+    {
         ESP_LOGE(TAG, "EVENT_HEATER_SENSOR_FAULT");
+        UI32 mask = WarningManagerGetMask();
+        if(mask & WARNING_ID_ER00067_HEATER_SENSOR_FAULT)
+        {
+            ESP_LOGE(TAG, "STOP HOT TANK");
+            EnergySavingManagerSetTank(ENERGY_SAVING_TANK_HOT, 0, 0xFF,
+                                           (UI64)(esp_timer_get_time() / 1000000ULL));
+        }
         break;
+    }
     case EVENT_HEATER_RUNTIME_OVER_1H:
         ESP_LOGW(TAG, "EVENT_HEATER_RUNTIME_OVER_1H");
         break;
     case EVENT_COOLER_SENSOR_FAULT:
+    {
         ESP_LOGE(TAG, "EVENT_COOLER_SENSOR_FAULT");
+        UI32 mask = WarningManagerGetMask();
+        if(mask & WARNING_ID_ER00069_COOLER_SENSOR_FAULT)
+        {
+            ESP_LOGE(TAG, "STOP COLD TANK");
+            EnergySavingManagerSetTank(ENERGY_SAVING_TANK_COLD, 0, 0xFF,
+                                           (UI64)(esp_timer_get_time() / 1000000ULL));
+        }
         break;
+    }
     case EVENT_COOLER_RUNTIME_OVER_2H:
         ESP_LOGW(TAG, "EVENT_COOLER_RUNTIME_OVER_2H");
         break;
