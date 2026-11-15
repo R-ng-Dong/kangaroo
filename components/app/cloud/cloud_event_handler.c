@@ -48,10 +48,14 @@ static iot_err_t resolveSetTargetEid(const IOT_EventStateSetRequest_t *setData, 
     {
         IOT_LOGI(TAG, "==> ^-^ Control by unicast");
         dev_set_info_t devSetInfo = setData->devSetInfo;
-        if (devSetInfo.numOfElems > 1)
+        /* The SET handler's changedIds buffer currently supports one element.
+         * Reject malformed/unsupported lists before either updating state or
+         * writing past that buffer. */
+        if (devSetInfo.numOfElems != 1U || devSetInfo.elemList == NULL)
         {
-            // WARNING: changedIds[] in the caller holds only 1 element (product controls 1 element per SET)
-            IOT_LOGW(TAG, "SET_STATE has %u elements, only 1 supported", (unsigned)devSetInfo.numOfElems);
+            IOT_LOGW(TAG, "SET_STATE has invalid element list (count=%u, list=%p)",
+                     (unsigned)devSetInfo.numOfElems, (void *)devSetInfo.elemList);
+            return IOT_ERR_INVALID_ARG;
         }
         *outEid = setData->target.device.eid;
         IOT_LOGI(TAG, "Target EID: %04x,  Target Device Type: %d", *outEid, setData->targetDeviceType);
@@ -62,11 +66,8 @@ static iot_err_t resolveSetTargetEid(const IOT_EventStateSetRequest_t *setData, 
         iot_log_hex_dump(LOG_LEVEL_INFO, devSetInfo.attrValue, devSetInfo.attrSize, "  Attribute Value Data:");
         *numChanged = devSetInfo.numOfElems;
         /* Update state for all requested elements */
-        for (int i = 0; i < devSetInfo.numOfElems; i++)
-        {
-            CloudUpdateState(devSetInfo.elemList[i].elemId, devSetInfo.attrId, devSetInfo.attrValue, devSetInfo.attrSize);
-            (*changeId)[i] = devSetInfo.elemList[i].elemId;
-        }
+        CloudUpdateState(devSetInfo.elemList[0].elemId, devSetInfo.attrId, devSetInfo.attrValue, devSetInfo.attrSize);
+        (*changeId)[0] = devSetInfo.elemList[0].elemId;
         
         return IOT_OK;
     }
@@ -1019,6 +1020,18 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGW(TAG, "DEVICE event: WIFI_DISCONNECTED, reason: %d",
                  deviceEvent->data.networkDisconnected.reason);
 
+        break;
+    }
+    case DEV_EVENT_NETWORK_CONNECT_FAILED:
+    {
+        IOT_LOGE(TAG, "DEV_EVENT_NETWORK_CONNECT_FAILED");
+        LedManagerSetError();
+        break;
+    }
+    case DEV_EVENT_CLOUD_CONNECT_FAILED:
+    {
+        IOT_LOGE(TAG, "DEV_EVENT_CLOUD_CONNECT_FAILED");
+        // LedManagerSetError();
         break;
     }
     case DEV_EVENT_CLOUD_CONNECTED:
