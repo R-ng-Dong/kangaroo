@@ -14,14 +14,14 @@
 static const char *TAG = "WATER_CONTROL_TASK";
 static QueueHandle_t s_water_control_queue;
 
-__attribute__((weak)) void AppReportHotTankTemperatureToCloud(const UI8 state, const UI8 temperature)
+__attribute__((weak)) void AppReportHotTankSettingToCloud(const UI8 state, const UI8 temperature)
 {
-    printf("[Dummy] AppReportHotTankTemperatureToCloud: %d %d/2 *C\n", state, temperature);
+    printf("[Dummy] AppReportHotTankSettingToCloud: %d %d/2 *C\n", state, temperature);
 }
 
-__attribute__((weak)) void AppReportColdTankTemperatureToCloud(const UI8 state, const UI8 temperature)
+__attribute__((weak)) void AppReportColdTankSettingToCloud(const UI8 state, const UI8 temperature)
 {
-    printf("[Dummy] AppReportColdTankTemperatureToCloud %d %d/2 *C\n", state, temperature);
+    printf("[Dummy] AppReportColdTankSettingToCloud %d %d/2 *C\n", state, temperature);
 }
 
 
@@ -178,11 +178,11 @@ static void WaterControllerTask(void *arg)
                          (unsigned)request.command, retries);
                 if(request.verify2 == WATER_CONTROL_VERIFY_HOT_TEMPERATURE)
                 {
-                    AppReportHotTankTemperatureToCloud((UI8)request.value1, (UI8)request.value2);
+                    AppReportHotTankSettingToCloud((UI8)request.value1, (UI8)request.value2);
                 }
                 else if(request.verify2 == WATER_CONTROL_VERIFY_COLD_TEMPERATURE)
                 {
-                    AppReportColdTankTemperatureToCloud((UI8)request.value1, (UI8)request.value2);
+                    AppReportColdTankSettingToCloud((UI8)request.value1, (UI8)request.value2);
                 }
                 WarningManagerUpdate(WARNING_ID_ER00072, D_FALSE); 
                 break;

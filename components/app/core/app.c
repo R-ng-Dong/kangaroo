@@ -15,6 +15,7 @@
 #include "IOT_CoreReporter.h"
 #include "IOT_DaoDeviceMgmt.h"
 #include "network/IOT_NetworkMgmt.h"
+#include "IOT_TimerMgmt.h"
 
 #include "tds_task.h"
 #include "water_profile.h"
@@ -41,6 +42,7 @@
 
 #include "record.h"
 #include "report_alert.h"
+#include "system_config.h"
 
 static const char *TAG = "APP";
 
@@ -50,6 +52,7 @@ static const char *TAG = "APP";
 
 #define LOG_INTERVAL_MS (8UL * 60UL * 60UL * 1000UL)
 #define LOG_CHECK_INTERVAL_MS (30UL * 1000UL)
+// #define TANK_TEMPERATURE_REPORT_INTERVAL_MS (60UL * 1000UL)
 
 static WaterPurifierType s_model = WATER_PURIFIER_TYPE_STANDARD;
 
@@ -61,6 +64,10 @@ void AppPushWaterConsumptionToCloud(void);
 void AppPushStatusManagerToCloud(UI8 ro_stt, UI8 ply_stt);
 void AppPushFirmwareVersion(UI16 version);
 void AppResponseTankStateToCloud(EnergySavingTank_t tank, UI8 enable);
+void AppResponseTankTemperatureToCloud(EnergySavingTank_t tank);
+void AppPushHotTankStatusManagerToCloud(UI8 hot_stt);
+void AppPushColdTankStatusManagerToCloud(UI8 cold_stt);
+
 void AppInitAttributeValue(void);
 
 static void AppCheckEnergyChanges(void);
@@ -69,6 +76,8 @@ static void AppCheckStatusChanged(void);
 static void AppCheckVersionFirmwareMainboard(void);
 static void AppCheckMissUartMainboard(void);
 static void AppCheckTankStateChanged(void);
+static void AppCheckTankReadiness(void);
+static void AppReportTankTemperaturesIfDue(void);
 static void TdsPeriodicReport(UI32 time_count);
 static _bool AppCheckPumActive(void);
 
@@ -303,6 +312,90 @@ static void AppSyncTankStateFromMainboard(void)
     AppRspToCloud(ELEMENT_ID_5, ATTR_ONOFF);
 }
 
+/* Setpoint values from the mainboard are C x 2; measured values are integer C.
+ * Use 10 half-degree units for the 5(default) C hysteresis. */
+    static _bool hot_ready = D_FALSE;
+    static _bool cold_ready = D_FALSE;
+static void AppCheckTankReadiness(void)
+{
+    // static _bool hot_ready = D_FALSE;
+    // static _bool cold_ready = D_FALSE;
+
+    if (HasMessageType1() == D_FALSE)
+    {
+        return;
+    }
+
+    const UI8 setting = WaterProfileGetSetting();
+    const UI8 hot_status = WaterProfileGetStatus(HOT_TANK_STATUS);
+    const UI8 cold_status = WaterProfileGetStatus(COLD_TANK_STATUS);
+    const SI16 hot_temperature_x2 = (((SI16)WaterProfileGetHotTankTemperatureRaw() * 2) / 100) - 100;
+    const SI16 cold_temperature_x2 = (((SI16)WaterProfileGetColdTankTemperatureRaw() * 2) / 100) - 100;
+    const SI16 hot_target_x2 = WaterProfileGetHotTargetTemperature();
+    const SI16 cold_target_x2 = WaterProfileGetColdTargetTemperature();
+
+    const _bool hot_enabled = ((setting & HOT_SWITCH_BIT) != 0U) &&
+                              (hot_status != HOT_TANK_STATUS_ENERGY_SAVING) &&
+                              (hot_status != HOT_TANK_STATUS_HEATER_DISABLED);
+    const _bool cold_enabled = ((setting & COLD_SWITCH_BIT) != 0U) &&
+                               (cold_status != COLD_TANK_STATUS_ENERGY_SAVING) &&
+                               (cold_status != COLD_TANK_STATUS_COMPRESSOR_DISABLED);
+
+    if (hot_enabled == D_FALSE)
+    {
+        hot_ready = D_FALSE;
+    }
+    else if (hot_ready == D_FALSE && hot_temperature_x2 >= hot_target_x2)
+    {
+        if(hot_temperature_x2 == hot_target_x2)
+        {
+            hot_ready = D_TRUE;
+            AppPushHotTankStatusManagerToCloud(1);
+        }
+    }
+    else if (hot_ready == D_TRUE && hot_temperature_x2 <= hot_target_x2 - 2 * SystemConfigGetStateTempHotBandC()) // 5x2
+    {
+        hot_ready = D_FALSE;
+        AppPushHotTankStatusManagerToCloud(0);
+    }
+
+    if (cold_enabled == D_FALSE)
+    {
+        cold_ready = D_FALSE;
+    }
+    else if (cold_ready == D_FALSE && cold_temperature_x2 <= cold_target_x2)
+    {
+        if(cold_temperature_x2 == cold_target_x2)
+        {
+            cold_ready = D_TRUE;
+            AppPushColdTankStatusManagerToCloud(1);
+        }
+    }
+    else if (cold_ready == D_TRUE && cold_temperature_x2 >= cold_target_x2 + 2 * SystemConfigGetStateTempColdBandC()) // 5x2
+    {
+        cold_ready = D_FALSE;
+        AppPushColdTankStatusManagerToCloud(0);
+    }
+}
+
+static void AppReportTankTemperaturesIfDue(void)
+{
+    static UI32 last_report_ms;
+    const UI32 now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
+    const UI32 TANK_TEMPERATURE_REPORT_INTERVAL_S = SystemConfigGetStateTempPeriodSec();
+
+    if (HasMessageType1() == D_FALSE ||
+        (UI32)(now_ms - last_report_ms) < TANK_TEMPERATURE_REPORT_INTERVAL_S * 1000)
+    {
+        return;
+    }
+
+    AppResponseTankTemperatureToCloud(ENERGY_SAVING_TANK_HOT);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    AppResponseTankTemperatureToCloud(ENERGY_SAVING_TANK_COLD);
+    last_report_ms = (UI32)(esp_timer_get_time() / 1000ULL);
+}
+
 static void AppTask(void *arg)
 {
     UI32 now_ms = (UI32)(esp_timer_get_time() / 1000ULL);
@@ -325,6 +418,10 @@ static void AppTask(void *arg)
             StatusManagerCheckWarnings();
             EnergySavingManagerSyncFromMainboard();
             AppSyncTankStateFromMainboard();
+            
+            AppCheckTankReadiness();
+            AppReportTankTemperaturesIfDue();
+            
             AppCheckMissUartMainboard();
             AppCheckTankStateChanged();
 
@@ -359,12 +456,14 @@ static void AppTask(void *arg)
         // check filter
         FilterManagerTick(now_ms, s_model);
 
+        const UI32 TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_COUNT = SystemConfigGetStateEnergyMinGapSec() * 1000 / APP_INTERVAL_MS;
         if (++energy_report_count >= TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_COUNT)
         {
             energy_report_count = 0U;
             AppCheckEnergyChanges();
             vTaskDelay(pdMS_TO_TICKS(100));
         }
+        const UI32 TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS_COUNT = SystemConfigGetStateWaterMinGapSec() * 1000 / APP_INTERVAL_MS;
         if (++water_report_count >= TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS_COUNT)
         {
             water_report_count = 0U;
@@ -374,8 +473,10 @@ static void AppTask(void *arg)
 
         if(AppCheckPumActive())
         {
+            UI32 PUM_ACTIVE_UPDATE_TIMEOUT_COUNT = SystemConfigGetStateTdsRunPeriodSec() * 1000 / APP_INTERVAL_MS;
             TdsPeriodicReport(PUM_ACTIVE_UPDATE_TIMEOUT_COUNT);
         }else{
+            UI32 PUM_STOPPED_UPDATE_TIMEOUT_COUNT = SystemConfigGetStateTdsRunPeriodSec() * 1000 / APP_INTERVAL_MS;
             TdsPeriodicReport(PUM_STOPPED_UPDATE_TIMEOUT_COUNT);
         }
 
@@ -635,6 +736,16 @@ static _bool AppTankOnAllowed(UI16 elem_id)
     return D_TRUE;
 }
 
+static void FilterUpdatePendingCallback(void *userData)
+{
+    // (void) userData;
+    UI8 filter_idx = (UI8)(uintptr_t)userData;
+    ESP_LOGW(TAG, "Filter task continue ...");
+    UI8 percent = 100;
+    FilterManagerReportToCloud(&percent, FILTER_MANAGER_REPORT_ONE_FILTER, (FilterTimeIndex)filter_idx);
+    FilterUpdateSetPending(D_FALSE);
+}
+
 static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 lenAttrValue)
 {
     const DeviceElementAttributeInfo *attribute = DeviceElementGetAttribute(elemId, attrId);
@@ -701,12 +812,14 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
             {
             case ELEMENT_ID_4:
             {
+                hot_ready = D_FALSE;
                 (void)EnergySavingManagerSetTankTemperature(ENERGY_SAVING_TANK_HOT, (UI8)temp,
                                                             (UI64)(esp_timer_get_time() / 1000000ULL));
                 break;
             }
             case ELEMENT_ID_5:
             {
+                cold_ready = D_FALSE;
                 (void)EnergySavingManagerSetTankTemperature(ENERGY_SAVING_TANK_COLD, (UI8)temp,
                                                             (UI64)(esp_timer_get_time() / 1000000ULL));
                 break;
@@ -751,6 +864,14 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
             FlushCycleStateSetPostFilterFlushTime(30*60); // [flush] 30 minutes
             FlushCycleStateSetTotalDrainWater(filter_idx);
             (void)DeviceElementSetAttributeValueOffset(elemId, ATTR_INFOMATION_PRODUCT_USAGE_TIME, 0, Pid, FILTER_PID_SIZE);
+            
+            FilterUpdateSetPending(D_TRUE);
+            if (IOT_TimerInsertCb(FilterUpdatePendingCallback, (void *)(uintptr_t)filter_idx, 5U * 1000U) == IOT_TIMER_HANDLE_INVALID)
+            {
+                ESP_LOGE(TAG, "Failed  ");
+                FilterUpdateSetPending(D_FALSE);
+                return ;
+            }
         }
         else if(ATTR_ENERGY_SAVING_SCHEDULE == attrId)
         {
@@ -767,8 +888,8 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
         {
             if(ELEMENT_ID_2 == elemId)
             {
-                UI16 time_s = (attrValue[0] << 8 | attrValue[1]);
-                WaterControllerStartROFlushing(time_s);
+                // UI16 time_s = (attrValue[0] << 8 | attrValue[1]);
+                WaterControllerStartROFlushing((UI16)SystemConfigGetFlushSecond());
             }
         }
     }
@@ -982,10 +1103,12 @@ static void AppCheckWaterConsumptionChanges(void)
     }
 
     const UI32 water_consumption = FilterManagerGetWaterConsumption(s_model);
-    if (AppValueChanged(last_reported_water_consumption, water_consumption) >= 1U)
+    const UI32 delta_l = SystemConfigGetStateWaterDeltaMl() / 1000;
+
+    if (AppValueChanged(last_reported_water_consumption, water_consumption) >= delta_l)
     {
-        // app_update_water_consumption(water_consumption);
         AppPushWaterConsumptionToCloud();
+        app_update_water_consumption(water_consumption);
         last_reported_water_consumption = water_consumption;
     }
 }
@@ -1017,16 +1140,17 @@ static void AppCheckEnergyChanges(void)
     }
 
 
+    const UI32 delta_wh = SystemConfigGetStateEnergyDeltaWh();
     // Check Energy Consumption Changes
-    if (AppValueChanged(last_reported_total_energy, total_energy) >= 200)
+    if (AppValueChanged(last_reported_total_energy, total_energy) >= delta_wh)
     {
-        // app_update_energy_consumption(total_energy);
         AppResponseEnergyToCloud(total_energy);
+        app_update_energy_consumption(total_energy);
         last_reported_total_energy = total_energy;
     }
 
     // Check saving energy changes
-    if (AppValueChanged(last_reported_saving_energy, saving_energy) >= 200)
+    if (AppValueChanged(last_reported_saving_energy, saving_energy) >= delta_wh)
     {
         AppResponseSavingEnergyToCloud(saving_energy);
         last_reported_saving_energy = saving_energy;
@@ -1141,12 +1265,12 @@ esp_err_t AppInit(WaterPurifierType model)
         return ESP_FAIL;
     }
 
-    ret = xTaskCreate(LogSystemTask, "LogSystemTask", 3072, NULL, 3, NULL);
-    if (ret != pdPASS)
-    {
-        ESP_LOGE(TAG, "Failed to create hello log task");
-        return ESP_FAIL;
-    }
+    // ret = xTaskCreate(LogSystemTask, "LogSystemTask", 3072, NULL, 3, NULL);
+    // if (ret != pdPASS)
+    // {
+    //     ESP_LOGE(TAG, "Failed to create hello log task");
+    //     return ESP_FAIL;
+    // }
 
     // xTaskCreate(testTask, "testTask", 2048*2, NULL, 4, NULL);
 
@@ -1182,6 +1306,7 @@ void FilterManagerReportToCloud(const UI8 *percent_values, FilterManagerReportMo
         if (DeviceElementSetAttributeValue(element_ids[(UI8)filter_index], ATTR_INFOMATION_PRODUCT_USAGE_TIME,
                                         value, sizeof(value)) == D_TRUE)
         {
+            ESP_LOGI(TAG, "=== App report one filter [index] %d", filter_index);
             AppRspToCloud((UI8)element_ids[(UI8)filter_index], ATTR_INFOMATION_PRODUCT_USAGE_TIME);
         }
     }
@@ -1199,6 +1324,7 @@ void FilterManagerReportToCloud(const UI8 *percent_values, FilterManagerReportMo
             if (DeviceElementSetAttributeValue(element_ids[idx], ATTR_INFOMATION_PRODUCT_USAGE_TIME,
                                             value, sizeof(value)) == D_TRUE)
             {
+                ESP_LOGI(TAG, "App report all filter");
                 AppRspToCloud((UI8)element_ids[idx], ATTR_INFOMATION_PRODUCT_USAGE_TIME);
             }
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -1277,34 +1403,39 @@ void AppResponseTankStateToCloud(EnergySavingTank_t tank, UI8 enable)
 }
 #endif
 
-#if 0
-void AppResponseTankTemperatureToCloud(EnergySavingTank_t tank, UI16 temperature)
+#if 1
+void AppResponseTankTemperatureToCloud(EnergySavingTank_t tank)
 {
     UI8 value[2];
-    value[0] = (temperature >> 8) & 0xff;
-    value[1] = temperature & 0xff;
+
     if (tank == ENERGY_SAVING_TANK_HOT)
     {
-        if (DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_TEMP_SET,
+        UI16 temperature = WaterProfileGetHotTankTemperatureRaw();
+        value[0] = (temperature >> 8) & 0xff;
+        value[1] = temperature & 0xff;
+        if (DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_TEMP_SET,
                                         value, 2) == D_TRUE)
         {
-            AppRspToCloud(ELEMENT_ID_4, ATTR_TEMP_SET);
+            AppRspToCloud(ELEMENT_ID_2, ATTR_TEMP_SET);
         }
     }else
     {
-        if (DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_TEMP_SET,
+        UI16 temperature = WaterProfileGetColdTankTemperatureRaw();
+        value[0] = (temperature >> 8) & 0xff;
+        value[1] = temperature & 0xff;
+        if (DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_TEMP_SET,
                                         value, 2) == D_TRUE)
         {
-            AppRspToCloud(ELEMENT_ID_5, ATTR_TEMP_SET);
+            AppRspToCloud(ELEMENT_ID_3, ATTR_TEMP_SET);
         }
     }
 }
 #endif
 
 // Override
-void AppReportHotTankTemperatureToCloud(const UI8 state, const UI8 temperature)
+void AppReportHotTankSettingToCloud(const UI8 state, const UI8 temperature)
 {
-    ESP_LOGW(TAG, "AppReportHotTankTemperatureToCloud: %d %d/2", state, temperature);
+    ESP_LOGW(TAG, "AppReportHotTankSettingToCloud: %d %d/2", state, temperature);
     UI8 value[2];
     value[0] = (temperature >> 8) & 0xff;
     value[1] = temperature & 0xff;
@@ -1325,9 +1456,9 @@ void AppReportHotTankTemperatureToCloud(const UI8 state, const UI8 temperature)
 }
 
 // Override
-void AppReportColdTankTemperatureToCloud(const UI8 state, const UI8 temperature)
+void AppReportColdTankSettingToCloud(const UI8 state, const UI8 temperature)
 {
-    ESP_LOGW(TAG, "AppReportColdTankTemperatureToCloud: %d %d/2 ", state,  temperature);
+    ESP_LOGW(TAG, "AppReportColdTankSettingToCloud: %d %d/2 ", state,  temperature);
     UI8 value[2];
     value[0] = (temperature >> 8) & 0xff;
     value[1] = temperature & 0xff;
@@ -1417,17 +1548,41 @@ void AppResponseEnergyToCloud(UI32 energy)
 
 void AppPushStatusManagerToCloud(UI8 ro_stt, UI8 ply_stt)
 {
-    UI8 value[4];
-    value[1] = ro_stt; 
-    value[3] = ply_stt;
+    UI8 value[2];
+    value[0] = ro_stt; 
+    value[1] = ply_stt;
 
-    if (DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_STATUS,
-                                    value, 4) == D_TRUE)
+    if(DeviceElementSetAttributeValueOffset(ELEMENT_ID_1, ATTR_STATUS, 0, value, 2) == D_TRUE)
     {
         ESP_LOGI(TAG, "App report status to cloud");
         AppRspToCloud(ELEMENT_ID_1, ATTR_STATUS);
     } 
 }
+
+void AppPushHotTankStatusManagerToCloud(UI8 hot_stt)
+{
+    UI8 value[2] = {0};
+    value[0] = hot_stt; 
+
+    if(DeviceElementSetAttributeValueOffset(ELEMENT_ID_1, ATTR_STATUS, 2, value, 1) == D_TRUE)
+    {
+        ESP_LOGI(TAG, "App report hot status to cloud: %d", hot_stt);
+        AppRspToCloud(ELEMENT_ID_1, ATTR_STATUS);
+    } 
+}
+
+void AppPushColdTankStatusManagerToCloud(UI8 cold_stt)
+{
+    UI8 value[2] = {0};
+    value[0] = cold_stt; 
+
+    if(DeviceElementSetAttributeValueOffset(ELEMENT_ID_1, ATTR_STATUS, 3, value, 1) == D_TRUE)
+    {
+        ESP_LOGI(TAG, "App report cold status to cloud: %d", cold_stt);
+        AppRspToCloud(ELEMENT_ID_1, ATTR_STATUS);
+    } 
+}
+
 
 void AppPushFirmwareVersion(UI16 version)
 {
@@ -1440,6 +1595,77 @@ void AppPushFirmwareVersion(UI16 version)
         ESP_LOGW(TAG, "App report firmware version of mainboard %04x", version);
         AppRspToCloud(ELEMENT_ID_1, ATTR_FIRMWARE_VERSION);
     } 
+}
+
+void AppRefreshAttributeValue(void)
+{
+    UI8 value[8];
+
+    if(WATER_PURIFIER_TYPE_HOT_COLD == s_model)
+    {
+        UI64 now_s = esp_timer_get_time() / 1000000U;
+        UI64 hot_tank_wh, cold_tank_wh;
+        EnergySavingManagerGetSavedEnergy(now_s, &hot_tank_wh, &cold_tank_wh);
+        UI64 total_energy = EnergyConsumptionGetTotal();
+        UI64 saving_energy = hot_tank_wh + cold_tank_wh;
+    
+        value[0] = (total_energy >> 24) & 0xff;
+        value[1] = (total_energy >> 16) & 0xff;
+        value[2] = (total_energy >> 8) & 0xff;
+        value[3] = total_energy & 0xff; 
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY, value, 4);
+    
+        value[0] = (saving_energy >> 24) & 0xff;
+        value[1] = (saving_energy >> 16) & 0xff;
+        value[2] = (saving_energy >> 8) & 0xff;
+        value[3] = saving_energy & 0xff;   
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_ENERGY, value, 4);
+
+        // HOT/COLD tank state
+        UI8 setting = WaterProfileGetSetting();
+        value[0] = 0;
+        value[1] = setting & HOT_SWITCH_BIT ? 1 : 0;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_ONOFF, value, 2);
+
+        value[0] = 0;
+        value[1] = setting & COLD_SWITCH_BIT ? 1 : 0;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_ONOFF, value, 2);
+
+        UI16 temperature = WaterProfileGetHotTankTemperatureRaw();
+        value[0] = (temperature >> 8) & 0xff;
+        value[1] = temperature & 0xff;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_TEMP_SET, value, 2);
+
+        temperature = WaterProfileGetColdTankTemperatureRaw();
+        value[0] = (temperature >> 8) & 0xff;
+        value[1] = temperature & 0xff;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_TEMP_SET, value, 2);
+
+    }
+
+    UI32 water_consumption = FilterManagerGetWaterConsumption(s_model);
+    value[0] = (water_consumption >> 24) & 0xff;
+    value[1] = (water_consumption >> 16) & 0xff;
+    value[2] = (water_consumption >> 8) & 0xff;
+    value[3] = water_consumption & 0xff;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_INFOMATION_WATER_CONSUMER, value, 4);
+  
+    UI32 warning_mask = WarningManagerGetMask();
+    value[0] = (warning_mask >> 24) & 0xff;
+    value[1] = (warning_mask >> 16) & 0xff;
+    value[2] = (warning_mask >> 8) & 0xff;
+    value[3] = warning_mask & 0xff;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_INFO_CURRENT_ISSUES_STATUS, value, 4);
+
+    UI16 inlet_ppm = TdsInletGet();
+    value[0] = (inlet_ppm >> 8) & 0xff;
+    value[1] = inlet_ppm & 0xff;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_EVENT_TDS_STATUS, value, 2);
+
+    UI16 ro_ppm = TdsRoGet();
+    value[0] = (ro_ppm >> 8) & 0xff;
+    value[1] = ro_ppm & 0xff;
+    (void)DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_EVENT_TDS_STATUS, value, 2);
 }
 
 void AppInitAttributeValue(void)
@@ -1501,7 +1727,7 @@ void AppInitAttributeValue(void)
     {
         value[1] = PumpIsActive() ? 1 : 0;
     }
-    (void)DeviceElementSetAttributeValue(ELEMENT_ID_1, ATTR_STATUS, value, 4);
+    (void)DeviceElementSetAttributeValueOffset(ELEMENT_ID_1, ATTR_STATUS, 0, value, 4);
     
 
     if(WATER_PURIFIER_TYPE_HOT_COLD == s_model)
@@ -1528,15 +1754,26 @@ void AppInitAttributeValue(void)
 
     if(WATER_PURIFIER_TYPE_HOT_COLD == s_model)
     {
-        // target temperature of HOT/COLD tank
-        UI8 temperature = WaterProfileGetHotTargetTemperature();
+        UI16 temperature = 0; UI8 target_temperature;
+        temperature = WaterProfileGetHotTankTemperatureRaw();
         value[0] = (temperature >> 8) & 0xff;
         value[1] = temperature & 0xff;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_TEMP_SET, value, 2);
+
+        temperature = WaterProfileGetColdTankTemperatureRaw();
+        value[0] = (temperature >> 8) & 0xff;
+        value[1] = temperature & 0xff;
+        (void)DeviceElementSetAttributeValue(ELEMENT_ID_3, ATTR_TEMP_SET, value, 2);
+
+        // target temperature of HOT/COLD tank
+        target_temperature = WaterProfileGetHotTargetTemperature();
+        value[0] = (target_temperature >> 8) & 0xff;
+        value[1] = target_temperature & 0xff;
         (void)DeviceElementSetAttributeValue(ELEMENT_ID_4, ATTR_TEMP_SET, value, 2);
 
-        temperature = WaterProfileGetColdTargetTemperature();
-        value[0] = (temperature >> 8) & 0xff;
-        value[1] = temperature & 0xff;
+        target_temperature = WaterProfileGetColdTargetTemperature();
+        value[0] = (target_temperature >> 8) & 0xff;
+        value[1] = target_temperature & 0xff;
         (void)DeviceElementSetAttributeValue(ELEMENT_ID_5, ATTR_TEMP_SET, value, 2);
 
         // HOT/COLD tank state
@@ -1562,12 +1799,6 @@ void AppInitAttributeValue(void)
         value[4] = (end_minute >> 8) & 0xff;
         value[5] = end_minute & 0xff;
 
-        printf("schedule: ");
-        for (size_t i = 0; i < 6; i++)
-        {
-            printf("%02x ", value[i]);
-        }
-        printf("\n");
         (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY_SAVING_SCHEDULE, value, 6);
 
     }    

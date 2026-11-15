@@ -3,6 +3,7 @@
 #include <math.h>
 #include "app_context.h"
 #include "warning_manager.h"
+#include "system_config.h"
 
 static void TdsManagerUpdateWarning(WarningId warning_id, bool should_be_active)
 {
@@ -31,18 +32,45 @@ __attribute__((weak)) void TdsOutputUpdateRecord(UI16 outlet_ppm)
     printf("[Dummy] TdsOutputUpdateRecord\n");
 }
 
-static UI16 TdsDeltaPpm(UI16 old_value, UI16 new_value)
+static _bool IsTdsInletChanged(UI16 old_value, UI16 new_value)
 {
+    const UI16 TDS_REPORT_INLET_DELTA_PPM = (UI16)SystemConfigGetStateTdsInletDelta();
     if (old_value == 0)
     {
-        return (new_value == 0) ? 0 : TDS_REPORT_DELTA_PERCENT;
+        return (new_value == 0) ? D_FALSE : D_TRUE;
     }
 
+    UI16 delta_ppm = 0;
     if(old_value >= new_value)
     {
-        return old_value - new_value;
+        delta_ppm = old_value - new_value;
     }
-    return new_value - old_value;
+    else{
+        delta_ppm = new_value - old_value;
+    }
+    printf("TDS input report triggered by delta: inlet=%u ppm\n", delta_ppm);
+
+    return (delta_ppm >= TDS_REPORT_INLET_DELTA_PPM) ? D_TRUE : D_FALSE;
+}
+
+static _bool IsTdsOutChanged(UI16 old_value, UI16 new_value)
+{
+    const UI16 TDS_REPORT_OUT_DELTA_PPM = (UI16)SystemConfigGetStateTdsOutDelta();
+    if (old_value == 0)
+    {
+        return (new_value == 0) ? D_FALSE : D_TRUE;
+    }
+
+    UI16 delta_ppm = 0;
+    if(old_value >= new_value)
+    {
+        delta_ppm = old_value - new_value;
+    }
+    else{
+        delta_ppm = new_value - old_value;
+    }
+    printf("TDS output report triggered by delta: ro=%u ppm\n", delta_ppm);
+    return (delta_ppm >= TDS_REPORT_OUT_DELTA_PPM) ? D_TRUE : D_FALSE;
 }
 
 void TdsManagerInit(void)
@@ -64,30 +92,31 @@ bool TdsManagerShouldReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
     {
         return true;
     }
+    const UI32 TDS_REPORT_INTERVAL_MS = SystemConfigGetStateTdsMinGapSec() * 1000;
     // periodic feedback (60s)
     if ((now_ms - previous.last_sent_ms) >= TDS_REPORT_INTERVAL_MS)
     {
         // printf("TDS report interval reached: %lu ms\n", (unsigned long)(now_ms - previous.last_sent_ms));
-        // AppPushTdsReportToCloud(inlet_ppm, ro_ppm);
-        UI16 inlet_delta = TdsDeltaPpm(previous.last_reported_inlet_ppm, inlet_ppm);
-        UI16 ro_delta = TdsDeltaPpm(previous.last_reported_ro_ppm, ro_ppm);
-        if((inlet_delta >= TDS_REPORT_DELTA_PERCENT) || ro_delta >= TDS_REPORT_DELTA_PERCENT)
+
+        _bool inlet_changed = IsTdsInletChanged(previous.last_reported_inlet_ppm, inlet_ppm);
+        _bool out_changed = IsTdsOutChanged(previous.last_reported_ro_ppm, ro_ppm);
+
+        if(inlet_changed == D_TRUE || out_changed == D_TRUE)
         {
-            if ((inlet_delta >= TDS_REPORT_DELTA_PERCENT))
+            if (inlet_changed)
             {
-                printf("TDS input report triggered by delta: inlet=%u ppm\n", inlet_delta);
-                // TdsInputUpdateRecord(inlet_ppm);
-                AppPushTdsReportToCloud(inlet_ppm, 0xFFFF); // post inlet only
+                AppContextMarkTdsReported(inlet_ppm, TDS_INVALID_VALUE, now_ms);
+                AppPushTdsReportToCloud(inlet_ppm, TDS_INVALID_VALUE); // post inlet only
+                TdsInputUpdateRecord(inlet_ppm);
             }
-            if (ro_delta >= TDS_REPORT_DELTA_PERCENT)
-            {
-                printf("TDS output report triggered by delta: ro=%u ppm\n", ro_delta);
-                // TdsOutputUpdateRecord(ro_ppm);
-                AppPushTdsReportToCloud(0xFFFF, ro_ppm); // post ro only
-            } 
-            return true;
+            if (out_changed)
+            { 
+                AppContextMarkTdsReported(TDS_INVALID_VALUE, ro_ppm, now_ms);
+                AppPushTdsReportToCloud(TDS_INVALID_VALUE, ro_ppm); // post ro only
+                TdsOutputUpdateRecord(ro_ppm);
+            }   
+            return true;    
         }
-       
     }
 
     return false;
@@ -116,7 +145,7 @@ void TdsManagerHandleSample(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
 
     if (TdsManagerShouldReport(inlet_ppm, ro_ppm, now_ms))
     {
-        AppContextMarkTdsReported(inlet_ppm, ro_ppm, now_ms);
+        // AppContextMarkTdsReported(inlet_ppm, ro_ppm, now_ms);
         return;
     }
 
@@ -140,6 +169,10 @@ void TdsManagerCheckWarnings(UI16 inlet_ppm, UI16 ro_ppm, const UI8 max_num_dete
     static UI8 count_check_inlet_water_quality_warning = 0;
     static UI8 count_check_water_quality_warning = 0;
     static UI8 count_check_water_quality_fault = 0;
+
+    const UI32 TDS_INPUT_ERROR_THRESHOLD = SystemConfigGetAlertTdsInMaxPpm();
+    const UI32 TDS_OUTPUT_ERROR_THRESHOLD = SystemConfigGetAlertTdsOutMaxPpm();
+    const UI32 TDS_OUTPUT_WARNING_THRESHOLD = SystemConfigGetAlertTdsOutWarnPpm();
 
     //WARNING_ID_ER00051_INLET_WATER_QUALITY_WARNING
     if (inlet_ppm >= TDS_INPUT_ERROR_THRESHOLD)

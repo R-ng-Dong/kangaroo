@@ -14,8 +14,8 @@ typedef enum
     SYSTEM_CONFIG_ALERT_TIER2_MAX_SENDS,
     SYSTEM_CONFIG_ALERT_TIER3_INTERVAL_MS,
     SYSTEM_CONFIG_REPORT_INTERVAL_MS,
-    SYSTEM_CONFIG_STATE_TDS_DELTA_PCT,
-    SYSTEM_CONFIG_STATE_TDS_FLOOR_PPM,
+    SYSTEM_CONFIG_STATE_TDS_INLET_DELTA_PPM,
+    SYSTEM_CONFIG_STATE_TDS_OUT_DELTA_PPM,
     SYSTEM_CONFIG_STATE_TDS_MIN_GAP_SEC,
     SYSTEM_CONFIG_STATE_TDS_RUN_PERIOD_SEC,
     SYSTEM_CONFIG_STATE_TDS_IDLE_PERIOD_SEC,
@@ -44,8 +44,8 @@ typedef enum
     SYSTEM_CONFIG_ALERT_FILTER_WARN_PCT,
     SYSTEM_CONFIG_ALERT_FILTER_CRITICAL_PCT,
     SYSTEM_CONFIG_GENERAL_TZ_OFFSET_MIN,
+    SYSTEM_CONFIG_GENERAL_FLUSH_SECONDS,
 
-    SYSTEM_CONFIG_TEST_TOTAL_FLUSH_WATER_VOLUME_L,
     SYSTEM_CONFIG_KEY_COUNT
 } SystemConfigKey;
 
@@ -53,14 +53,14 @@ typedef enum
 typedef struct
 {
     UI32 version[4];
-    SI32 values[SYSTEM_CONFIG_KEY_COUNT];
+    UI32 values[SYSTEM_CONFIG_KEY_COUNT];
 } ReportConfig;
 
 typedef struct
 {
     const char *key;
     UI8 scope;
-    SI32 def, min, max;
+    UI32 def, min, max;
 } ConfigKey;
 
 enum
@@ -80,42 +80,42 @@ const ConfigKey *SystemConfigGetKeyInfo(SystemConfigKey key);
 
 UI32 SystemConfigGetVersion(UI8 scope);
 
-SI32 SystemConfigGetAlertTier1IntervalMs(void);
-SI32 SystemConfigGetAlertTier1MaxSends(void);
-SI32 SystemConfigGetAlertTier2IntervalMs(void);
-SI32 SystemConfigGetAlertTier2MaxSends(void);
-SI32 SystemConfigGetAlertTier3IntervalMs(void);
-SI32 SystemConfigGetReportIntervalMs(void);
-SI32 SystemConfigGetStateTdsDeltaPct(void);
-SI32 SystemConfigGetStateTdsFloorPpm(void);
-SI32 SystemConfigGetStateTdsMinGapSec(void);
-SI32 SystemConfigGetStateTdsRunPeriodSec(void);
-SI32 SystemConfigGetStateTdsIdlePeriodSec(void);
-SI32 SystemConfigGetStateTempHotBandC(void);
-SI32 SystemConfigGetStateTempColdBandC(void);
-SI32 SystemConfigGetStateTempPeriodSec(void);
-SI32 SystemConfigGetStateFilterStepPct(void);
-SI32 SystemConfigGetStateWaterDeltaMl(void);
-SI32 SystemConfigGetStateWaterMinGapSec(void);
-SI32 SystemConfigGetStateEnergyDeltaWh(void);
-SI32 SystemConfigGetStateEnergyMinGapSec(void);
-SI32 SystemConfigGetStateLiveIntervalSec(void);
-SI32 SystemConfigGetStateLiveTtlSec(void);
-SI32 SystemConfigGetAlertTdsInMaxPpm(void);
-SI32 SystemConfigGetAlertTdsOutMaxPpm(void);
-SI32 SystemConfigGetAlertTdsOutWarnPpm(void);
-SI32 SystemConfigGetAlertQualityOnSec(void);
-SI32 SystemConfigGetAlertQualityOffSec(void);
-SI32 SystemConfigGetAlertLeakOnSec(void);
-SI32 SystemConfigGetAlertLeakOffSec(void);
-SI32 SystemConfigGetAlertSensorOnSec(void);
-SI32 SystemConfigGetAlertSensorOffSec(void);
-SI32 SystemConfigGetAlertPumpMaxRunMin(void);
-SI32 SystemConfigGetAlertHotMaxRunMin(void);
-SI32 SystemConfigGetAlertColdMaxRunMin(void);
-SI32 SystemConfigGetAlertFilterWarnPct(void);
-SI32 SystemConfigGetAlertFilterCriticalPct(void);
-SI32 SystemConfigGetGeneralTzOffsetMin(void);
-SI32 SystemConfigGetTotalFlushWater(void);
+UI32 SystemConfigGetAlertTier1IntervalMs(void);
+UI32 SystemConfigGetAlertTier1MaxSends(void);
+UI32 SystemConfigGetAlertTier2IntervalMs(void);
+UI32 SystemConfigGetAlertTier2MaxSends(void);
+UI32 SystemConfigGetAlertTier3IntervalMs(void);
+UI32 SystemConfigGetReportIntervalMs(void);
+UI32 SystemConfigGetStateTdsInletDelta(void);
+UI32 SystemConfigGetStateTdsOutDelta(void);
+UI32 SystemConfigGetStateTdsMinGapSec(void);
+UI32 SystemConfigGetStateTdsRunPeriodSec(void);
+UI32 SystemConfigGetStateTdsIdlePeriodSec(void);
+UI32 SystemConfigGetStateTempHotBandC(void);
+UI32 SystemConfigGetStateTempColdBandC(void);
+UI32 SystemConfigGetStateTempPeriodSec(void);
+UI32 SystemConfigGetStateFilterStepPct(void);
+UI32 SystemConfigGetStateWaterDeltaMl(void);
+UI32 SystemConfigGetStateWaterMinGapSec(void);
+UI32 SystemConfigGetStateEnergyDeltaWh(void);
+UI32 SystemConfigGetStateEnergyMinGapSec(void);
+UI32 SystemConfigGetStateLiveIntervalSec(void);
+UI32 SystemConfigGetStateLiveTtlSec(void);
+UI32 SystemConfigGetAlertTdsInMaxPpm(void);
+UI32 SystemConfigGetAlertTdsOutMaxPpm(void);
+UI32 SystemConfigGetAlertTdsOutWarnPpm(void);
+UI32 SystemConfigGetAlertQualityOnSec(void);
+UI32 SystemConfigGetAlertQualityOffSec(void);
+UI32 SystemConfigGetAlertLeakOnSec(void);
+UI32 SystemConfigGetAlertLeakOffSec(void);
+UI32 SystemConfigGetAlertSensorOnSec(void);
+UI32 SystemConfigGetAlertSensorOffSec(void);
+UI32 SystemConfigGetAlertPumpMaxRunMin(void);
+UI32 SystemConfigGetAlertHotMaxRunMin(void);
+UI32 SystemConfigGetAlertColdMaxRunMin(void);
+UI32 SystemConfigGetAlertFilterWarnPct(void);
+UI32 SystemConfigGetAlertFilterCriticalPct(void);
+UI32 SystemConfigGetGeneralTzOffsetMin(void);
+UI32 SystemConfigGetFlushSecond(void);
 
 #endif

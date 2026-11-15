@@ -199,7 +199,7 @@ void CloudSyncTick(void)
         /* Periodic service/RAL report, after the connect jitter above. */
         if ((0U != s_nextReportUs) && (nowUs >= s_nextReportUs))
         {
-            UI32 intervalMs = 15000;//SystemConfigGetReportIntervalMs();
+            UI32 intervalMs = SystemConfigGetReportIntervalMs();
             if (intervalMs < 60000U)
             {
                 intervalMs = 60000U;

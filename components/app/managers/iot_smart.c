@@ -6,6 +6,7 @@
 #include "rtc_time.h"
 #include "water_controller.h"
 #include <string.h>
+#include "system_config.h"
 
 #define IOT_SMART_NVS_NAMESPACE "iot_smart"
 #define IOT_SMART_NVS_KEY "trigger_bind"
@@ -207,7 +208,7 @@ void IotSmartEvaluateCondition(void)
            && count_min >= sm_temp->bindTriggerMix.timeStart && count_min <= sm_temp->bindTriggerMix.timeStop \
            && (sm_temp->bindTriggerMix.weekDay == 0x00 || 1<<wday & sm_temp->bindTriggerMix.weekDay))
         {
-            WaterControllerStartROFlushing(sm_temp->ro_flushing_time_s);
+            WaterControllerStartROFlushing((UI16)SystemConfigGetFlushSecond());
             return;
         }
     }

@@ -2,8 +2,8 @@
 set(SRCS "main.c" "factory_test_udp.c")
 
 idf_component_register(SRCS "${SRCS}" 
-                       INCLUDE_DIRS "include"
-                       REQUIRES app drivers iotcore iotplatform sdk esp_wifi esp_event nvs_flash esp_eth bt mqtt esp_netif json )
+                       INCLUDE_DIRS "${INCLUDE_DIRS}"  
+                       REQUIRES app drivers iotcore iotplatform esp_wifi esp_event nvs_flash esp_eth bt mqtt esp_netif json )
 
 # target_compile_options(${COMPONENT_LIB} PRIVATE "-std=gnu++17")
 
