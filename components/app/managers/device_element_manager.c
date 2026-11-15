@@ -9,9 +9,9 @@ static portMUX_TYPE s_elements_lock = portMUX_INITIALIZER_UNLOCKED;
 static DeviceElementAttributeInfo s_element_1_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
-    ATTRIBUTE(45569, "water_flow", 4),
-    ATTRIBUTE(1, "on_off", 2),
-    ATTRIBUTE(46096, "error_code", 4),
+    ATTRIBUTE(ATTR_INFOMATION_WATER_CONSUMER, "water_flow", 4),
+    ATTRIBUTE(ATTR_ONOFF, "on_off", 2),
+    ATTRIBUTE(ATTR_INFO_CURRENT_ISSUES_STATUS, "error_code", 4),
     ATTRIBUTE(ATTR_STATUS, "status_manager", 4),
     ATTRIBUTE(ATTR_FIRMWARE_VERSION, "firmware_version", 2), 
 };
@@ -19,31 +19,33 @@ static DeviceElementAttributeInfo s_element_1_attributes[] = {
 static DeviceElementAttributeInfo s_element_2_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
-    ATTRIBUTE(160, "tds_input", 2),
+    ATTRIBUTE(ATTR_EVENT_TDS_STATUS, "tds_input", 2),
     ATTRIBUTE(ATTR_ENERGY_SAVING_SCHEDULE, "saving_schedule", 6),
     ATTRIBUTE(ATTR_ENERGY, "energy", 4),
     ATTRIBUTE(ATTR_RO_FLUSHING, "ro_flushing", 2),
+    ATTRIBUTE(ATTR_TEMP_SET, "hot_temperature", 2),
 };
 
 static DeviceElementAttributeInfo s_element_3_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
-    ATTRIBUTE(160, "tds_output", 2),
+    ATTRIBUTE(ATTR_EVENT_TDS_STATUS, "tds_output", 2),
     ATTRIBUTE(ATTR_ENERGY, "energy_saving", 4),
+    ATTRIBUTE(ATTR_TEMP_SET, "cold_temperature", 2),
 };
 
 static DeviceElementAttributeInfo s_element_4_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
-    ATTRIBUTE(20, "hot_tank_temperature_setting", 2),
-    ATTRIBUTE(1, "onoff_hot_tank", 2),
+    ATTRIBUTE(ATTR_TEMP_SET, "hot_tank_temperature_setting", 2),
+    ATTRIBUTE(ATTR_ONOFF, "onoff_hot_tank", 2),
 };
 
 static DeviceElementAttributeInfo s_element_5_attributes[] = {
     ATTRIBUTE(62624, "filter_setting", 22),
     ATTRIBUTE(45568, "filter_lifetime", 24),
-    ATTRIBUTE(20, "cold_tank_temperature_setting", 2),
-    ATTRIBUTE(1, "onoff_cold_tank", 2),
+    ATTRIBUTE(ATTR_TEMP_SET, "cold_tank_temperature_setting", 2),
+    ATTRIBUTE(ATTR_ONOFF, "onoff_cold_tank", 2),
 };
 
 static DeviceElementInfo s_elements[] = {

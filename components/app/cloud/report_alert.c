@@ -284,7 +284,7 @@ void ReportAlertHandleServiceEvent(IOT_CoreServiceEvent_t *event)
     const cJSON *aid = cJSON_GetObjectItemCaseSensitive(root, "aid");
     const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
     const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
-    printf("HandleServiceEvent: %s \n", event->json);
+    printf("\nHandleServiceEvent: %s \n", event->json);
     if (cJSON_IsString(type) && strcmp(type->valuestring, "config.set") == 0)
     {
         event->result = config_apply(root) ? IOT_OK : IOT_ERR_INVALID_ARG;

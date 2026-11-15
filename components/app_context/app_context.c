@@ -87,8 +87,14 @@ bool AppContextHasTdsState(void)
 
 void AppContextMarkTdsReported(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
 {
-    s_app_context.tds.last_reported_inlet_ppm = inlet_ppm;
-    s_app_context.tds.last_reported_ro_ppm = ro_ppm;
-    s_app_context.tds.last_sent_ms = now_ms;
+    if(inlet_ppm != TDS_INVALID_VALUE){
+        s_app_context.tds.last_reported_inlet_ppm = inlet_ppm;
+        s_app_context.tds.last_sent_ms = now_ms;
+    }
+    if(ro_ppm != TDS_INVALID_VALUE)
+    {
+        s_app_context.tds.last_reported_ro_ppm = ro_ppm;
+        s_app_context.tds.last_sent_ms = now_ms;
+    }
 }
 

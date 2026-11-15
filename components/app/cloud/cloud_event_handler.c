@@ -259,6 +259,8 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
             IOT_LOGE(TAG, "Failed to send state change report");
         }
 
+        setData->result = IOT_OK;
+
         IOT_DaoDeviceFreeIdentityInfo(&info);
 
         break;
@@ -266,6 +268,7 @@ static iot_err_t IOT_ExCoreEventHandleState(IOT_CoreStateEvent_t *stateEvent)
     case IOT_EVENT_TYPE_STATE_GET:
     {
         IOT_LOGW(TAG, "STATE event: GET_STATE");
+        AppRefreshAttributeValue();
         IOT_EventStateGetRequest_t *getData = &(stateEvent->data.getRequest);
         
         elemStateAttr_t attributes[MAX_NUM_ELEMENT][MAX_NUM_ATTRIBUTE];
@@ -868,6 +871,14 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
     }
     case DEV_EVENT_BOOTED:
         break;
+    case DEV_EVENT_PROVISION_FAILED:
+    {
+        /* The cloud config/cert were saved before the sync walk, so the
+         * supervisor can still bring the session up once the BLE release
+         * timer frees the heap. Keep advertising until then. */
+        IOT_LOGE(TAG, "Provisioning reported failure; retrying cloud after BLE release");
+        break;
+    }
     case DEV_EVENT_PROVISION_CANCELLED:
     {
         /* The phone left before registering. Resume sensing and stay
@@ -1223,7 +1234,16 @@ static iot_err_t IOT_ExCoreEventHandleOs(IOT_CoreOsEvent_t *osEvent)
             return IOT_ERR_FAIL;
         }
         printf("OTA ready ... \n");
-        return app_handle_ota_requested(&osEvent->data.otaRequested);
+        iot_err_t ota_err = app_handle_ota_requested(&osEvent->data.otaRequested);
+        if (IOT_OK == ota_err)
+        {
+            /* iotcore presets this to IOT_CORE_OTA_CLAIM_NONE and reads it back
+             * after the callback returns; unclaimed, core erases the request and
+             * answers the cloud "not supported". The download was started in this
+             * boot, so claim it now so the cloud is told the update is accepted. */
+            osEvent->data.otaRequested.claim = IOT_CORE_OTA_CLAIM_NOW;
+        }
+        return ota_err;
     }
     default:
         IOT_LOGW(TAG, "Unknown OS event type: %d", osEvent->type);

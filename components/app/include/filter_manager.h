@@ -5,7 +5,7 @@
 #include "water_profile.h" // FilterTimeIndex
 
 #define FILTER_MANAGER_REPORT_INTERVAL_MS 1*60000U
-#define FILTER_MANAGER_REPORT_DECREASE_PERCENT 1
+// #define FILTER_MANAGER_REPORT_DECREASE_PERCENT 1
 
 #define WATER_TANK_CAPACITY_L  7
 #define INITIAL_WASTE_WATER_VOLUME_L 50 
@@ -43,5 +43,6 @@ _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *second
 _bool FilterManagerSetPid(FilterTimeIndex filter_index, const UI8 pid[FILTER_PID_SIZE]);
 _bool FilterManagerGetPid(FilterTimeIndex filter_index, UI8 pid_out[FILTER_PID_SIZE]);
 _bool FilterManagerCheckFirstChanged(FilterTimeIndex filter_index, UI8 pid[FILTER_PID_SIZE]);
+void FilterUpdateSetPending(_bool pending);
 
 #endif

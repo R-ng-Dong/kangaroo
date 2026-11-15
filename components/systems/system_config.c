@@ -15,8 +15,8 @@ static ConfigKey s_config_keys[SYSTEM_CONFIG_KEY_COUNT] = {
     {"alert.tier2.maxSends", SCOPE_CORE, 5, 1, INT32_MAX}, 
     {"alert.tier3.intervalMs", SCOPE_CORE, 6000000, 5000, INT32_MAX}, 
     {"report.intervalMs", SCOPE_CORE, 900000, 60000, 604800000}, 
-    {"state.tds.deltaPct", SCOPE_STATE, 5, 1, 50}, 
-    {"state.tds.floorPpm", SCOPE_STATE, 2, 0, 50}, 
+    {"state.tds.inDeltaPpm", SCOPE_STATE, 10, 1, 100}, 
+    {"state.tds.outDeltaPpm", SCOPE_STATE, 2, 1, 100}, 
     {"state.tds.minGapSec", SCOPE_STATE, 60, 10, 3600}, 
     {"state.tds.runPeriodSec", SCOPE_STATE, 300, 60, 3600}, 
     {"state.tds.idlePeriodSec", SCOPE_STATE, 3600, 300, 86400}, 
@@ -30,9 +30,9 @@ static ConfigKey s_config_keys[SYSTEM_CONFIG_KEY_COUNT] = {
     {"state.energy.minGapSec", SCOPE_STATE, 900, 60, 86400}, 
     {"state.live.intervalSec", SCOPE_STATE, 60, 10, 600}, 
     {"state.live.ttlSec", SCOPE_STATE, 120, 30, 1800}, 
-    {"alert.tdsIn.maxPpm", SCOPE_ALERT, 0, 1, 2000}, 
-    {"alert.tdsOut.maxPpm", SCOPE_ALERT, 0, 1, 2000}, 
-    {"alert.tdsOut.warnPpm", SCOPE_ALERT, 0, 1, 2000}, 
+    {"alert.tdsIn.maxPpm", SCOPE_ALERT, 500, 1, 2000}, 
+    {"alert.tdsOut.maxPpm", SCOPE_ALERT, 300, 1, 2000}, 
+    {"alert.tdsOut.warnPpm", SCOPE_ALERT, 200, 1, 2000}, 
     {"alert.quality.onSec", SCOPE_ALERT, 60, 1, 3600}, 
     {"alert.quality.offSec", SCOPE_ALERT, 300, 1, 3600}, 
     {"alert.leak.onSec", SCOPE_ALERT, 10, 1, 3600}, 
@@ -44,8 +44,8 @@ static ConfigKey s_config_keys[SYSTEM_CONFIG_KEY_COUNT] = {
     {"alert.cold.maxRunMin", SCOPE_ALERT, 120, 5, 600}, 
     {"alert.filter.warnPct", SCOPE_ALERT, 30, 1, 99}, 
     {"alert.filter.criticalPct", SCOPE_ALERT, 10, 1, 99}, 
-    {"general.tzOffsetMin", SCOPE_GENERAL, 420, -720, 840},
-    {"test.totalFlushWater", SCOPE_GENERAL, 0, 0, 1000}
+    {"general.tzOffsetMin", SCOPE_GENERAL, 420, (UI32)-720, 840},
+    {"general.flushSec", SCOPE_GENERAL, 600, 1, 3600}
 };
 
 void SystemConfigLoad(void)
@@ -137,7 +137,7 @@ _bool SystemConfigSet(ReportConfig config)
 // }
 
 #define DEFINE_CONFIG_GETTER(name, key) \
-    SI32 SystemConfigGet##name(void) \
+    UI32 SystemConfigGet##name(void) \
     { \
         SystemConfigLoad(); \
         return s_config.values[key]; \
@@ -149,8 +149,8 @@ DEFINE_CONFIG_GETTER(AlertTier2IntervalMs, SYSTEM_CONFIG_ALERT_TIER2_INTERVAL_MS
 DEFINE_CONFIG_GETTER(AlertTier2MaxSends, SYSTEM_CONFIG_ALERT_TIER2_MAX_SENDS)
 DEFINE_CONFIG_GETTER(AlertTier3IntervalMs, SYSTEM_CONFIG_ALERT_TIER3_INTERVAL_MS)
 DEFINE_CONFIG_GETTER(ReportIntervalMs, SYSTEM_CONFIG_REPORT_INTERVAL_MS)
-DEFINE_CONFIG_GETTER(StateTdsDeltaPct, SYSTEM_CONFIG_STATE_TDS_DELTA_PCT)
-DEFINE_CONFIG_GETTER(StateTdsFloorPpm, SYSTEM_CONFIG_STATE_TDS_FLOOR_PPM)
+DEFINE_CONFIG_GETTER(StateTdsInletDelta, SYSTEM_CONFIG_STATE_TDS_INLET_DELTA_PPM)
+DEFINE_CONFIG_GETTER(StateTdsOutDelta, SYSTEM_CONFIG_STATE_TDS_OUT_DELTA_PPM)
 DEFINE_CONFIG_GETTER(StateTdsMinGapSec, SYSTEM_CONFIG_STATE_TDS_MIN_GAP_SEC)
 DEFINE_CONFIG_GETTER(StateTdsRunPeriodSec, SYSTEM_CONFIG_STATE_TDS_RUN_PERIOD_SEC)
 DEFINE_CONFIG_GETTER(StateTdsIdlePeriodSec, SYSTEM_CONFIG_STATE_TDS_IDLE_PERIOD_SEC)
@@ -179,6 +179,6 @@ DEFINE_CONFIG_GETTER(AlertColdMaxRunMin, SYSTEM_CONFIG_ALERT_COLD_MAX_RUN_MIN)
 DEFINE_CONFIG_GETTER(AlertFilterWarnPct, SYSTEM_CONFIG_ALERT_FILTER_WARN_PCT)
 DEFINE_CONFIG_GETTER(AlertFilterCriticalPct, SYSTEM_CONFIG_ALERT_FILTER_CRITICAL_PCT)
 DEFINE_CONFIG_GETTER(GeneralTzOffsetMin, SYSTEM_CONFIG_GENERAL_TZ_OFFSET_MIN)
-DEFINE_CONFIG_GETTER(TotalFlushWater, SYSTEM_CONFIG_TEST_TOTAL_FLUSH_WATER_VOLUME_L)
+DEFINE_CONFIG_GETTER(FlushSecond, SYSTEM_CONFIG_GENERAL_FLUSH_SECONDS)
 
 #undef DEFINE_CONFIG_GETTER

@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include "common.h"
 
+#define TDS_INVALID_VALUE (0xFFFF)
+
 typedef struct {
     UI8 ro_status;
     UI8 ply_status;
