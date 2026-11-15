@@ -20,13 +20,23 @@ static void LedPatternTask(void *arg)
 {
     _bool led_on = D_TRUE;
     _bool is_connected = D_FALSE;
+    _bool steady_state_applied = D_FALSE;
     while (1)
     {
         if (!s_pattern_active)
         {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            /* Reassert ON once after leaving a blink pattern. This also
+             * closes the small race where a pattern iteration was already in
+             * flight when Error/Normal disabled the pattern. */
+            if (!steady_state_applied)
+            {
+                LedManagerSetState(LED_ON);
+                steady_state_applied = D_TRUE;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        steady_state_applied = D_FALSE;
         LedPattern pattern = s_pattern;
         if (pattern == LED_PATTERN_CONNECTED)
         {
@@ -87,7 +97,9 @@ esp_err_t LedManagerSetError(void)
     if(!s_led) return ESP_FAIL;
     if(s_warning) return ESP_OK;
     s_warning = D_TRUE;
-    // s_pattern_active = false;
+    /* Error is a steady status, not a blink pattern. Otherwise the waiting
+     * pattern keeps toggling the LED after Wi-Fi/cloud loss changes its color. */
+    // s_pattern_active = D_FALSE;
     LC8823LoadValue(s_led, LED_ON, DIM_ON, 0xFF, 0x00, 0x00); 
     LC8823LoadValue(s_led, LED_OFF, DIM_OFF, 0xFF, 0x00, 0x00);
     esp_err_t err = LC8823SetState(s_led, LED_ON);
@@ -100,7 +112,9 @@ esp_err_t LedManagerSetNormal(void)
     if(!s_led) return ESP_FAIL;
     if(!s_warning) return ESP_OK;
     s_warning = D_FALSE;
-    // s_pattern_active = false;
+    /* Normal is also steady. Network waiting and OTA explicitly reactivate
+     * their own patterns through LedManagerSetPattern(). */
+    // s_pattern_active = D_FALSE;
     LC8823LoadValue(s_led, LED_ON, DIM_ON, 0x00, 0xFF, 0x00); 
     LC8823LoadValue(s_led, LED_OFF, DIM_OFF, 0x00, 0xFF, 0x00);
     esp_err_t err = LC8823SetState(s_led, LED_ON);

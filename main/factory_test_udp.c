@@ -2,9 +2,11 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "cJSON.h"
@@ -26,6 +28,8 @@
 #include "water_profile.h"
 #include "network/wifi.h"
 #include "define.h"
+#include "cloud_event_handler.h"
+#include "IOT_TimerMgmt.h"
 
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
@@ -38,7 +42,17 @@
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
+static volatile bool s_stop_requested;
+static bool s_factory_wifi_active;
 static esp_event_handler_instance_t s_factory_wifi_ip_handler;
+static IOT_TimerHandle_t s_factory_test_stop_timer = IOT_TIMER_HANDLE_INVALID;
+
+static void FactoryTestStopTimerCb(void *arg)
+{
+    (void)arg;
+    s_factory_test_stop_timer = IOT_TIMER_HANDLE_INVALID;
+    FactoryTestSet(D_FALSE);
+}
 
 static void FactoryWifiGotIp(void *arg, esp_event_base_t event_base, int32_t event_id,
                              void *event_data)
@@ -556,9 +570,18 @@ static void FactoryTestUdpTask(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    const struct timeval receive_timeout = {.tv_sec = 0, .tv_usec = 200000};
+    if (0 > setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout)))
+    {
+        ESP_LOGE(s_tag, "Cannot configure UDP receive timeout");
+        close(socket_fd);
+        s_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     ESP_LOGI(s_tag, "Listening on UDP port %d", TEST_UDP_PORT);
     char request[TEST_UDP_MAX_REQUEST];
-    for (;;)
+    while (!s_stop_requested)
     {
         struct sockaddr_in peer = {0};
         socklen_t peer_length = sizeof(peer);
@@ -566,6 +589,8 @@ static void FactoryTestUdpTask(void *arg)
                                   &peer_length);
         if (0 < length)
         {
+            if (s_stop_requested)
+                break;
             char peer_ip[INET_ADDRSTRLEN];
             const char *ip = inet_ntop(AF_INET, &peer.sin_addr, peer_ip, sizeof(peer_ip));
             ESP_LOGI(s_tag, "UDP RX <- %s:%u (%u bytes): %.*s", ip ? ip : "?",
@@ -574,17 +599,32 @@ static void FactoryTestUdpTask(void *arg)
         }
         else if (0 > length)
         {
-            ESP_LOGE(s_tag, "UDP receive failed");
+            if (s_stop_requested)
+                break;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            ESP_LOGE(s_tag, "UDP receive failed: errno=%d", errno);
             break;
         }
     }
     close(socket_fd);
+    if (NULL != s_factory_wifi_ip_handler)
+    {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_factory_wifi_ip_handler);
+        s_factory_wifi_ip_handler = NULL;
+    }
+    ESP_LOGI(s_tag, "Factory UDP task stopped");
     s_task = NULL;
     vTaskDelete(NULL);
 }
 
 esp_err_t FactoryTestUdpStart(void)
 {
+    if (s_stop_requested)
+    {
+        ESP_LOGI(s_tag, "Factory UDP task skipped: provisioning has started");
+        return ESP_OK;
+    }
     if (NULL != s_task)
     {
         return ESP_OK;
@@ -596,10 +636,44 @@ esp_err_t FactoryTestUdpStart(void)
     esp_err_t err = FactoryWifiConnect();
     if (ESP_OK != err)
         return err;
+    s_factory_wifi_active = true;
+    FactoryTestSet(D_TRUE);
     PumpInit(PUMP_PIN, PUMP_ACTIVE_LOW);
     if (pdPASS != xTaskCreate(FactoryTestUdpTask, "factory_test_udp", 4096, NULL, 5, &s_task))
     {
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+void FactoryTestUdpStop(void)
+{
+    s_stop_requested = true;
+    if (IOT_TIMER_HANDLE_INVALID == s_factory_test_stop_timer)
+    {
+        s_factory_test_stop_timer = IOT_TimerInsertCb(FactoryTestStopTimerCb, NULL, 3000U);
+        if (IOT_TIMER_HANDLE_INVALID == s_factory_test_stop_timer)
+        {
+            ESP_LOGE(s_tag, "Failed to schedule factory-test shutdown; disabling immediately");
+            FactoryTestSet(D_FALSE);
+        }
+    }
+    if (s_factory_wifi_active)
+    {
+        /* FactoryWifiConnect() owns the station while the test is active.
+         * Leave it idle for BLE provisioning scans, and prevent the platform
+         * auto-reconnect loop from immediately reconnecting to the test SSID. */
+        IOT_WifiSetAutoReconnect(false);
+        esp_err_t err = esp_wifi_disconnect();
+        if (ESP_OK != err)
+        {
+            ESP_LOGW(s_tag, "Factory Wi-Fi disconnect during provisioning: %s", esp_err_to_name(err));
+        }
+        s_factory_wifi_active = false;
+    }
+    if (NULL == s_task)
+    {
+        return;
+    }
+    ESP_LOGI(s_tag, "Stopping factory UDP task");
 }

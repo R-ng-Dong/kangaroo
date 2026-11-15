@@ -70,7 +70,7 @@ static void app_on_device_removed(uint16_t eid, bool root)
     if(root)
     {
         ESP_LOGW(TAG, "Root device removed, clearing energy saving config and restarting");
-        // EnergySavingManagerClearConfig();
+        EnergySavingManagerClearConfig();
         IOT_ApplicationRestartChip();
     }
 }

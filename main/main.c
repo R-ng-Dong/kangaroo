@@ -35,6 +35,12 @@ void app_main(void)
         return;
     }
 
+#if FACTORY_TEST
+    /* Stop the factory UDP listener as soon as provisioning begins. Register
+     * before event callbacks so an early provisioning event is not missed. */
+    CloudRegisterProvisionStartedCallback(FactoryTestUdpStop);
+#endif
+
     // Step 3: Register event callbacks
     err = DeviceRegisterEvent();
     if (err != IOT_OK)
