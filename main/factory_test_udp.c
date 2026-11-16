@@ -284,7 +284,7 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
     else if (0 == strcmp(method, "setModel"))
     {
         UI32 model;
-        if (!ReadUnsigned(params, "model", 2, &model))
+        if (!ReadUnsigned(params, "model", WATER_PURIFIER_TYPE_HOT_COLD, &model))
         {
             SetResult(data, 0U, "invalid_argument");
             return;
@@ -459,15 +459,10 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
     }
     const cJSON *method = cJSON_GetObjectItemCaseSensitive(root, "method");
     const cJSON *params = cJSON_GetObjectItemCaseSensitive(root, "params");
-    const cJSON *cmd = cJSON_GetObjectItemCaseSensitive(root, "cmd");
-    UI8 cmd_style = cJSON_IsString(cmd) && 0 == strcmp(cmd->valuestring, "setModel") &&
-                    cJSON_IsObject(method) && NULL == params;
-    if (cmd_style)
-        params = method;
     const cJSON *mac = cJSON_GetObjectItemCaseSensitive(params, "mac");
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
     UI32 request_id;
-    if ((!cmd_style && !cJSON_IsString(method)) || !cJSON_IsObject(params) ||
+    if (!cJSON_IsString(method) || !cJSON_IsObject(params) ||
         (NULL != id && 0U == ReadUnsigned(root, "id", UINT32_MAX, &request_id)) ||
         (NULL != mac && !cJSON_IsString(mac)))
     {
@@ -476,7 +471,7 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
     }
 
     /* BLE is scanned by the PC; this disabled UDP method must not produce a reply. */
-    const char *method_name = cmd_style ? cmd->valuestring : method->valuestring;
+    const char *method_name = method->valuestring;
     if (0 == strcmp(method_name, "scanDevBle"))
     {
         cJSON_Delete(root);
@@ -538,7 +533,7 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
     }
     cJSON *code = cJSON_DetachItemFromObjectCaseSensitive(data, "code");
     cJSON *error = cJSON_DetachItemFromObjectCaseSensitive(data, "error");
-    cJSON_AddStringToObject(response, cmd_style ? "cmd" : "method", response_method);
+    cJSON_AddStringToObject(response, "method", response_method);
     UI8 success = NULL != code && 0 == code->valueint;
     UI8 include_code = !success || 0 == strcmp(method_name, "output") ||
                        0 == strcmp(method_name, "testLed") || 0 == strcmp(method_name, "lc8823") ||
@@ -560,7 +555,7 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
         cJSON_Delete(data);
     else
         cJSON_AddItemToObject(reply_params, "data", data);
-    cJSON_AddItemToObject(response, cmd_style ? "method" : "params", reply_params);
+    cJSON_AddItemToObject(response, "params", reply_params);
     SendResponse(socket_fd, peer, peer_length, response);
     cJSON_Delete(response);
     cJSON_Delete(root);
