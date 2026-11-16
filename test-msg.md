@@ -11,6 +11,7 @@ Tham chiếu: [ThingsBoard MQTT RPC](https://thingsboard.io/docs/reference/mqtt-
 - Yêu cầu RPC tìm thiết bị: `{"id":1,"method":"scanDevWifi","params":{}}`.
 - `id`: số nguyên không âm 0–4294967295, có thể bỏ qua; phản hồi không chứa `id`. Tool chỉ gửi một lệnh đang chờ cho mỗi thiết bị và ghép theo method phản hồi cùng IP nguồn.
 - `method`: tên lệnh trong bảng dưới. `params` luôn là object. `mac` có thể bỏ qua; nếu gửi thì phải là MAC Wi-Fi của thiết bị gồm 12 ký tự hex thường không dấu `:`, hoặc `alldevice` khi tìm thiết bị.
+- Riêng `setModel` cũng chấp nhận bản tin tool `{"cmd":"setModel","method":{"model":0}}`; phản hồi tương ứng dùng `cmd`/`method`.
 - Phản hồi dùng `<method>Rsp`, ví dụ `scanDevWifiRsp` và `testLedRsp`. Lỗi có `params.code: -1`, `params.error` và `params.data.mac`.
 - JSON sai, thiếu `method`/`params` hoặc MAC không khớp: thiết bị im lặng. Tham số lệnh sai trả `invalid_argument`; method không biết trả `unknown_command`.
 - `scanDevBle` hiện bị vô hiệu hóa: firmware ghi log RX nhưng không gửi `scanDevBleRsp`. Tool quét BLE trực tiếp qua adapter PC.
@@ -23,6 +24,7 @@ Tham chiếu: [ThingsBoard MQTT RPC](https://thingsboard.io/docs/reference/mqtt-
 | --------------- | ------------------------------------ | --------------------------------------------------- |
 | `scanDevWifi`   | Không                                | `connected`, `ssid`, `rssi`, `channel`, `ip` nếu có |
 | `getTypeDev`    | Không                                | `type`: 0 máy tiêu chuẩn, 1 máy nóng/lạnh           |
+| `setModel`     | `model`: 0 tiêu chuẩn, 1 nóng/lạnh  | Echo `model`, `restartRequired`; xem `code`         |
 | `testAdc`       | Không                                | `raw1`, `raw2` từ hai cảm biến TDS, đơn vị ppm      |
 | `testInput`     | Không                                | `pumpActive`                                        |
 | `output`        | `index` 0–7, `state` 0/1             | Echo `index`, `state`; xem `params.code`            |
@@ -72,6 +74,16 @@ Mỗi cặp JSON dưới đây lần lượt là yêu cầu và phản hồi m�
 ```
 
 `type` lấy từ `AppGetModel()`: `0` là `WATER_PURIFIER_TYPE_STANDARD`, `1` là `WATER_PURIFIER_TYPE_HOT_COLD`.
+
+### Đặt loại thiết bị
+
+```json
+{"cmd":"setModel","method":{"model":0}}
+{"cmd":"setModelRsp","method":{"code":0,"data":{"mac":"aabbccddeeff","model":0,"restartRequired":true}}}
+```
+
+RPC tương đương: `{"method":"setModel","params":{"model":0}}` → `{"method":"setModelRsp","params":{"code":0,"data":{"mac":"aabbccddeeff","model":0,"restartRequired":true}}}`.
+Lệnh lưu model vào NVS; khởi động lại thiết bị để `AppCheckModel()` và `AppInit()` dùng model mới. Chỉ nhận `0` hoặc `1`; giá trị khác trả `invalid_argument`, lỗi lưu trả `set_model_failed`.
 
 ### BLE
 
