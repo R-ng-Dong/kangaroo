@@ -35,6 +35,9 @@ static esp_err_t WaterControllerTaskSend(const WaterControlRequest_t *request)
     case WATER_CONTROL_SEND_FEATURE_COLD:
         return SetFeatureEnable(COLD_FEATURE,
                                 (UI8)request->value1, (UI8)request->value2);
+    case WATER_CONTROL_SEND_FEATURE_SAVING_ENERGY:
+        return SetFeatureEnable(ENERGY_SAVING_FEATURE,
+                                (UI8)request->value1, (UI8)request->value1);
     case WATER_CONTROL_SEND_FILTER:
         return SetTimeFilter((WaterPurifyFilter)request->value1, (UI16)request->value2);
     case WATER_CONTROL_SEND_RO_FLUSHING:
@@ -58,9 +61,18 @@ static _bool WaterControllerTaskIsConfirmed(const WaterControlRequest_t *request
     {
     case WATER_CONTROL_VERIFY_SETTING_BIT:
     {
-        const UI8 setting_bit = (request->command == WATER_CONTROL_SEND_FEATURE_HOT)
-                                    ? HOT_SWITCH_BIT
-                                    : COLD_SWITCH_BIT;
+        UI8 setting_bit = 0;
+        if(request->command == WATER_CONTROL_SEND_FEATURE_HOT)
+        {
+            setting_bit = HOT_SWITCH_BIT;
+        }else if(request->command == WATER_CONTROL_SEND_FEATURE_COLD)
+        {
+            setting_bit = COLD_SWITCH_BIT;
+        }else if(request->command == WATER_CONTROL_SEND_FEATURE_SAVING_ENERGY)
+        {
+            setting_bit = ENERGY_SAVING_BIT;
+        }
+
         confirmed = ((WaterProfileGetSetting() & setting_bit) == request->expected1);
         printf("confirm %d setting bit: %02x - %02x\n", confirmed, setting_bit, (UI8)request->expected1);
         break;
@@ -139,6 +151,14 @@ static void WaterControllerTask(void *arg)
         UI8 retries = 0U;
         while (1)
         {
+            UI32 war_mask = WarningManagerGetMask();
+            if(war_mask & WARNING_ID_ER00071)
+            {
+                ESP_LOGE(TAG, "Mainboard communication failed, control flow blocked");
+                // WarningManagerUpdate(WARNING_ID_ER00072, D_TRUE); // tx err
+                break;
+            }
+
             UI32 sequence = WaterControllerTaskGetSequence(request.verify1);
             esp_err_t result = WaterControllerTaskSend(&request);
 
@@ -184,7 +204,7 @@ static void WaterControllerTask(void *arg)
                 {
                     AppReportColdTankSettingToCloud((UI8)request.value1, (UI8)request.value2);
                 }
-                WarningManagerUpdate(WARNING_ID_ER00072, D_FALSE); 
+                // WarningManagerUpdate(WARNING_ID_ER00072, D_FALSE); 
                 break;
             }
 
@@ -192,7 +212,7 @@ static void WaterControllerTask(void *arg)
             {
                 ESP_LOGE(TAG, "Command %u failed confirmation (send=%s, retries=%u)",
                          (unsigned)request.command, esp_err_to_name(result), retries);
-                WarningManagerUpdate(WARNING_ID_ER00072, D_TRUE); // tx err
+                // WarningManagerUpdate(WARNING_ID_ER00072, D_TRUE); // tx err
                 break;
             }
 

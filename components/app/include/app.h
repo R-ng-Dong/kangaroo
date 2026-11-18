@@ -14,14 +14,17 @@
 #define TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS 15*60*1000 // 15 minutes
 
 #define TIMEOUT_UPDATE_SYSTEM_TIME_COUNT  (TIMEOUT_UPDATE_SYSTEM_TIME_MS/APP_INTERVAL_MS)
-// #define TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_COUNT  (TIMEOUT_RESPONSE_ENERGY_TO_CLOUD_MS/APP_INTERVAL_MS)
-// #define TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS_COUNT  (TIMEOUT_RESPONSE_WATER_CONSUMPTION_TO_CLOUD_MS/APP_INTERVAL_MS)
-// #define PUM_ACTIVE_UPDATE_TIMEOUT_COUNT ((5*60*1000)/APP_INTERVAL_MS)
-// #define PUM_STOPPED_UPDATE_TIMEOUT_COUNT ((60*60*1000)/APP_INTERVAL_MS)
+
+#define PID_MAX_LENGTH 16
+typedef struct 
+{
+    UI8 type;
+    UI8 pid[PID_MAX_LENGTH];
+}ProductModel;
 
 esp_err_t AppCommonInit(void);
 esp_err_t AppInit(WaterPurifierType model);
-WaterPurifierType AppCheckModel(void);
+UI8* AppCheckModel(void);
 WaterPurifierType AppGetModel(void);
 void AppSetModel(WaterPurifierType model);
 void AppRspToCloud(UI8 elem_id, UI16 attr_id);
@@ -29,8 +32,8 @@ void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm);
 void AppPushWarningToCloud(void);
 void AppRefreshAttributeValue(void);
 
-_bool ModelConfigStore(WaterPurifierType model);
-_bool ModelConfigGet(WaterPurifierType *model);
+_bool ModelConfigStore(WaterPurifierType model, const char *pid);
+_bool ModelConfigGet(ProductModel *p_model);
 
 _bool IsOtaReady(void);
 

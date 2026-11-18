@@ -54,6 +54,7 @@ static const char *TAG = "APP";
 #define LOG_CHECK_INTERVAL_MS (30UL * 1000UL)
 // #define TANK_TEMPERATURE_REPORT_INTERVAL_MS (60UL * 1000UL)
 
+
 static WaterPurifierType s_model = WATER_PURIFIER_TYPE_STANDARD;
 
 void AppPushWarningToCloud(void);
@@ -93,12 +94,33 @@ void AppSetModel(WaterPurifierType model)
     s_model = model;
 }
 
-_bool ModelConfigStore(WaterPurifierType model)
+_bool ConvertCharToUI8(const char *src, UI8 *dest, UI8 len)
 {
-    if(WATER_PURIFIER_TYPE_STANDARD != model && WATER_PURIFIER_TYPE_HOT_COLD != model)
+    if (src == NULL || dest == NULL || len == 0)
+    {
+        ESP_LOGE(TAG, "INVALID value");
         return D_FALSE;
+    }
 
-    UI8 model_u8 = (UI8)model;
+    memcpy(dest, src, len);
+    return D_TRUE;
+}
+
+_bool ModelConfigStore(WaterPurifierType type, const char *pid)
+{
+    if(WATER_PURIFIER_TYPE_STANDARD != type && WATER_PURIFIER_TYPE_HOT_COLD != type)
+        return D_FALSE;
+    UI8 pid_temp[PID_MAX_LENGTH];
+
+    if(ConvertCharToUI8(pid, pid_temp, PID_MAX_LENGTH) != D_TRUE)
+    {
+        return D_FALSE;
+    }
+
+    ProductModel p_model = {0};
+    p_model.type = (UI8)type;
+    memcpy(p_model.pid, pid_temp, PID_MAX_LENGTH);
+
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
@@ -106,7 +128,7 @@ _bool ModelConfigStore(WaterPurifierType model)
         return D_FALSE;
     }
 
-    err = nvs_set_u8(handle, SYSTEM_NVS_KEY_MODEL, model_u8);
+    err = nvs_set_blob(handle, SYSTEM_NVS_KEY_MODEL, &p_model, sizeof(p_model));
     if (err == ESP_OK)
     {
         err = nvs_commit(handle);
@@ -119,24 +141,35 @@ _bool ModelConfigStore(WaterPurifierType model)
     return D_TRUE;
 }
 
-_bool ModelConfigGet(WaterPurifierType *model)
+_bool ModelConfigGet(ProductModel *p_model)
 {
     nvs_handle_t handle = 0;
-    UI8 model_u8;
+
+    if(p_model == NULL)
+        return D_FALSE;
     esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
+        ESP_LOGE(TAG, " Failed to open SYSTEM_NVS_NAMESPACE");
         return D_FALSE;
-    }   
-    err = nvs_get_u8(handle, SYSTEM_NVS_KEY_MODEL, &model_u8);
+    }
+    ProductModel model;
+    size_t size_temp = sizeof(model);   
+    err = nvs_get_blob(handle, SYSTEM_NVS_KEY_MODEL, &model, &size_temp);
 
     if (err != ESP_OK)
     {
+        ESP_LOGE(TAG, " Failed to get blob");
         nvs_close(handle);
         return D_FALSE;
     }
     nvs_close(handle);
-    *model = (WaterPurifierType)model_u8;
+
+    if (size_temp == sizeof(model))
+    {
+        *p_model = model;
+    }
+    
     return D_TRUE;
 }
 
@@ -880,6 +913,12 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
                 _bool enabled = (attrValue[0] << 8 | attrValue[1]) ? D_TRUE : D_FALSE;
                 UI16 start_minute = (attrValue[2] << 8 | attrValue[3]);
                 UI16 end_minute = (attrValue[4] << 8 | attrValue[5]);
+                UI32 war_mask = WarningManagerGetMask();
+                if(war_mask & WARNING_ID_ER00071)
+                {
+                    ESP_LOGE(TAG, "Mainboard communication failed");
+                    return;
+                }
                 (void)EnergySavingManagerSetSchedule(enabled, start_minute, end_minute);
                 (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY_SAVING_SCHEDULE, attrValue, 6);
             }
@@ -1157,21 +1196,27 @@ static void AppCheckEnergyChanges(void)
     }
 }
 
-WaterPurifierType AppCheckModel(void)
+UI8* AppCheckModel(void)
 {
+    static ProductModel p_model = {0};
+    p_model.type = (UI8)WATER_PURIFIER_TYPE_STANDARD;
+    // UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x34};
+    // memcpy(p_model.pid, pid_temp, PID_MAX_LENGTH);
+
     ESP_LOGI(TAG, " ^-^ Waiting for check product model ... ^-^");
 
-    WaterPurifierType model = WATER_PURIFIER_TYPE_STANDARD; 
-    // if(ModelConfigStore(WATER_PURIFIER_TYPE_HOT_COLD) != D_TRUE)
+    // const char *MODEL_ID = "00000101C0040003";
+    // if(ModelConfigStore(WATER_PURIFIER_TYPE_HOT_COLD, MODEL_ID) != D_TRUE)
     // {
     //     ESP_LOGE(TAG, "Failed to set model");
     // }
 
-    if(ModelConfigGet(&model) != D_TRUE)
+    if(ModelConfigGet(&p_model) != D_TRUE)
     {
         ESP_LOGE(TAG, "Failed to get model, use model default: WATER_PURIFIER_TYPE_STANDARD");
     }
 
+    WaterPurifierType model = (WaterPurifierType)p_model.type;
     if(WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
         WaterProfileInit(); // init UART
@@ -1181,7 +1226,7 @@ WaterPurifierType AppCheckModel(void)
 
     ESP_LOGW(TAG, "[MODEL]: %s", s_model == WATER_PURIFIER_TYPE_HOT_COLD ? \
                  "WATER_PURIFIER_TYPE_HOT_COLD" : "WATER_PURIFIER_TYPE_STANDARD");
-    return AppGetModel();
+    return (UI8 *)p_model.pid;
 }
 
 esp_err_t AppCommonInit(void)

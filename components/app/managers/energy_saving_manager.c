@@ -282,6 +282,9 @@ _bool EnergySavingManagerSetSchedule(_bool enabled, UI16 start_minute, UI16 end_
             TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
             hot->base_enabled = D_TRUE;
             cold->base_enabled = D_TRUE;
+            // if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
+            //     WaterControllerSetFeatureSavingEnergy(0);
+            // }
         }
         EnergySavingManagerUpdate(minute_of_day, (UI64)(esp_timer_get_time() / 1000000ULL));
 
@@ -471,6 +474,9 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         {
             desired_enabled = D_FALSE;
             //s_policy.handled_first_schedule_deactivation = D_FALSE;
+            // if(!(WaterProfileGetSetting() & ENERGY_SAVING_BIT)){
+            //     WaterControllerSetFeatureSavingEnergy(1);
+            // }
         }
         else
         {
@@ -479,6 +485,9 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
             if (schedule_just_deactivated)
             {
                 tank->base_enabled = D_TRUE;
+                // if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
+                //     WaterControllerSetFeatureSavingEnergy(0);
+                // }
             }
             desired_enabled = tank->base_enabled;
         }

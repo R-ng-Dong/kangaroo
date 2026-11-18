@@ -927,7 +927,8 @@ iot_err_t IOT_RecordFlushAll(void)
     return err;
 }
 
-static void closeHeldWindowLocked(RecordState_t *inst, int32_t nowSec);
+static void closeHeldWindowLocked(RecordState_t *inst, uint64_t nowMs);
+static void announceClosedBlocks(void);
 
 /* The last write -- a planned restart, or the power about to go -- also closes every held
  * window early. A held value lives only in the instance, not in the block, so flushing dirty
@@ -944,12 +945,11 @@ static void closeHeldWindowsNowLocked(void)
     {
         return;
     }
-    const int32_t nowSec = msToSec(nowMs);
     for (uint8_t i = 0; i < CONFIG_IOT_RECORD_MAX_INSTANCES; i++)
     {
         if (s_instances[i].used && s_instances[i].pending)
         {
-            closeHeldWindowLocked(&s_instances[i], nowSec);
+            closeHeldWindowLocked(&s_instances[i], nowMs);
         }
     }
 }
@@ -963,6 +963,7 @@ iot_err_t IOT_RecordFlushAllSync(void)
     closeHeldWindowsNowLocked();
     const iot_err_t err = flushAllLockedMode(false);
     recordUnlock();
+    announceClosedBlocks();
     return err;
 }
 
@@ -1026,15 +1027,16 @@ static void appendEntry(RecordState_t *inst, const uint16_t *values, int32_t atS
 }
 
 /* Blocks closed by the append in progress, announced once the lock is released (a subscriber must
- * never run under it). One append closes at most two: the temperature/humidity pair. Written and
- * read only under the lock. */
+ * never run under it). Sized to the instance table: a call closes each instance's block at most once
+ * (an append rotates the temperature/humidity pair, a window sweep rotates every instance whose held
+ * value found its block full), so no event is dropped. Written and read only under the lock. */
 typedef struct
 {
     uint16_t eid;
     uint16_t elemId;
     uint16_t attrId;
 } RecordClosed_t;
-static RecordClosed_t s_closed[2];
+static RecordClosed_t s_closed[CONFIG_IOT_RECORD_MAX_INSTANCES];
 static uint8_t s_closedCount;
 
 static void noteClosedLocked(const RecordState_t *inst)
@@ -1045,6 +1047,29 @@ static void noteClosedLocked(const RecordState_t *inst)
         s_closed[s_closedCount].elemId = inst->elemId;
         s_closed[s_closedCount].attrId = inst->attrId;
         s_closedCount++;
+    }
+}
+
+/* Raise the block-closed event for every block noted since the last call. The list is copied and
+ * cleared under the lock and raised after it is released: a subscriber must never run under the
+ * record mutex. Called by every entry point that can rotate a block (append, the window sweep,
+ * the last write), after it has dropped the lock. */
+static void announceClosedBlocks(void)
+{
+    RecordClosed_t closed[sizeof(s_closed) / sizeof(s_closed[0])];
+    uint8_t closedCount = 0;
+    if (!recordLock())
+    {
+        return;
+    }
+    closedCount = s_closedCount;
+    memcpy(closed, s_closed, sizeof(closed));
+    s_closedCount = 0;
+    recordUnlock();
+
+    for (uint8_t i = 0; i < closedCount; i++)
+    {
+        IOT_ContractEventRecordBlockClosed(closed[i].eid, closed[i].elemId, closed[i].attrId);
     }
 }
 
@@ -1280,14 +1305,39 @@ static iot_err_t recordOneAttr(const IOT_ContractRecordEvent_t *event, const IOT
 
 /* Close one held window: write the settled value if it differs from the last recorded one,
  * stamped from when it arrived. Shared by the timer's sweep (the window's own deadline) and
- * the last write before a restart or a power loss, which closes it early. */
-static void closeHeldWindowLocked(RecordState_t *inst, int32_t nowSec)
+ * the last write before a restart or a power loss, which closes it early.
+ *
+ * When the block is full the value opens a new one instead. The new block is opened AT the
+ * value's arrival time, so its checkpoint is the arrival and the record sits at diff 0: the
+ * stamp is the same as if it had been written into the old block. (Arrival is always later than
+ * the old block's last record.) The deadlines are then re-armed from the close, as for any
+ * close that writes. */
+static void closeHeldWindowLocked(RecordState_t *inst, uint64_t nowMs)
 {
+    const int32_t nowSec = msToSec(nowMs);
     const uint16_t minInterval = inst->minIntervalSec;
     const uint16_t heartbeat = inst->heartbeatSec;
 
     const bool differs = !inst->haveLastValue
         || !valuesEqual(inst->pendingValue, inst->lastValue, inst->valueCount);
+
+    if (differs && inst->fields != NULL && blockIsFull(inst))
+    {
+        /* A full block has no room for the entry. Rotate first: rotateBlock() carries the
+         * pending value into the new block and re-arms both deadlines, so nothing more is
+         * written here. If the finishing block cannot be written the value stays pending
+         * and the next sweep retries; nothing is written past the block meanwhile. */
+        if (rotateBlock(inst, (uint64_t) inst->pendingTimeSec * 1000ULL, minInterval, heartbeat))
+        {
+            inst->windowDeadline = (minInterval == IOT_CONTRACT_RECORD_EVERY_CHANGE)
+                                       ? nowSec : (int32_t) (nowSec + minInterval);
+            inst->heartbeatDeadline = (heartbeat == IOT_CONTRACT_RECORD_NO_HEARTBEAT)
+                                          ? INT32_MAX : (int32_t) (nowSec + heartbeat);
+            IOT_RecordPushKick();
+            noteClosedLocked(inst);
+        }
+        return;
+    }
     inst->pending = false;
 
     if (differs && inst->fields != NULL)
@@ -1356,7 +1406,7 @@ static int32_t serviceWindowsLocked(void)
         }
         if (nowSec >= inst->windowDeadline)
         {
-            closeHeldWindowLocked(inst, nowSec);
+            closeHeldWindowLocked(inst, nowMs);
         }
         else if (earliest == 0 || inst->windowDeadline < earliest)
         {
@@ -1412,6 +1462,7 @@ int32_t IOT_RecordServiceWindows(void)
     }
     const int32_t earliest = serviceWindowsLocked();
     recordUnlock();
+    announceClosedBlocks();
     return earliest;
 }
 
@@ -1503,6 +1554,7 @@ static void recordSweepWork(void *unused)
     flushAllLockedMode(true);
     rearmTimer(earliest);
     recordUnlock();
+    announceClosedBlocks();
 }
 
 /*
@@ -2426,21 +2478,12 @@ iot_err_t IOT_RecordAppend(const IOT_ContractRecordEvent_t *event)
     {
         return IOT_ERR_TIMEOUT;
     }
-    s_closedCount = 0;
     const iot_err_t err = recordAppendV2(event, rule);
     /* An append can open a window, so the one-shot has to be reconsidered here -- there
      * is no periodic tick that would notice later. */
     rearmTimer(serviceWindowsLocked());
-    RecordClosed_t closed[sizeof(s_closed) / sizeof(s_closed[0])];
-    const uint8_t closedCount = s_closedCount;
-    memcpy(closed, s_closed, sizeof(closed));
-    s_closedCount = 0;
     recordUnlock();
-
-    for (uint8_t i = 0; i < closedCount; i++)
-    {
-        IOT_ContractEventRecordBlockClosed(closed[i].eid, closed[i].elemId, closed[i].attrId);
-    }
+    announceClosedBlocks();
     return err;
 }
 
@@ -2526,6 +2569,7 @@ iot_err_t IOT_ContractRecordClearRules(void)
         }
         memset(s_instances, 0, sizeof(s_instances));
         s_openBlocks = 0;
+        s_closedCount = 0;
         recordUnlock();
     }
 

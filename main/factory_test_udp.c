@@ -283,14 +283,22 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
     }
     else if (0 == strcmp(method, "setModel"))
     {
-        UI32 model;
-        if (!ReadUnsigned(params, "model", WATER_PURIFIER_TYPE_HOT_COLD, &model))
+        UI32 type;
+        if (!ReadUnsigned(params, "type", WATER_PURIFIER_TYPE_HOT_COLD, &type))
         {
             SetResult(data, 0U, "invalid_argument");
             return;
         }
-        cJSON_AddNumberToObject(data, "model", model);
-        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)model);
+        const cJSON *jPid = cJSON_GetObjectItemCaseSensitive(params, "pid");
+        if (!cJSON_IsString(jPid) || NULL == jPid->valuestring )
+        {
+            SetResult(data, 0U, "invalid_argument");
+            return;
+        }
+        cJSON_AddNumberToObject(data, "type", type);
+        cJSON_AddStringToObject(data, "pid", jPid->valuestring);
+
+        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring);
         if (stored)
             cJSON_AddBoolToObject(data, "restartRequired", true);
         SetResult(data, stored, "set_model_failed");
@@ -564,6 +572,21 @@ static void HandleRequest(int socket_fd, const char *request, size_t length,
 static void FactoryTestUdpTask(void *arg)
 {
     (void)arg;
+    static ProductModel model = {0};
+
+    if(ModelConfigGet(&model) != D_TRUE)
+    {
+        ESP_LOGE(s_tag, "Failed to get model");
+        WaterProfileInit(); // init UART
+        WaterControllerResetSystem();
+    }
+    // char *model_check = (char *)model.pid;
+    // if(strlen(model_check) == 0)
+    // {
+    //     ESP_LOGE(s_tag, "modelID is NULL, init UART");
+    //     WaterProfileInit(); // init UART
+    //     WaterControllerResetSystem();
+    // }
     int socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (0 > socket_fd)
     {

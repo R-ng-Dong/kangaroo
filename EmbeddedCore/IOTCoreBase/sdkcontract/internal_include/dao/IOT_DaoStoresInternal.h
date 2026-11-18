@@ -247,7 +247,7 @@ iot_err_t IOT_DaoDeviceUpsertAttribute(uint16_t devEid, uint16_t elemId, uint16_
 
 /**
  * @brief Check if device exists by MAC address (BLOCKING)
- * @param mac MAC address
+ * @param mac The 6 MAC bytes alone, as the store keeps them (no type or length in front)
  * @param outEid Output: Element ID if found (can be NULL)
  * @return true if device exists
  * Blocks: yes (storage). Safe from a timer callback: no. Task: any, including your core event

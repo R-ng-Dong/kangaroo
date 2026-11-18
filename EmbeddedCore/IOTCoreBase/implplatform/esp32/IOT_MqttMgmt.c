@@ -13,8 +13,14 @@
 #include "esp_system.h"
 #include "IOT_Osal.h"
 #include "sys/param.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "ESP_MQTT";
+/* Wi-Fi events and the app supervisor can request client replacement from
+ * different tasks. Serialize lifecycle operations so a second destroy/start
+ * cannot race the MQTT task's final cleanup. */
+static SemaphoreHandle_t s_mqttLifecycleMutex = NULL;
 
 /* MQTT keepalive in seconds. esp-mqtt sends PINGREQ every keepalive/2 and the broker
  * declares the client dead after 1.5x keepalive of silence, so this is the knob for how
@@ -87,6 +93,16 @@ static void untrackClient(struct IOT_MqttClient *client)
             s_liveClients[i] = NULL;
         }
     }
+}
+
+/* esp_mqtt_client_stop() cannot be called by the MQTT task itself. More
+ * importantly, esp_mqtt_client_destroy() does not propagate that stop failure
+ * before freeing the client, so destroying from an MQTT callback leaves the
+ * task running with a freed client/outbox. */
+static bool isCurrentMqttTask(const struct IOT_MqttClient *client)
+{
+    return client != NULL && client->mqttTask != NULL &&
+           client->mqttTask == IOT_OsalTaskGetCurrent();
 }
 
 static void mqttShutdownHandler(void)
@@ -324,6 +340,17 @@ iot_err_t IOT_MqttInit(IOT_MqttClientHandle_t *outHandle)
         return IOT_ERR_INVALID_ARG;
     }
 
+    /* The core initializes its MQTT service during single-threaded startup. */
+    if (s_mqttLifecycleMutex == NULL)
+    {
+        s_mqttLifecycleMutex = xSemaphoreCreateMutex();
+        if (s_mqttLifecycleMutex == NULL)
+        {
+            IOT_LOGE(TAG, "Failed to create MQTT lifecycle mutex");
+            return IOT_ERR_NO_MEM;
+        }
+    }
+
     struct IOT_MqttClient *client = (struct IOT_MqttClient *) Mem_SafeMalloc(sizeof(struct IOT_MqttClient), TAG, "mqtt client");
     if (client == NULL)
     {
@@ -345,16 +372,49 @@ iot_err_t IOT_MqttConfigClient(IOT_MqttClientHandle_t handle, const IOT_MqttClie
         return IOT_ERR_INVALID_ARG;
     }
 
+    /* Reconfiguration destroys the current esp-mqtt client. It must happen
+     * outside the MQTT task; see IOT_MqttDeinit() for the same lifetime rule. */
+    if (isCurrentMqttTask(handle))
+    {
+        IOT_LOGE(TAG, "Cannot reconfigure MQTT client from its event callback");
+        return IOT_ERR_FAIL;
+    }
+    xSemaphoreTake(s_mqttLifecycleMutex, portMAX_DELAY);
+
+    char *newPem = NULL;
     if (config.cert != NULL)
     {
-        SAFE_FREE(handle->pem);
-        handle->pem = (char *) Mem_SafeMalloc(strlen(config.cert) + 1, TAG, "mqtt pem");
-        if (handle->pem == NULL)
+        newPem = (char *) Mem_SafeMalloc(strlen(config.cert) + 1, TAG, "mqtt pem");
+        if (newPem == NULL)
         {
+            xSemaphoreGive(s_mqttLifecycleMutex);
             return IOT_ERR_NO_MEM;
         }
-        strcpy(handle->pem, config.cert);
+        strcpy(newPem, config.cert);
 
+    }
+
+    /* esp-mqtt retains the certificate pointer in its config. Stop and destroy
+     * the old client before releasing/replacing that buffer. */
+    if (handle->espClient != NULL)
+    {
+        esp_err_t destroyErr = esp_mqtt_client_destroy(handle->espClient);
+        if (destroyErr != ESP_OK)
+        {
+            SAFE_FREE(newPem);
+            IOT_LOGE(TAG, "Failed to destroy previous MQTT client: %s", esp_err_to_name(destroyErr));
+            xSemaphoreGive(s_mqttLifecycleMutex);
+            return IOT_ERR_FAIL;
+        }
+        handle->espClient = NULL;
+        handle->isStarted = false;
+        handle->isConnected = false;
+        handle->mqttTask = NULL;
+    }
+    if (newPem != NULL)
+    {
+        SAFE_FREE(handle->pem);
+        handle->pem = newPem;
     }
 
     const esp_mqtt_client_config_t mqtt_cfg = {
@@ -397,17 +457,11 @@ iot_err_t IOT_MqttConfigClient(IOT_MqttClientHandle_t handle, const IOT_MqttClie
                 .limit = 4096,
             },
     };
-    /* Destroy previous client if reconfiguring (e.g., after WiFi switch) */
-    if (handle->espClient != NULL)
-    {
-        handle->isStarted = false; /* destroy stops a running client itself */
-        esp_mqtt_client_destroy(handle->espClient);
-        handle->espClient = NULL;
-    }
     handle->espClient = esp_mqtt_client_init(&mqtt_cfg);
     if (handle->espClient == NULL)
     {
         IOT_LOGE(TAG, "Failed to initialize MQTT client");
+        xSemaphoreGive(s_mqttLifecycleMutex);
         return IOT_ERR_FAIL;
     }
 
@@ -415,8 +469,10 @@ iot_err_t IOT_MqttConfigClient(IOT_MqttClientHandle_t handle, const IOT_MqttClie
     if (esp_err != ESP_OK)
     {
         IOT_LOGE(TAG, "Failed to register MQTT event handler: %s", esp_err_to_name(esp_err));
+        xSemaphoreGive(s_mqttLifecycleMutex);
         return IOT_ERR_FAIL;
     }
+    xSemaphoreGive(s_mqttLifecycleMutex);
     return IOT_OK;
 }
 
@@ -426,47 +482,84 @@ iot_err_t IOT_MqttDeinit(IOT_MqttClientHandle_t handle)
     {
         return IOT_OK;
     }
-    untrackClient(handle);
-    handle->isStarted = false;
+    if (isCurrentMqttTask(handle))
+    {
+        IOT_LOGE(TAG, "Cannot deinitialize MQTT client from its event callback");
+        return IOT_ERR_FAIL;
+    }
+    xSemaphoreTake(s_mqttLifecycleMutex, portMAX_DELAY);
     if (handle->espClient != NULL)
     {
-        esp_mqtt_client_destroy(handle->espClient);
+        esp_err_t err = esp_mqtt_client_destroy(handle->espClient);
+        if (err != ESP_OK)
+        {
+            IOT_LOGE(TAG, "Failed to destroy MQTT client: %s", esp_err_to_name(err));
+            xSemaphoreGive(s_mqttLifecycleMutex);
+            return IOT_ERR_FAIL;
+        }
         handle->espClient = NULL;
     }
+    untrackClient(handle);
+    handle->isStarted = false;
+    handle->mqttTask = NULL;
     if (handle->pem != NULL)
     {
         SAFE_FREE(handle->pem);
         handle->pem = NULL;
     }
     SAFE_FREE(handle);
+    xSemaphoreGive(s_mqttLifecycleMutex);
     return IOT_OK;
 }
 
 iot_err_t IOT_MqttConnect(IOT_MqttClientHandle_t handle)
 {
-    if (handle == NULL || handle->espClient == NULL)
+    if (handle == NULL)
     {
         IOT_LOGE(TAG, "MQTT client not initialized");
         return IOT_ERR_FAIL;
+    }
+    if (isCurrentMqttTask(handle))
+    {
+        IOT_LOGE(TAG, "Cannot start MQTT client from its event callback");
+        return IOT_ERR_FAIL;
+    }
+    xSemaphoreTake(s_mqttLifecycleMutex, portMAX_DELAY);
+    if (handle->espClient == NULL)
+    {
+        IOT_LOGE(TAG, "MQTT client not configured");
+        xSemaphoreGive(s_mqttLifecycleMutex);
+        return IOT_ERR_FAIL;
+    }
+    /* Network loss leaves esp-mqtt's task alive; auto_reconnect handles the
+     * Wi-Fi return. Do not start a second task for this client. */
+    if (handle->isStarted)
+    {
+        IOT_LOGI(TAG, "MQTT task already running; automatic reconnect is active");
+        xSemaphoreGive(s_mqttLifecycleMutex);
+        return IOT_OK;
     }
     /* TLS handshake needs a large contiguous allocation; log heap so a
      * SSL_ALLOC_FAILED (mbedtls 0x7f00) can be correlated with headroom. INFO, not
      * WARNING: it fires on every connect and nothing is wrong when it does. */
     IOT_LOGI(TAG, "pre-connect heap: free=%u largest-block=%u", (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    handle->isStarted = true;
     esp_err_t err = esp_mqtt_client_start(handle->espClient);
     if (err != ESP_OK)
     {
+        handle->isStarted = false;
         IOT_LOGE(TAG, "Failed to start MQTT client: %s", esp_err_to_name(err));
+        xSemaphoreGive(s_mqttLifecycleMutex);
         return IOT_ERR_FAIL;
     }
-    handle->isStarted = true;
     trackClient(handle);
     esp_err_t regErr = esp_register_shutdown_handler(mqttShutdownHandler);
     if (regErr != ESP_OK && regErr != ESP_ERR_INVALID_STATE) /* INVALID_STATE: already registered */
     {
         IOT_LOGW(TAG, "MQTT shutdown handler not registered: %s", esp_err_to_name(regErr));
     }
+    xSemaphoreGive(s_mqttLifecycleMutex);
     return IOT_OK;
 }
 
@@ -483,25 +576,34 @@ iot_err_t IOT_MqttGetConnectionStatus(IOT_MqttClientHandle_t handle, bool *isCon
 
 iot_err_t IOT_MqttDisconnect(IOT_MqttClientHandle_t handle)
 {
-    if (handle == NULL || handle->espClient == NULL)
+    if (handle == NULL)
     {
         return IOT_OK; /* Not initialized — nothing to disconnect */
     }
-    if (!handle->isStarted)
+    if (isCurrentMqttTask(handle))
     {
-        /* Already stopped, or never started (a connect held for the clock): nothing to stop.
-         * esp-mqtt would refuse the stop with a W and ESP_FAIL, and this would log an E. */
+        IOT_LOGE(TAG, "Cannot disconnect MQTT client from its event callback");
+        return IOT_ERR_FAIL;
+    }
+    xSemaphoreTake(s_mqttLifecycleMutex, portMAX_DELAY);
+    if (handle->espClient == NULL || !handle->isStarted)
+    {
+        /* Already stopped, or never started (a connect held for the clock). */
         handle->isConnected = false;
+        xSemaphoreGive(s_mqttLifecycleMutex);
         return IOT_OK;
     }
     handle->isConnected = false;
-    handle->isStarted = false;
     esp_err_t err = esp_mqtt_client_stop(handle->espClient);
     if (err != ESP_OK)
     {
         IOT_LOGE(TAG, "Failed to stop MQTT client: %s", esp_err_to_name(err));
+        xSemaphoreGive(s_mqttLifecycleMutex);
         return IOT_ERR_FAIL;
     }
+    handle->isStarted = false;
+    handle->mqttTask = NULL;
+    xSemaphoreGive(s_mqttLifecycleMutex);
     return IOT_OK;
 }
 

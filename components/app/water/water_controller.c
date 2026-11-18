@@ -99,6 +99,22 @@ _bool WaterControllerSetFeatureCold(UI8 enabled, UI8 temperature)
     return WaterControllerTaskEnqueue(&request);
 }
 
+_bool WaterControllerSetFeatureSavingEnergy(UI8 enabled)
+{
+    if (enabled) enabled = 1;
+
+    printf("set feature saving energy: %d\n", enabled);
+
+    WaterControlRequest_t request = {0};
+    request.command = WATER_CONTROL_SEND_FEATURE_SAVING_ENERGY;
+    
+    request.value1 = (UI32)enabled ? 1 : 0;
+    request.expected1 = enabled ? ENERGY_SAVING_BIT : 0;
+    request.verify1 = WATER_CONTROL_VERIFY_SETTING_BIT;
+
+    return WaterControllerTaskEnqueue(&request);
+}
+
 _bool WaterControllerSetFeatureEnergySaving(UI8 enabled)
 {
     return WaterControllerResult(SetFeatureEnable(ENERGY_SAVING_FEATURE, enabled, enabled));

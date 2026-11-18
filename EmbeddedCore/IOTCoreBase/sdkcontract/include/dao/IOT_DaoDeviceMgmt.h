@@ -38,8 +38,9 @@ typedef struct
 
 typedef struct
 {
-    uint8_t macType;
-    uint8_t *mac;        // Caller must free, or use IOT_DaoDeviceFreeIdentityInfo()
+    uint8_t macType;     // The MAC block type the device joined with (hex MAC or UUID)
+    uint8_t *mac;        // The macSize MAC bytes alone, no type or length in front.
+                         // Caller must free, or use IOT_DaoDeviceFreeIdentityInfo()
     uint8_t macSize;
     uint8_t devId[IOT_DAO_DEVICE_ID_LEN];
 } IOT_DevIdentityInfo_t;
