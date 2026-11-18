@@ -42,23 +42,15 @@ void app_main(void)
     {
         IOT_LOGE("MAIN", "Failed to init AppCommon");
     }
-    _bool ret = D_TRUE;
-    WaterPurifierType model = AppCheckModel();
-    if(WATER_PURIFIER_TYPE_STANDARD == model)
-    {
-        static const char *MODEL_ID = "00000101C0040004";
-        ret = AppRecordInit(MODEL_ID);
-    }else if(WATER_PURIFIER_TYPE_HOT_COLD == model)
-    {
-        static const char *MODEL_ID = "00000101C0040003";
-        ret = AppRecordInit(MODEL_ID);
-    }
-    if (ret != D_TRUE)
+
+    const char *MODEL_ID = (char *)AppCheckModel();
+    IOT_LOGW("MAIN", "modelID: %s", MODEL_ID);
+    if (AppRecordInit(MODEL_ID) != D_TRUE)
     {
         IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
         return;
-    } 
-    
+    }
+    WaterPurifierType model = AppGetModel();
     esp_err = AppInit(model);
     if(esp_err != ESP_OK)
     {

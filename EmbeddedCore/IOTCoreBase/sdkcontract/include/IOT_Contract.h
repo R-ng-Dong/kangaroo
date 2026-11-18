@@ -15,8 +15,8 @@ extern "C" {
 /** @brief Contract API version. Changes only with a documented partner-facing change. */
 #define IOT_CONTRACT_VERSION_MAJOR 2
 #define IOT_CONTRACT_VERSION_MINOR 2
-#define IOT_CONTRACT_VERSION_PATCH 0
-#define IOT_CONTRACT_VERSION_STRING "2.2.0"
+#define IOT_CONTRACT_VERSION_PATCH 1
+#define IOT_CONTRACT_VERSION_STRING "2.2.1"
 
 /** @brief The most elements a device can declare in IOT_ContractConfig_t.elementIds. */
 #define IOT_CONTRACT_MAX_ELEMENTS 16

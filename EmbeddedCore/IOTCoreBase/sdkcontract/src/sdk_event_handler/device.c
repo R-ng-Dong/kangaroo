@@ -127,16 +127,15 @@ static iot_err_t joinDeviceInfo(const IOT_CoreDeviceEventNewDeviceJoinedData_t *
     uint16_t eid = join->data.deviceInfo.eid;
     IOT_LOGI(TAG, "Device joined: EID %04x, phase DEVICE_INFO", eid);
 
-    /* The Device store keeps a MAC together with its type and length. */
-    uint8_t macWithPrefix[2 + MAC_LEN];
-    macWithPrefix[0] = join->data.deviceInfo.macType;
-    macWithPrefix[1] = MAC_LEN;
-    memcpy(&macWithPrefix[2], join->data.deviceInfo.mac, MAC_LEN);
+    /* The MAC bytes alone: the store keeps the type and length in fields of their own, and a
+     * state report sends these bytes back as the device's MAC. */
+    uint8_t mac[MAC_LEN];
+    memcpy(mac, join->data.deviceInfo.mac, MAC_LEN);
 
     /* The same physical device joining again under a new EID: its old entry goes first, through
      * the same hooks as a removal, so the product can release the old one. */
     uint16_t existingEid = 0;
-    if (IOT_DaoDeviceIsDeviceExistByMac(macWithPrefix, &existingEid) && existingEid != eid)
+    if (IOT_DaoDeviceIsDeviceExistByMac(mac, &existingEid) && existingEid != eid)
     {
         IOT_LOGW(TAG, "Device with this MAC already stored (EID %04x), removing the old entry", existingEid);
         iot_err_t evictErr = removeOneDevice(existingEid, cb);
@@ -162,7 +161,7 @@ static iot_err_t joinDeviceInfo(const IOT_CoreDeviceEventNewDeviceJoinedData_t *
         cb->onDeviceJoined(eid, IOT_DEV_JOIN_PHASE_DEVICE_INFO);
 
     IOT_DevIdentityInfo_t identityInfo = {
-        .mac = macWithPrefix,
+        .mac = mac,
         .macType = join->data.deviceInfo.macType,
         .macSize = MAC_LEN,
     };
