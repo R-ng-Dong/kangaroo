@@ -15,12 +15,41 @@
 #include "factory_test_udp.h"
 #include "define.h"
 
+#include "IOT_CoreBleAdv.h"
+
 #define STAGING_ENVIRONMENT 0
 #define PRODUCT_ENVIRONMENT !STAGING_ENVIRONMENT
 
 static const char *TAG = "MAIN";
 
 #define FACTORY_TEST 1
+
+static volatile uint8_t s_batteryPercent = 100;
+
+static void onBleAdv(const IOT_CoreBleAdvContext_t *ctx,
+                     IOT_CoreBleAdvFields_t *fields,
+                     void *arg)
+{
+    (void)arg;
+
+    if (ctx->purpose == IOT_CORE_BLE_ADV_PROVISION && ctx->advFree >= 5)
+    {
+        uint8_t battery[3] = {0x0F, 0x18, s_batteryPercent};
+
+        IOT_CoreBleAdvAddField(fields,
+                               IOT_CORE_BLE_ADV_PACKET,
+                               0x16,
+                               battery,
+                               sizeof(battery));
+    }
+}
+
+// test
+void onBatteryChanged(uint8_t percent)
+{
+    s_batteryPercent = percent;
+    IOT_CoreBleAdvRefresh();
+}
 
 void app_main(void)
 {
@@ -49,6 +78,7 @@ void app_main(void)
     }
 
 #endif
+    IOT_CoreBleAdvSetCustomizer(onBleAdv, NULL); 
 
     esp_err_t esp_err = AppCommonInit();
     if (esp_err != ESP_OK)
@@ -73,27 +103,14 @@ void app_main(void)
 #if FACTORY_TEST
     if (!IOT_CoreIsProvisioned())
     {
-        // UI8 wifi_mac[6];
-        // if (esp_read_mac(wifi_mac, ESP_MAC_WIFI_STA) == ESP_OK)
-        // {
-        //     char ble_name[sizeof("KANGAROO_") + 12U];
-        //     snprintf(ble_name, sizeof(ble_name), "KANGAROO_%02x%02x%02x%02x%02x%02x",
-        //              wifi_mac[0], wifi_mac[1], wifi_mac[2], wifi_mac[3], wifi_mac[4], wifi_mac[5]);
-        //     err = IOT_BleSetAdvertisingNameOverride(ble_name);
-        //     if (err == IOT_OK)
-        //         IOT_LOGI(TAG, "BLE scan-response name: %s", ble_name);
-        //     else
-        //         IOT_LOGE(TAG, "Failed to set BLE scan-response name: %s", iot_err_to_name(err));
-        // }
-        // else
-        // {
-        //     IOT_LOGE(TAG, "Failed to read Wi-Fi MAC for BLE name");
-        // }
         // RPA init
         esp_err = FactoryTestUdpStart();
         if (esp_err != ESP_OK)
         {
             IOT_LOGE(TAG, "Factory UDP test failed to start: %s", esp_err_to_name(esp_err));
+        }
+        else{
+            onBatteryChanged(10);
         }
     }
     else
@@ -102,6 +119,6 @@ void app_main(void)
     }
 #endif
 
-    IOT_LOGI(TAG, "============= Version %s =============\n", CONFIG_APP_PROJECT_VER);
+    IOT_LOGI(TAG, "=============[TEST-PRODUCT] Version %s =============\n", CONFIG_APP_PROJECT_VER);
     return;
 }

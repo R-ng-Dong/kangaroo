@@ -1199,8 +1199,11 @@ static void AppCheckEnergyChanges(void)
 UI8* AppCheckModel(void)
 {
     static ProductModel p_model = {0};
-    p_model.type = (UI8)WATER_PURIFIER_TYPE_STANDARD;
+    // p_model.type = (UI8)WATER_PURIFIER_TYPE_STANDARD;
     // UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x34};
+    // p_model.type = (UI8)WATER_PURIFIER_TYPE_HOT_COLD;
+    // UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x33};
+     
     // memcpy(p_model.pid, pid_temp, PID_MAX_LENGTH);
 
     ESP_LOGI(TAG, " ^-^ Waiting for check product model ... ^-^");
