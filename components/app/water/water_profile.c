@@ -188,7 +188,7 @@ void DisableMessageType1(void)
 {
     s_has_mess_type1 = D_FALSE;
 }
-    
+
 UI16 WaterProfileGetVersionFirmware(void)
 {
     return s_frame_type_A.fw_build_ver[0] << 8 | s_frame_type_A.fw_build_ver[1];
@@ -238,10 +238,10 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
     AppContextSetWaterState(&state);
     AppContextSetRuntime(&runtime);
 
+#if 0
     SI8 hot_temp = (s_frame_type_1.hot_tank_temperature / 100) - 50;
     SI8 cold_temp = (s_frame_type_1.cold_tank_temperature / 100) - 50;
 
-    #if 0
     ESP_LOGI(WATER_PROFILE_TAG, "=============================================================FRAME TYPE 1============================================================");
     ESP_LOGI(WATER_PROFILE_TAG,
              "System run=%" PRIu32 "s, total time=%" PRIu32 "s, STATUS [ro=0x%02x, ply=0x%02x, hot=0x%02x, cold=0x%02x, setting=0x%02x], TEMPERATURE [hot: %d *C, cold: %d *C]",
@@ -263,7 +263,7 @@ static void WaterProfileApplyFrameType1(const KgrFrameType1 *data)
              s_frame_type_1.ro_filter_time,
              s_frame_type_1.post_filter_time);
     ESP_LOGI(WATER_PROFILE_TAG, "================================================================================================================================");
-    #endif
+#endif
 }
 
 static void WaterProfileApplyFrameTypeA(const KgrExternFrameTypeA *data)
@@ -275,7 +275,6 @@ static void WaterProfileApplyFrameTypeA(const KgrExternFrameTypeA *data)
     s_has_mess_typeA = D_TRUE;
     memcpy(&s_frame_type_A, data, sizeof(s_frame_type_A));
     s_frame_type_A_sequence++;
-
 
     ESP_LOGW(WATER_PROFILE_TAG,
              "DeviceID=%" PRIu32 ", input=0x%02x, output=0x%02x, switch=0x%02x, led=0x%02x",
@@ -318,6 +317,14 @@ static void WaterProfileHandleUartFrame(const KgrDataFormat *frame)
         break;
     }
     case KGR_DATA_TYPE_2:
+        break;
+    case 0x28:
+    {
+        ESP_LOGI(WATER_PROFILE_TAG, "Received KGR_DATA_TYPE_0x28 frame, sending back the same frame");
+        SendFrame((const UI8 *)frame, frame->length + 2U);
+        break;
+    }
+
     default:
         break;
     }
