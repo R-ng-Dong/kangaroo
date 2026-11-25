@@ -34,11 +34,11 @@
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
 
-#define FACTORY_WIFI_SSID "Kangaroo2026"
-#define FACTORY_WIFI_PASSWORD "Kangaroo2026"
+// #define FACTORY_WIFI_SSID "Kangaroo2026"
+// #define FACTORY_WIFI_PASSWORD "Kangaroo2026"
 
-// #define FACTORY_WIFI_SSID "DigitalR&D"
-// #define FACTORY_WIFI_PASSWORD "DigitalRD@2804"
+#define FACTORY_WIFI_SSID "TTS"
+#define FACTORY_WIFI_PASSWORD "TTS123456"
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
@@ -290,13 +290,22 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
             return;
         }
         const cJSON *jPid = cJSON_GetObjectItemCaseSensitive(params, "pid");
-        if (!cJSON_IsString(jPid) || NULL == jPid->valuestring )
+        const cJSON *jSerial = cJSON_GetObjectItemCaseSensitive(params, "serial");
+        if (!cJSON_IsString(jPid) || NULL == jPid->valuestring)
+        {
+            SetResult(data, 0U, "invalid_argument");
+            return;
+        }
+        if (!cJSON_IsString(jSerial) || NULL == jSerial->valuestring)
         {
             SetResult(data, 0U, "invalid_argument");
             return;
         }
         cJSON_AddNumberToObject(data, "type", type);
         cJSON_AddStringToObject(data, "pid", jPid->valuestring);
+        cJSON_AddStringToObject(data, "serial", jSerial->valuestring);
+        ESP_LOGI(s_tag, "Factory test: set model type=%u, pid=%s, serial=%s", (unsigned)type,
+                 jPid->valuestring, jSerial->valuestring);
 
         UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring, "xxx\0");
         if (stored)
@@ -574,7 +583,7 @@ static void FactoryTestUdpTask(void *arg)
     (void)arg;
     static ProductModel model = {0};
 
-    if(ModelConfigGet(&model) != D_TRUE)
+    if (ModelConfigGet(&model) != D_TRUE)
     {
         ESP_LOGE(s_tag, "Failed to get model");
         WaterProfileInit(); // init UART

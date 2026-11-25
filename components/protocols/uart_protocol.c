@@ -166,6 +166,13 @@ static esp_err_t KGR_BuildFrame(UI8 type, const UI8 *payload, UI8 payload_length
     return UartWriteBytes(s_uart_config.uart_num, data_send, payload_length + 4);
 }
 
+esp_err_t SendFrame(const UI8 *frame, UI8 length)
+{
+    if (NULL == frame)
+        return ESP_ERR_INVALID_ARG;
+    return UartWriteBytes(s_uart_config.uart_num, frame, length);
+}
+
 esp_err_t SendSystemResetCommand(void)
 {
     KgrFrameType2 frame_type2;
@@ -178,7 +185,7 @@ esp_err_t SendSystemResetCommand(void)
 
 esp_err_t SetFeatureEnable(WaterPurifyFeature feature, UI8 enabled, UI8 value)
 {
-    if(0x00 != enabled && 0x01 != enabled) 
+    if (0x00 != enabled && 0x01 != enabled)
         return ESP_ERR_INVALID_ARG;
     KgrFrameType2 frame_type2;
     frame_type2.command = 0x01;
@@ -193,7 +200,7 @@ esp_err_t SetTimeFilter(WaterPurifyFilter filter, UI16 time)
     KgrFrameType2 frame_type2;
     frame_type2.command = 0x02;
     frame_type2.data.filter.index = (UI8)filter;
-    frame_type2.data.filter.value = time; 
+    frame_type2.data.filter.value = time;
     return KGR_BuildFrame(KGR_DATA_TYPE_2, (UI8 *)(&frame_type2), sizeof(frame_type2));
 }
 
@@ -207,7 +214,8 @@ esp_err_t SetTDSValue(UI16 TDS_inlet, UI16 TDS_ro)
 
 esp_err_t EnableCommand(UI8 enabled)
 {
-    if (enabled) enabled = 0x01;
+    if (enabled)
+        enabled = 0x01;
     KgrFrameTypeA frame_typeA = {0};
     frame_typeA.command = 0x00;
     frame_typeA.data.enable.value = enabled;
@@ -248,4 +256,3 @@ esp_err_t SetDeviceId(UI32 dev_id)
     frame_typeA.data.id_set.device_id_set = *(UI32 *)dev_id_arr;
     return KGR_BuildFrame(KGR_DATA_TYPE_A, (UI8 *)(&frame_typeA), sizeof(frame_typeA));
 }
-
