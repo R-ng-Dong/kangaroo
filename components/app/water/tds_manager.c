@@ -48,7 +48,7 @@ static _bool IsTdsInletChanged(UI16 old_value, UI16 new_value)
     else{
         delta_ppm = new_value - old_value;
     }
-    printf("TDS input report triggered by delta: inlet=%u ppm\n", delta_ppm);
+    // printf("TDS input report triggered by delta: inlet=%u ppm\n", delta_ppm);
 
     return (delta_ppm >= TDS_REPORT_INLET_DELTA_PPM) ? D_TRUE : D_FALSE;
 }
@@ -69,7 +69,7 @@ static _bool IsTdsOutChanged(UI16 old_value, UI16 new_value)
     else{
         delta_ppm = new_value - old_value;
     }
-    printf("TDS output report triggered by delta: ro=%u ppm\n", delta_ppm);
+    // printf("TDS output report triggered by delta: ro=%u ppm\n", delta_ppm);
     return (delta_ppm >= TDS_REPORT_OUT_DELTA_PPM) ? D_TRUE : D_FALSE;
 }
 

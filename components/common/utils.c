@@ -41,3 +41,8 @@ void MergeSort(UI16 *arr, UI16 l, UI16 r) {
  
     MergeParts(arr, l, mid, r);
 }
+
+UI32 roundValue(float value)
+{
+    return (UI32)(value + 0.5f);
+}

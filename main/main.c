@@ -119,6 +119,6 @@ void app_main(void)
     }
 #endif
 
-    IOT_LOGI(TAG, "=============[TEST-PRODUCT] Version %s =============\n", CONFIG_APP_PROJECT_VER);
+    IOT_LOGI(TAG, "=============[TEST-PRODUCT] Version %s(4) =============\n", CONFIG_APP_PROJECT_VER);
     return;
 }

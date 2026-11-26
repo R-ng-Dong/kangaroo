@@ -7,7 +7,7 @@
 
 #define FLUSH_CYCLE_NVS_NAMESPACE "flush_cycle"
 #define FLUSH_CYCLE_NVS_KEY "state"
-#define FLUSH_CYCLE_STATE_VERSION 1U
+#define FLUSH_CYCLE_STATE_VERSION 2U
 
 typedef struct
 {
@@ -67,11 +67,26 @@ void FlushCycleStateInit(void)
     }
 
     if (err == ESP_OK && stored_size == sizeof(stored) &&
-        stored.version == FLUSH_CYCLE_STATE_VERSION )
+        stored.version == FLUSH_CYCLE_STATE_VERSION)
     {
         s_state = stored.state;
         return;
     }
+
+    /* Preserve existing flush counters when loading a version 1 state. */
+    // if (err == ESP_OK && stored_size == offsetof(FlushCycleStoredState_t, state) +
+    //                                           sizeof(FlushCycleState_t) - sizeof(UI32) &&
+    //     stored.version == 1U)
+    // {
+    //     memcpy(&s_state, &stored.state, offsetof(FlushCycleState_t, water_consumption_floor_l));
+    //     memcpy((UI8 *)&s_state + offsetof(FlushCycleState_t, drain_done),
+    //            (const UI8 *)&stored.state + offsetof(FlushCycleState_t, water_consumption_floor_l) -
+    //                2U * sizeof(UI8),
+    //            2U * sizeof(UI8));
+    //     s_state.water_consumption_floor_l = 0;
+    //     (void)FlushCycleStateSave();
+    //     return;
+    // }
 
     s_state = (FlushCycleState_t){
         .drain_time_s = 30U * 60U,
@@ -81,6 +96,7 @@ void FlushCycleStateInit(void)
         .total_drain_water_filter3 = 0,
         .total_drain_water_ro = 0,
         .total_drain_water_post = 0,
+        .water_consumption_floor_l = 0,
         .drain_done = 0,
         .post_filter_flush_done = 1,
     };
@@ -169,6 +185,14 @@ _bool FlushCycleStateSetTotalDrainWater(UI8 filter_idx)
     default:
         break;
     }
+    return FlushCycleStateUpdate(&updated);
+}
+
+_bool FlushCycleStateSetWaterConsumptionFloor(UI32 consumption_l)
+{
+    FlushCycleStateEnsureInitialized();
+    FlushCycleState_t updated = s_state;
+    updated.water_consumption_floor_l = consumption_l;
     return FlushCycleStateUpdate(&updated);
 }
 

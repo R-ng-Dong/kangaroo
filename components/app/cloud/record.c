@@ -39,6 +39,7 @@ iot_err_t AppRecordConfigure(void)
         {.elemType = IOT_DEVTYPE_WATER_PURIFIER, .attrId = ATTR_INFOMATION_WATER_CONSUMER},
         {.elemType = IOT_DEVTYPE_WATER_PURIFIER, .attrId = ATTR_ENERGY},
         {.elemType = IOT_DEVTYPE_WATER_PURIFIER, .attrId = ATTR_EVENT_TDS_STATUS},
+        {.elemType = IOT_DEVTYPE_WATER_PURIFIER, .attrId = ATTR_INFO_CURRENT_ISSUES_STATUS},
     };
     for (size_t i = 0; i < sizeof(rules) / sizeof(rules[0]); i++)
     {
@@ -175,6 +176,19 @@ _bool app_update_energy_consumption(uint32_t energy_consumption)
     (void)DeviceElementSetAttributeValue(ELEMENT_ID_2, ATTR_ENERGY, value, 4);
     return AppUpdateAttributeU32(ELEMENT_ID_2, IOT_ATTR_APP_ENERGY, energy_consumption) == IOT_OK ? D_TRUE : D_FALSE;
 }
+
+_bool app_update_warning(uint32_t warning)
+{
+    printf("Updating warning to %lu\n", warning);
+    UI8 value[4];
+    value[0] = (warning >> 24) & 0xff;
+    value[1] = (warning >> 16) & 0xff;
+    value[2] = (warning >> 8) & 0xff;
+    value[3] = warning & 0xff;
+
+    return AppUpdateAttributeU32(ELEMENT_ID_1, IOT_ATTR_INFO_CURRENT_ISSUES_STATUS, warning) == IOT_OK ? D_TRUE : D_FALSE;
+}
+
 
 _bool app_update_tds_in(uint16_t inlet_ppm)
 {

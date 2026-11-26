@@ -1092,6 +1092,13 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         TdsTaskStop();
         break;
     }
+    case DEV_EVENT_FACTORY_RESET:
+    {
+        if (IOT_ApplicationRestartChip() != IOT_OK)
+        {
+            IOT_LOGE(TAG, "Failed to restart chip");
+        }
+    }
     default:
         IOT_LOGW(TAG, "Unknown DEVICE event type: %d", deviceEvent->type);
         iot_err = IOT_ERR_INVALID_ARG;

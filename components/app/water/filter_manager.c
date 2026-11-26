@@ -1,4 +1,5 @@
 #include "filter_manager.h"
+#include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_timer.h"
@@ -16,6 +17,21 @@
 #include "system_config.h"
 
 #define FILTER_LIFETIME_NVS_NAMESPACE "filter_config"
+#define FILTER_CONFIG_NVS_KEY "filters_v1"
+#define FILTER_CONFIG_HEADER 0x55aa55aa
+
+typedef struct __attribute__((packed))
+{
+    UI8 pid[FILTER_PID_SIZE];
+    UI32 lifetime_seconds;
+    UI64 replacement_seconds;
+} FilterConfig_t;
+
+typedef struct __attribute__((packed))
+{
+    UI32 header;
+    FilterConfig_t filters[FILTER_RUNTIME_FILTER_COUNT];
+} FilterConfigStore_t;
 
 static _bool is_filter_update_pending = D_FALSE;
 
@@ -27,7 +43,7 @@ static const UI32 s_default_filter_lifetime_seconds[FILTER_RUNTIME_FILTER_COUNT]
     POST_FILTER_LIFETIME_HOURS * 3600U
 };
 
-static const UI64 s_filter_replacement_seconds[FILTER_RUNTIME_FILTER_COUNT] = {
+static const UI64 s_default_filter_replacement_seconds[FILTER_RUNTIME_FILTER_COUNT] = {
     FIRST_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
     SECOND_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
     THIRD_FILTER_REPLACEMENT_MONTH_THRESHOLD * 30U * 24U * 3600U,
@@ -38,14 +54,6 @@ static const UI64 s_filter_replacement_seconds[FILTER_RUNTIME_FILTER_COUNT] = {
 static UI32 s_last_report_ms = 0U;
 static UI8 s_last_reported_percent[FILTER_RUNTIME_FILTER_COUNT] = {0U};
 
-static const char *s_filter_lifetime_nvs_keys[FILTER_RUNTIME_FILTER_COUNT] = {
-    "f1_life_s", "f2_life_s", "f3_life_s", "ro_life_s", "post_life_s"
-};
-
-static const char *s_filter_pid_nvs_keys[FILTER_RUNTIME_FILTER_COUNT] = {
-    "f1_pid", "f2_pid", "f3_pid", "ro_pid", "post_pid"
-};
-
 static const UI8 s_default_filter_pids[FILTER_RUNTIME_FILTER_COUNT][FILTER_PID_SIZE] = {
     {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x34, 0x30, 0x34, 0x30, 0x30, 0x30, 0x31},
     {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x34, 0x30, 0x34, 0x30, 0x30, 0x30, 0x33},
@@ -54,7 +62,25 @@ static const UI8 s_default_filter_pids[FILTER_RUNTIME_FILTER_COUNT][FILTER_PID_S
     {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x34, 0x30, 0x34, 0x30, 0x30, 0x30, 0x36}
 };
 
-static UI32 s_filter_lifetime_seconds[FILTER_RUNTIME_FILTER_COUNT];
+static FilterConfigStore_t s_filter_config;
+
+static void FilterManagerSetDefaultConfig(void)
+{
+    s_filter_config.header = FILTER_CONFIG_HEADER;
+    for (UI8 i = 0U; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
+    {
+        memcpy(s_filter_config.filters[i].pid, s_default_filter_pids[i], FILTER_PID_SIZE);
+        s_filter_config.filters[i].lifetime_seconds = s_default_filter_lifetime_seconds[i];
+        s_filter_config.filters[i].replacement_seconds = s_default_filter_replacement_seconds[i];
+    }
+}
+
+static _bool FilterManagerSaveConfig(nvs_handle_t handle)
+{
+    esp_err_t err = nvs_set_blob(handle, FILTER_CONFIG_NVS_KEY, &s_filter_config, sizeof(s_filter_config));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    return (err == ESP_OK) ? D_TRUE : D_FALSE;
+}
 
 void FilterUpdateSetPending(_bool pending)
 {
@@ -63,45 +89,7 @@ void FilterUpdateSetPending(_bool pending)
 
 static void FilterManagerLoadLifetimes(void)
 {
-    printf("Load life time\n");
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK)
-    {
-        memcpy(s_filter_lifetime_seconds, s_default_filter_lifetime_seconds,
-               sizeof(s_filter_lifetime_seconds));
-        return;
-    }
-
-    _bool defaults_added = false;
-    for (UI8 i = 0; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
-    {
-        UI32 seconds = 0U;
-        err = nvs_get_u32(handle, s_filter_lifetime_nvs_keys[i], &seconds);
-        if ((err == ESP_OK) && (seconds > 0U))
-        {
-            s_filter_lifetime_seconds[i] = seconds;
-            printf("[Filter idx %d]: %lu\n", i, s_filter_lifetime_seconds[i]);
-        }
-        else
-        {
-            s_filter_lifetime_seconds[i] = s_default_filter_lifetime_seconds[i];
-            if (nvs_set_u32(handle, s_filter_lifetime_nvs_keys[i], s_filter_lifetime_seconds[i]) == ESP_OK)
-            {
-                defaults_added = true;
-            }
-        }
-    }
- 
-    if (defaults_added)
-    {
-        nvs_commit(handle);
-    }
-    nvs_close(handle);
-}
-
-static void FilterManagerLoadDefaultPids(void)
-{
+    FilterManagerSetDefaultConfig();
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
@@ -109,62 +97,60 @@ static void FilterManagerLoadDefaultPids(void)
         return;
     }
 
-    _bool defaults_added = false;
-    for (UI8 i = 0U; i < FILTER_RUNTIME_FILTER_COUNT; ++i)
+    size_t stored_size = sizeof(s_filter_config);
+    err = nvs_get_blob(handle, FILTER_CONFIG_NVS_KEY, &s_filter_config, &stored_size);
+    if ((err == ESP_OK) && (stored_size == sizeof(s_filter_config)) &&
+        (s_filter_config.header == FILTER_CONFIG_HEADER))
     {
-        size_t pid_size = 0U;
-        err = nvs_get_blob(handle, s_filter_pid_nvs_keys[i], NULL, &pid_size);
-        if ((err == ESP_OK) && (pid_size == FILTER_PID_SIZE))
-        {
-            continue;
-        }
-
-        err = nvs_set_blob(handle, s_filter_pid_nvs_keys[i],
-                           s_default_filter_pids[i], FILTER_PID_SIZE);
-        if (err == ESP_OK)
-        {
-            defaults_added = true;
-        }
+        nvs_close(handle);
+        return;
     }
 
-    if (defaults_added)
-    {
-        nvs_commit(handle);
-    }
+    /* Missing or invalid blob: persist all five filters' defaults under the same key. */
+    (void)FilterManagerSaveConfig(handle);
     nvs_close(handle);
 }
 
-_bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds)
+_bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 expireTime)
 {
     if ((filter_index < FILTER_TIME_INDEX_1ST) ||
-        (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (seconds == 0U))
+        (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (expireTime == 0U))
     {
-        return false;
+        return D_FALSE;
     }
+
+    UI16 lifeTimeHour = (UI16)(expireTime >> 16);
+    UI16 replacementTimeMonth = (UI16)expireTime; 
 
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
-        return false;
+        return D_FALSE;
     }
 
-    err = nvs_set_u32(handle, s_filter_lifetime_nvs_keys[filter_index], seconds);
-    if (err == ESP_OK)
+    UI32 previousLifetime = s_filter_config.filters[filter_index].lifetime_seconds;
+    UI64 previousReplacementTime = s_filter_config.filters[filter_index].replacement_seconds;
+
+    s_filter_config.filters[filter_index].lifetime_seconds = lifeTimeHour * 3600U;
+    s_filter_config.filters[filter_index].replacement_seconds = replacementTimeMonth * 30U * 24U * 3600U;
+
+    const _bool saved = FilterManagerSaveConfig(handle);
+    if (!saved)
     {
-        err = nvs_commit(handle);
-    }
+        s_filter_config.filters[filter_index].replacement_seconds = previousReplacementTime;
+        s_filter_config.filters[filter_index].lifetime_seconds = previousLifetime;
+    } 
+
     nvs_close(handle);
-    if (err != ESP_OK)
+    if (!saved)
     {
-        return false;
+        return D_FALSE;
     }
 
-    s_filter_lifetime_seconds[filter_index] = seconds;
-    printf("[filter_index : %d]: life time seconds: %lu\n", (UI8)filter_index, seconds);
+    printf("[filter_index : %d]: lifeTimeHour: %u (h), replacementTimeMonth: %u (m)\n", (UI8)filter_index, lifeTimeHour, replacementTimeMonth);
     FilterManagerSetRuntime(filter_index, 0); //reset
-    printf("config filter idx %d done\n", (UI8)filter_index);
-    return true;
+    return D_TRUE;
 }
 
 _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *seconds_out)
@@ -172,10 +158,10 @@ _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *second
     if ((filter_index < FILTER_TIME_INDEX_1ST) ||
         (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (seconds_out == NULL))
     {
-        return false;
+        return D_FALSE;
     }
-    *seconds_out = s_filter_lifetime_seconds[filter_index];
-    return true;
+    *seconds_out = s_filter_config.filters[filter_index].lifetime_seconds;
+    return D_TRUE;
 }
 
 _bool FilterManagerSetPid(FilterTimeIndex filter_index, const UI8 pid[FILTER_PID_SIZE])
@@ -183,23 +169,23 @@ _bool FilterManagerSetPid(FilterTimeIndex filter_index, const UI8 pid[FILTER_PID
     if ((filter_index < FILTER_TIME_INDEX_1ST) ||
         (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (pid == NULL))
     {
-        return false;
+        return D_FALSE;
     }
 
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
-        return false;
+        return D_FALSE;
     }
 
-    err = nvs_set_blob(handle, s_filter_pid_nvs_keys[filter_index], pid, FILTER_PID_SIZE);
-    if (err == ESP_OK)
-    {
-        err = nvs_commit(handle);
-    }
+    UI8 previous[FILTER_PID_SIZE];
+    memcpy(previous, s_filter_config.filters[filter_index].pid, FILTER_PID_SIZE);
+    memcpy(s_filter_config.filters[filter_index].pid, pid, FILTER_PID_SIZE);
+    const _bool saved = FilterManagerSaveConfig(handle);
+    if (!saved) memcpy(s_filter_config.filters[filter_index].pid, previous, FILTER_PID_SIZE);
     nvs_close(handle);
-    return err == ESP_OK;
+    return saved;
 }
 
 _bool FilterManagerGetPid(FilterTimeIndex filter_index, UI8 pid_out[FILTER_PID_SIZE])
@@ -207,20 +193,11 @@ _bool FilterManagerGetPid(FilterTimeIndex filter_index, UI8 pid_out[FILTER_PID_S
     if ((filter_index < FILTER_TIME_INDEX_1ST) ||
         (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (pid_out == NULL))
     {
-        return false;
+        return D_FALSE;
     }
 
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(FILTER_LIFETIME_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK)
-    {
-        return false;
-    }
-
-    size_t pid_size = FILTER_PID_SIZE;
-    err = nvs_get_blob(handle, s_filter_pid_nvs_keys[filter_index], pid_out, &pid_size);
-    nvs_close(handle);
-    return (err == ESP_OK) && (pid_size == FILTER_PID_SIZE);
+    memcpy(pid_out, s_filter_config.filters[filter_index].pid, FILTER_PID_SIZE);
+    return D_TRUE;
 }
 
 static void FilterManagerUpdateWarning(WarningId warning_id, _bool should_be_active)
@@ -235,7 +212,7 @@ static UI32 GetMaxSecondsByPump(FilterTimeIndex filter_index)
         return 0U;
     }
 
-    return s_filter_lifetime_seconds[filter_index];
+    return s_filter_config.filters[filter_index].lifetime_seconds;
 }
 
 static UI64 GetMaxSecondsBySystem(FilterTimeIndex filter_index)
@@ -245,7 +222,7 @@ static UI64 GetMaxSecondsBySystem(FilterTimeIndex filter_index)
         return 0U;
     }
 
-    return s_filter_replacement_seconds[filter_index];
+    return s_filter_config.filters[filter_index].replacement_seconds;
 }
 
 static UI64 GetRemainingSeconds(UI32 used_seconds, UI64 max_seconds)
@@ -266,8 +243,8 @@ static UI32 GetRemainingPercent(FilterTimeIndex filter_index, UI32 used_seconds,
         return 0U;
     }
     float percent = ((float)remaining_seconds / (float)max_seconds) * 100.0f;
-    if(percent >= 99.5f) percent = 100.0f;
-    return (UI32)percent;
+
+    return (UI32)(percent + 0.5f);
 }
 
 static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
@@ -291,16 +268,7 @@ static void FilterManagerGetLifetimePercent(UI32 now_ms, UI8 *percent_values){
         UI64 max_systemruntime_seconds = GetMaxSecondsBySystem((FilterTimeIndex)idx);
         UI8 filter_lifetime_by_system = GetRemainingPercent((FilterTimeIndex)idx, system_runtime_seconds, max_systemruntime_seconds);
 
-        // WARNING (B2): while pump-based life >= 80% the time-based limit (months) is ignored.
-        // Combined with filter_runtime.c (only filter 1 accumulates pump time on the Standard
-        // model), filters 2-5 stay at 100% forever. Also a rarely used filter never expires by time.
-        // if(filter_lifetime_by_pump >= 80)
-        // {
-        //     percent_values[idx] = filter_lifetime_by_pump ;
-        // }else
-        // {
-        //     percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
-        // }
+
         percent_values[idx] = (filter_lifetime_by_pump <= filter_lifetime_by_system) ? filter_lifetime_by_pump : filter_lifetime_by_system;
   
     }
@@ -318,12 +286,13 @@ __attribute__((weak)) void FilterManagerReportToCloud(const UI8 *percent_values,
 void FilterManagerInit(void)
 {
     FilterManagerLoadLifetimes();
-    FilterManagerLoadDefaultPids();
-
     s_last_report_ms = 0U;
+    ESP_LOGW("FILTER", "================== FILTER MANAGER ==================\n");
     for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
     {
         s_last_reported_percent[idx] = 0U;
+        ESP_LOGI("FILTER", "[Filter idx %d] | life time: %lu (s), replacement time: %llu (s)", idx, s_filter_config.filters[idx].lifetime_seconds, s_filter_config.filters[idx].replacement_seconds);
+        ESP_LOG_BUFFER_HEX("FILTER", s_filter_config.filters[idx].pid, FILTER_PID_SIZE);
     }
 }
 
@@ -345,7 +314,7 @@ static _bool FilterManagerHasSignificantDecrease(const UI8 *percent_values)
 {
     if (NULL == percent_values)
     {
-        return false;
+        return D_FALSE;
     }
     const UI32 FILTER_MANAGER_REPORT_DECREASE_PERCENT = SystemConfigGetStateFilterStepPct();
     for (UI8 idx = 0U; idx < FILTER_RUNTIME_FILTER_COUNT; ++idx)
@@ -353,17 +322,17 @@ static _bool FilterManagerHasSignificantDecrease(const UI8 *percent_values)
         if ((s_last_reported_percent[idx] >= percent_values[idx]) &&
             ((s_last_reported_percent[idx] - percent_values[idx]) >= FILTER_MANAGER_REPORT_DECREASE_PERCENT))
         {
-            return true;
+            return D_TRUE;
         }
 
         if ((s_last_reported_percent[idx] <= percent_values[idx]) &&
             ((percent_values[idx] - s_last_reported_percent[idx]) >= FILTER_MANAGER_REPORT_DECREASE_PERCENT))
         {
-            return true;
+            return D_TRUE;
         }
     }
 
-    return false;
+    return D_FALSE;
 }
 
 static void FilterManagerReportCurrentPercent(const UI8 *percent_values,
@@ -420,7 +389,7 @@ _bool FilterManagerShouldReport(UI32 now_ms)
 {
     if (s_last_report_ms == 0U)
     {
-        return true;
+        return D_TRUE;
     }
 
     return (now_ms - s_last_report_ms) >= FILTER_MANAGER_REPORT_INTERVAL_MS;
@@ -558,11 +527,12 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model)
                             + state_out.total_drain_water_post;
     UI32 total_removed_water = WATER_TANK_CAPACITY_L + INITIAL_WASTE_WATER_VOLUME_L + total_flush_water;
     printf("pump_active_total_seconds: %lu, total_removed_water: %lu, water_consumption: %llu\n", pump_active_total_seconds, total_removed_water, water_consumption);
-    if((UI32)water_consumption <= total_removed_water)
-    {
-        return 0;
-    }
-    return (UI32)water_consumption - total_removed_water;
+    UI32 calculated_consumption = ((UI32)water_consumption <= total_removed_water)
+                                      ? 0U
+                                      : (UI32)water_consumption - total_removed_water;
+    return (calculated_consumption < state_out.water_consumption_floor_l)
+               ? state_out.water_consumption_floor_l
+               : calculated_consumption;
 }
 
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds)
@@ -573,6 +543,6 @@ void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds)
 _bool FilterManagerCheckFirstChanged(FilterTimeIndex filter_index, UI8 pid[FILTER_PID_SIZE])
 {
     if(filter_index > FILTER_TIME_INDEX_POST) return D_FALSE;
-    _bool is_default = (memcmp(s_default_filter_pids[filter_index], pid, FILTER_PID_SIZE) == 0) ? D_TRUE : D_FALSE;
+    _bool is_default = (memcmp(s_filter_config.filters[filter_index].pid, pid, FILTER_PID_SIZE) == 0) ? D_TRUE : D_FALSE;
     return is_default ? D_FALSE : D_TRUE;
 }
