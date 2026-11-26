@@ -14,6 +14,8 @@
 
 #define ENERGY_SAVING_CONFIG_HEADER 0x55AA55AA
 
+#define MAX_NUM_WAITING 5
+
 typedef struct __attribute__((packed))
 {
     UI32 header;
@@ -302,12 +304,12 @@ _bool EnergySavingManagerSetSchedule(_bool enabled, UI16 start_minute, UI16 end_
             TankPolicy *cold = &s_policy.tanks[ENERGY_SAVING_TANK_COLD];
             hot->base_enabled = D_TRUE;
             cold->base_enabled = D_TRUE;
-            if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
-                WaterControllerSetFeatureSavingEnergy(0);
-            }
+            // if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
+            //     WaterControllerSetFeatureSavingEnergy(0);
+            // }
+            EnergySavingManagerUpdate(minute_of_day, (UI64)(esp_timer_get_time() / 1000000ULL));
         }
-        EnergySavingManagerUpdate(minute_of_day, (UI64)(esp_timer_get_time() / 1000000ULL));
-
+        
     }    
     return D_TRUE;
 }
@@ -476,6 +478,9 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
     s_policy.last_minute = minute_of_day;
     s_policy.has_last_minute = D_TRUE;
 
+    static UI8 tank_waiting[2] = {0};
+    static UI8 eco_waiting = 0;
+
     for (UI8 i = 0U; i < 2U; ++i)
     {
         TankPolicy *tank = &s_policy.tanks[i];
@@ -497,7 +502,11 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         {
             desired_enabled = D_FALSE;
             if(!(WaterProfileGetSetting() & ENERGY_SAVING_BIT)){
-                WaterControllerSetFeatureSavingEnergy(1);
+                if(++eco_waiting >= MAX_NUM_WAITING)
+                {
+                    eco_waiting = 0;
+                    WaterControllerSetFeatureSavingEnergy(1);
+                }
             }
         }
         else
@@ -507,7 +516,11 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
             if (schedule_just_deactivated)
             {
                 tank->base_enabled = D_TRUE;
-                if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
+            }
+            if(WaterProfileGetSetting() & ENERGY_SAVING_BIT){
+                if(++eco_waiting >= MAX_NUM_WAITING)
+                {
+                    eco_waiting = 0;
                     WaterControllerSetFeatureSavingEnergy(0);
                 }
             }
@@ -529,27 +542,39 @@ void EnergySavingManagerUpdate(UI16 minute_of_day, UI64 now_seconds)
         {
             if (ApplyTank((EnergySavingTank_t)i, desired_enabled, tank->temperature))
             {
+                tank_waiting[i] = 0;
                 tank->enabled = desired_enabled;
             }
         }
         if(schedule_active)
         {
+            
             EnergySavingTank_t tank_type = (EnergySavingTank_t)i;
             const UI8 setting = WaterProfileGetSetting();
             if(tank_type == ENERGY_SAVING_TANK_HOT)
             {
-                if(setting & HOT_SWITCH_BIT && TankFaulted(HOT_SWITCH_BIT) == D_FALSE)
+                if(++tank_waiting[ENERGY_SAVING_TANK_HOT] >= MAX_NUM_WAITING)
                 {
-                    ApplyTank(ENERGY_SAVING_TANK_HOT, D_FALSE, tank->temperature);
+                    tank_waiting[ENERGY_SAVING_TANK_HOT] = 0;
+
+                    if(setting & HOT_SWITCH_BIT && TankFaulted(HOT_SWITCH_BIT) == D_FALSE)
+                    {
+                        ApplyTank(ENERGY_SAVING_TANK_HOT, D_FALSE, tank->temperature);
+                    }
                 }
             }else if(tank_type == ENERGY_SAVING_TANK_COLD)
             {
-                if(setting & COLD_SWITCH_BIT && TankFaulted(COLD_SWITCH_BIT) == D_FALSE)
+                if(++tank_waiting[ENERGY_SAVING_TANK_COLD] >= MAX_NUM_WAITING)
                 {
-                    ApplyTank(ENERGY_SAVING_TANK_COLD, D_FALSE, tank->temperature);
+                    tank_waiting[ENERGY_SAVING_TANK_COLD] = 0;
+
+                    if(setting & COLD_SWITCH_BIT && TankFaulted(COLD_SWITCH_BIT) == D_FALSE)
+                    {
+                        ApplyTank(ENERGY_SAVING_TANK_COLD, D_FALSE, tank->temperature);
+                    }
                 }
             }
-        }
+        }       
 
         tank->counting_saved_time = (schedule_active && !tank->enabled) ? D_TRUE : D_FALSE;
     }

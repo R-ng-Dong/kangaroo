@@ -164,6 +164,17 @@ _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *second
     return D_TRUE;
 }
 
+_bool FilterManagerGetReplacementSeconds(FilterTimeIndex filter_index, UI64 *seconds_out)
+{
+    if ((filter_index < FILTER_TIME_INDEX_1ST) ||
+        (filter_index >= FILTER_RUNTIME_FILTER_COUNT) || (seconds_out == NULL))
+    {
+        return D_FALSE;
+    }
+    *seconds_out = s_filter_config.filters[filter_index].replacement_seconds;
+    return D_TRUE;
+}
+
 _bool FilterManagerSetPid(FilterTimeIndex filter_index, const UI8 pid[FILTER_PID_SIZE])
 {
     if ((filter_index < FILTER_TIME_INDEX_1ST) ||

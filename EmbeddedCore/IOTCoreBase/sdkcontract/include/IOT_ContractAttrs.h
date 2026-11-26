@@ -296,6 +296,42 @@ typedef struct
  */
 iot_err_t IOT_ContractRegisterAttrs(const IOT_ContractAttrDef_t *defs, uint16_t count);
 
+/** Whether an attribute's current value is kept across a power cut. */
+typedef enum
+{
+    IOT_CONTRACT_PERSIST_DEFAULT = 0, /* the contract decides: a continuous reading (temperature,
+                                         humidity, voltage, power, current, lux) is kept in RAM only;
+                                         everything else is kept */
+    IOT_CONTRACT_PERSIST_ALWAYS = 1,  /* always kept */
+    IOT_CONTRACT_PERSIST_NEVER = 2,   /* never kept: after a power cut it is unknown until reported */
+} IOT_ContractPersist_t;
+
+/**
+ * @brief Decide whether one attribute's value is kept across a power cut. Optional; call before
+ *        IOT_ContractStart().
+ *
+ * By default the contract keeps every value except continuous readings, which change often and
+ * which the hardware measures again after a power cut; keeping them would only wear the flash.
+ * Use NEVER for a value of your own that the hardware re-reads at boot (for example a sensor that
+ * reports often), and ALWAYS for a reading the product cannot measure again (for example a running
+ * total it does not keep itself). Setting DEFAULT removes an earlier choice.
+ *
+ * Applies to standard and registered attributes alike, and to an id registered later. An attribute
+ * restored at boot (IOT_ContractRestoreConfigure(), or registered with restore = true) is always
+ * kept: NEVER is refused for it.
+ *
+ * Blocks: no. Safe from a timer callback: no. Task: the boot task (app_main), before
+ * IOT_ContractStart().
+ *
+ * @param attrId The attribute.
+ * @param mode   IOT_CONTRACT_PERSIST_DEFAULT, _ALWAYS or _NEVER.
+ * @return IOT_OK;
+ *         IOT_ERR_INVALID_ARG   an unknown mode, or NEVER for an attribute restored at boot;
+ *         IOT_ERR_INVALID_STATE called after IOT_ContractStart();
+ *         IOT_ERR_NO_MEM        more than 16 attributes given a choice at once.
+ */
+iot_err_t IOT_ContractAttrPersist(uint16_t attrId, IOT_ContractPersist_t mode);
+
 // ============================================================================
 // Reading the table
 // ============================================================================

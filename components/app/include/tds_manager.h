@@ -20,4 +20,7 @@ UI8 TdsManagerGetEfficiency(UI16 inlet_ppm, UI16 ro_ppm);
 void TdsManagerCheckWarnings(UI16 inlet_ppm, UI16 ro_ppm, const UI8 max_num_detect);
 void TdsManagerClearAllWarnings(void);
 
+_bool IsTdsInletChanged(UI16 old_value, UI16 new_value);
+_bool IsTdsOutChanged(UI16 old_value, UI16 new_value);
+
 #endif

@@ -31,6 +31,8 @@ static const char *TAG = "RECORD";
 static const UI16 APP_ELEMENTS[] =  {ELEMENT_ID_1, ELEMENT_ID_2, ELEMENT_ID_3, ELEMENT_ID_4, ELEMENT_ID_5};
 #define APP_ELEMENT_COUNT  (sizeof(APP_ELEMENTS) / sizeof(APP_ELEMENTS[0]))
 
+extern _bool WaterControllerResetSystem(void);
+
 iot_err_t AppRecordConfigure(void)
 {
     /* Rules match the semantic element type. Both attributes are reported by switch
@@ -71,6 +73,7 @@ static void app_on_device_removed(uint16_t eid, bool root)
     if(root)
     {
         ESP_LOGW(TAG, "Root device removed, clearing energy saving config and restarting");
+        WaterControllerResetSystem();
         EnergySavingManagerClearConfig();
         IOT_ApplicationRestartChip();
     }
@@ -140,6 +143,7 @@ static iot_err_t AppUpdateAttributeU16(uint16_t elemId, uint16_t attrId, uint16_
     iot_err_t err = IOT_CoreGetRootEid(&rootEid);
     if (err != IOT_OK)
     {
+        // IOT_LOGE(TAG, "Failed to get rootEid");
         return err;
     }
 

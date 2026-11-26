@@ -889,6 +889,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
          * reachable: the next sync attempt or a reboot retries the cloud. */
         IOT_LOGW(TAG, "DEVICE event: PROVISION_CANCELLED");
         TdsTaskStart();
+        LedManagerSetNormal();
         LedManagerSetNetworkWaiting();
         break;
     }
@@ -1008,7 +1009,8 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
                 LedManagerSetOta();
             }
         }
-
+        IOT_LOGW(TAG, "DEVICE event: WIFI_CONNECTED, IP: %08lx",
+                 (unsigned long)deviceEvent->data.networkConnected.ip);
         break;
     }
     case DEV_EVENT_NETWORK_DISCONNECTED:
@@ -1027,6 +1029,9 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
             }
         }
         LedManagerSetError();
+        IOT_LOGW(TAG, "DEVICE event: WIFI_DISCONNECTED, reason: %d",
+                 deviceEvent->data.networkDisconnected.reason);
+
         break;
     }
     case DEV_EVENT_NETWORK_CONNECT_FAILED:

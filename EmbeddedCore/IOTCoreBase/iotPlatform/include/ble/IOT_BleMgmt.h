@@ -525,9 +525,6 @@ iot_err_t IOT_BleStopScan(void);
  */
 iot_err_t IOT_BleSetDeviceName(const char *name);
 
-/** Set the local name used in scan responses for subsequent advertising starts. */
-iot_err_t IOT_BleSetAdvertisingNameOverride(const char *name);
-
 /** @} */
 
 /** @defgroup BLE_Advertising Advertising Operations

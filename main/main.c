@@ -24,32 +24,7 @@ static const char *TAG = "MAIN";
 
 #define FACTORY_TEST 1
 
-static volatile uint8_t s_batteryPercent = 100;
 
-static void onBleAdv(const IOT_CoreBleAdvContext_t *ctx,
-                     IOT_CoreBleAdvFields_t *fields,
-                     void *arg)
-{
-    (void)arg;
-
-    if (ctx->purpose == IOT_CORE_BLE_ADV_PROVISION && ctx->advFree >= 5)
-    {
-        uint8_t battery[3] = {0x0F, 0x18, s_batteryPercent};
-
-        IOT_CoreBleAdvAddField(fields,
-                               IOT_CORE_BLE_ADV_PACKET,
-                               0x16,
-                               battery,
-                               sizeof(battery));
-    }
-}
-
-// test
-void onBatteryChanged(uint8_t percent)
-{
-    s_batteryPercent = percent;
-    IOT_CoreBleAdvRefresh();
-}
 
 void app_main(void)
 {
@@ -78,7 +53,6 @@ void app_main(void)
     }
 
 #endif
-    IOT_CoreBleAdvSetCustomizer(onBleAdv, NULL); 
 
     esp_err_t esp_err = AppCommonInit();
     if (esp_err != ESP_OK)
@@ -86,13 +60,23 @@ void app_main(void)
         IOT_LOGE("MAIN", "Failed to init AppCommon");
     }
 
-    const char *MODEL_ID = (char *)AppCheckModel();
-    IOT_LOGW("MAIN", "modelID: %s", MODEL_ID);
-    if (AppRecordInit(MODEL_ID) != D_TRUE)
+    AppCheckModel();
+
+    UI8 MODEL_ID[PID_MAX_LENGTH];
+    AppGetModelId(MODEL_ID);
+    IOT_LOGW("MAIN", "modelID: %.*s", PID_MAX_LENGTH, (char *)MODEL_ID);
+
+    UI8 vendor[SERIAL_MAX_LENGTH];
+    AppGetSerial(vendor);
+    IOT_LOGW("MAIN", "Serial: %.*s", SERIAL_MAX_LENGTH, (char *)vendor);
+    IOT_CoreBleAdvSetVendorData(vendor, sizeof(vendor));
+
+    if (AppRecordInit((char *)MODEL_ID) != D_TRUE)
     {
         IOT_LOGE(TAG, "IOT_CoreInit failed: %s", iot_err_to_name(err));
         return;
     }
+
     WaterPurifierType model = AppGetModel();
     esp_err = AppInit(model);
     if (esp_err != ESP_OK)
@@ -109,9 +93,6 @@ void app_main(void)
         {
             IOT_LOGE(TAG, "Factory UDP test failed to start: %s", esp_err_to_name(esp_err));
         }
-        else{
-            onBatteryChanged(10);
-        }
     }
     else
     {
@@ -119,6 +100,6 @@ void app_main(void)
     }
 #endif
 
-    IOT_LOGI(TAG, "=============[TEST-PRODUCT] Version %s(4) =============\n", CONFIG_APP_PROJECT_VER);
+    IOT_LOGI(TAG, "=============[TEST-PRODUCT] Version %s(5) =============\n", CONFIG_APP_PROJECT_VER);
     return;
 }

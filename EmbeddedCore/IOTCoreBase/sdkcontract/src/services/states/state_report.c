@@ -8,6 +8,7 @@
 #include "IOT_Log.h"
 #include "IOT_Memory.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
+#include "services/IOT_ContractStateUnknown.h"
 
 static const char *TAG = "SDK_STATE_RPT";
 
@@ -48,6 +49,16 @@ iot_err_t IOT_ContractReportState(const IOT_ContractStateReport_t *req)
         IOT_LOGW(TAG, "EID %04x: empty element state, not reporting", req->eid);
         IOT_DaoDeviceFreeElemsInfo(&fullState);
         return IOT_ERR_DATA_NOT_FOUND;
+    }
+
+    /* A reading not reported since boot is unknown in the store; on the wire it goes as its
+     * default, as right after a join. */
+    iot_err = IOT_ContractStateFillUnknown(&fullState);
+    if (iot_err != IOT_OK)
+    {
+        IOT_LOGW(TAG, "EID %04x: no memory for unknown values, not reporting", req->eid);
+        IOT_DaoDeviceFreeElemsInfo(&fullState);
+        return iot_err;
     }
 
     iot_err = IOT_DaoDeviceGetIdentityInfo(req->eid, &identity);

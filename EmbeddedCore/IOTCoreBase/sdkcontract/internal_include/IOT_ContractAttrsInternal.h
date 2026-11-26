@@ -57,6 +57,11 @@ bool IOT_AttrResolveSyncOnOffCarrier(uint16_t *attrId);
  *  command, an event, a reading or a carrier. */
 bool IOT_AttrIsRestorable(uint16_t attrId);
 
+/** True when the attribute's value is kept across a power cut (the Device store writes it to
+ *  flash). False for the continuous readings (temperature, humidity, combined temperature and
+ *  humidity, voltage, power, current, lux) unless overridden with IOT_ContractAttrPersist(). */
+bool IOT_AttrIsPersisted(uint16_t attrId);
+
 /** Close registration: IOT_ContractStart() calls this before core starts, so the registry never
  *  changes while another task reads it. */
 void IOT_ContractAttrsFreeze(void);

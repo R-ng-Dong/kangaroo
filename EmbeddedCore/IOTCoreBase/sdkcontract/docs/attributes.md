@@ -239,6 +239,28 @@ These are kept only for backward compatibility with old automation data. Do not 
 
 ---
 
+## Kept across a power cut
+
+The contract keeps every attribute's current value across a power cut, except the continuous
+readings, which it keeps in RAM only: every sample is a change, the hardware measures them again
+after a power cut, and keeping them would only wear the flash.
+
+| Kept in RAM only | |
+|---|---|
+| `IOT_ATTR_TEMP_EVT`, `IOT_ATTR_HUMID_EVT`, `IOT_ATTR_TEMP_HUMID_EVT` | temperature and humidity readings |
+| `IOT_ATTR_POWER_VOLTAGE`, `IOT_ATTR_POWER_CONSUMED_INSTANCE`, `IOT_ATTR_POWER_CURRENT_INSTANCE` | voltage, power, current |
+| `IOT_ATTR_LUX_EVT` | light level |
+
+`IOT_ATTR_POWER_CONSUMED` (the running energy total) is kept: it cannot be measured again.
+
+Until your product reports a reading after a power cut, the device answers with the attribute's
+default value, as it does right after it joins, and automations treat the value as absent.
+
+Choose differently for one attribute with `IOT_ContractAttrPersist(attrId, mode)` before
+`IOT_ContractStart()`: `IOT_CONTRACT_PERSIST_NEVER` for a value of your own that the hardware
+re-reads at boot, `IOT_CONTRACT_PERSIST_ALWAYS` for a reading your product cannot measure again.
+An attribute restored at boot is always kept.
+
 ## History entries: a different width
 
 **An attribute is not the same width in every message.** A state report carries the full value

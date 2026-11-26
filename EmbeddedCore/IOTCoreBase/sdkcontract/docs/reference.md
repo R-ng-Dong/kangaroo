@@ -61,7 +61,7 @@ link. Every name a public header declares is listed here, and a check in our bui
 
 | Name | Meaning |
 |---|---|
-| `IOT_CONTRACT_VERSION_MAJOR`, `_MINOR`, `_PATCH`, `IOT_CONTRACT_VERSION_STRING` | Contract API version (`2.2.0`) |
+| `IOT_CONTRACT_VERSION_MAJOR`, `_MINOR`, `_PATCH`, `IOT_CONTRACT_VERSION_STRING` | Contract API version (`2.3.0`) |
 | `IOT_CONTRACT_MAX_ELEMENTS` | Most elements a device can declare (16) |
 | `IOT_CONTRACT_REPORT_FIELDS_MAX` | Most fields in one `IOT_ContractReportFields()` value (8) |
 | `IOT_CONTRACT_EVENT_SUBSCRIBERS_MAX` | Most contract event subscribers (4) |
@@ -74,6 +74,7 @@ ids, `IOT_DEVTYPE_*` element types, value constants.
 | Name | What it is |
 |---|---|
 | `IOT_ContractRegisterAttrs(defs, count)` | Register your product's own attribute ids (`0xF700`-`0xFEFF`). Before start; all or nothing |
+| `IOT_ContractAttrPersist(attrId, mode)` | Choose whether an attribute's value is kept across a power cut: `IOT_CONTRACT_PERSIST_DEFAULT`, `_ALWAYS` or `_NEVER` (`IOT_ContractPersist_t`). Before start; see [Kept across a power cut](attributes.md#kept-across-a-power-cut) |
 | `IOT_ContractAttrSize(attrId)` | Size in bytes of an attribute's value (2 per 16-bit field); unknown ids are one field |
 | `IOT_ContractAttrIsKnown(attrId)` | Whether an id is in the standard table or registered |
 | `IOT_ContractAttrDef_t` | One attribute of your own: `id`, `fieldCount`, `defaultValue`, `restore` |

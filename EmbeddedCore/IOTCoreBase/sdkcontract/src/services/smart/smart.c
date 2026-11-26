@@ -897,6 +897,11 @@ static int compareBytesBE(const uint8_t *a, uint16_t aLen, const uint8_t *b, uin
 static bool checkTriggerCondition(uint16_t condition, const uint8_t *currentValue, uint16_t currentSize,
                                   const IOT_SmartTrigger_t *trigger)
 {
+    /* An absent value (a reading not reported since boot) satisfies nothing, not even ANY: with
+     * 0 bytes EQUAL, EXIST and BETWEEN would compare nothing and return true. */
+    if (currentValue == NULL || currentSize == 0)
+        return false;
+
     switch (condition)
     {
     case TRIGGER_COND_ANY:

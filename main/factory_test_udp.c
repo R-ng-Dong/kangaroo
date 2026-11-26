@@ -298,7 +298,7 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
         cJSON_AddNumberToObject(data, "type", type);
         cJSON_AddStringToObject(data, "pid", jPid->valuestring);
 
-        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring);
+        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring, "xxx\0");
         if (stored)
             cJSON_AddBoolToObject(data, "restartRequired", true);
         SetResult(data, stored, "set_model_failed");

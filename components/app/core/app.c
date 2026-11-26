@@ -18,6 +18,7 @@
 #include "IOT_TimerMgmt.h"
 
 #include "tds_task.h"
+#include "tds_manager.h"
 #include "water_profile.h"
 #include "filter_manager.h"
 #include "filter_runtime.h"
@@ -56,6 +57,7 @@ static const char *TAG = "APP";
 
 
 static WaterPurifierType s_model = WATER_PURIFIER_TYPE_STANDARD;
+static ProductModel s_pModel = {0};
 
 void AppPushWarningToCloud(void);
 void FilterManagerReportToCloud(const UI8 *percent_values, FilterManagerReportMode mode, FilterTimeIndex filter_index);
@@ -109,13 +111,18 @@ _bool ConvertCharToUI8(const char *src, UI8 *dest, UI8 len)
     return D_TRUE;
 }
 
-_bool ModelConfigStore(WaterPurifierType type, const char *pid)
+_bool ModelConfigStore(WaterPurifierType type, const char *pid, const char *serial)
 {
     if(WATER_PURIFIER_TYPE_STANDARD != type && WATER_PURIFIER_TYPE_HOT_COLD != type)
         return D_FALSE;
     UI8 pid_temp[PID_MAX_LENGTH];
+    UI8 serial_temp[SERIAL_MAX_LENGTH];
 
     if(ConvertCharToUI8(pid, pid_temp, PID_MAX_LENGTH) != D_TRUE)
+    {
+        return D_FALSE;
+    }
+    if(ConvertCharToUI8(serial, serial_temp, SERIAL_MAX_LENGTH) != D_TRUE)
     {
         return D_FALSE;
     }
@@ -123,6 +130,7 @@ _bool ModelConfigStore(WaterPurifierType type, const char *pid)
     ProductModel p_model = {0};
     p_model.type = (UI8)type;
     memcpy(p_model.pid, pid_temp, PID_MAX_LENGTH);
+    memcpy(p_model.serial, serial_temp, SERIAL_MAX_LENGTH);
 
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(SYSTEM_NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -298,13 +306,190 @@ static void LogSystemTask(void *arg)
             UI64 energy_consumption = EnergyConsumptionGetTotal();
             app_update_energy_consumption((UI32)energy_consumption);
 
-            UI16 inlet_ppm = TdsInletGet();
-            UI16 ro_ppm = TdsRoGet();
+            UI16 inlet_ppm = TdsInletGetValue();
+            UI16 ro_ppm = TdsRoGetValue();
             app_update_tds_in(inlet_ppm);
             app_update_tds_out(ro_ppm);   
 
             last_log_tick = now_tick;
         }
+    }
+}
+
+static void HotColdHandleTask(void *arg)
+{
+    (void)arg;
+    enum {
+        HOT_LOAD_RETRY_IDLE,
+        HOT_LOAD_WAITING_OFF,
+        HOT_LOAD_WAITING_RECHECK,
+        HOT_LOAD_LOCKED_OFF,
+    };
+    enum {
+        COLD_LOAD_RETRY_IDLE,
+        COLD_LOAD_WAITING_OFF,
+        COLD_LOAD_WAITING_RECHECK,
+        COLD_LOAD_LOCKED_OFF,
+    };
+
+    static _bool hot_tank_fault_handling_ready = D_TRUE; 
+    static _bool cold_tank_fault_handling_ready = D_TRUE; 
+
+    static UI8 load_retry_state = HOT_LOAD_RETRY_IDLE;
+    static int64_t load_retry_deadline_ms = 0;
+    static UI8 cold_load_retry_state = COLD_LOAD_RETRY_IDLE;
+    static int64_t cold_load_retry_deadline_ms = 0;
+
+    const int64_t command_timeout_ms = 15000;
+
+    while(1)
+    {
+        if (D_TRUE == StatusManagerHasWaterStatus() && D_TRUE == HasMessageType1())
+        {
+            DeviceStatusSnapshot_t status = StatusManagerGetSnapshot();
+            const UI8 hot_status = status.hot_tank_status;
+            const UI8 hot_enabled = (status.setting_val & HOT_SWITCH_BIT) != 0U;
+            const UI8 hot_temperature = WaterProfileGetHotTargetTemperature();
+            const UI8 cold_status = status.cold_tank_status;
+            const UI8 cold_enabled = (status.setting_val & COLD_SWITCH_BIT) != 0U;
+            const UI8 cold_temperature = WaterProfileGetColdTargetTemperature();
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+
+            // These faults are not recoverable by cycling power: force the heater off.
+            if (hot_status == HOT_TANK_STATUS_HEATER_RUNNING_TOO_LONG ||
+                hot_status == HOT_TANK_STATUS_TEMPERATURE_SENSOR_ERROR)
+            {
+                if (hot_enabled && (hot_tank_fault_handling_ready == D_TRUE))
+                {
+                    ESP_LOGE(TAG, "Hot tank fault %u: forcing heater off", hot_status);
+                    (void)WaterControllerSetFeatureHot(0U, hot_temperature);
+                    hot_tank_fault_handling_ready = D_FALSE;
+                }
+                load_retry_state = HOT_LOAD_RETRY_IDLE;
+            }
+            else if (hot_status == HOT_TANK_STATUS_LOAD_BROKEN)
+            {
+                switch (load_retry_state)
+                {
+                case HOT_LOAD_RETRY_IDLE:
+                    // Give a broken-load report one controlled off/on retry.
+                    ESP_LOGW(TAG, "Hot tank load broken: switching heater off before one retry");
+                    if (WaterControllerSetFeatureHot(0U, hot_temperature) == D_TRUE)
+                    {
+                        load_retry_state = HOT_LOAD_WAITING_OFF;
+                        load_retry_deadline_ms = now_ms + command_timeout_ms;
+                    }
+                    break;
+
+                case HOT_LOAD_WAITING_OFF:
+                    if (!hot_enabled)
+                    {
+                        if (WaterControllerSetFeatureHot(1U, hot_temperature) == D_TRUE)
+                        {
+                            load_retry_state = HOT_LOAD_WAITING_RECHECK;
+                            load_retry_deadline_ms = now_ms + command_timeout_ms;
+                            ESP_LOGW(TAG, "Hot tank off confirmed; retrying heater once");
+                        }
+                    }
+                    else if (now_ms >= load_retry_deadline_ms)
+                    {
+                        (void)WaterControllerSetFeatureHot(0U, hot_temperature);
+                        load_retry_state = HOT_LOAD_LOCKED_OFF;
+                        ESP_LOGE(TAG, "Hot tank did not turn off; forcing heater off");
+                    }
+                    break;
+
+                case HOT_LOAD_WAITING_RECHECK:
+                    if (now_ms >= load_retry_deadline_ms)
+                    {
+                        (void)WaterControllerSetFeatureHot(0U, hot_temperature);
+                        load_retry_state = HOT_LOAD_LOCKED_OFF;
+                        ESP_LOGE(TAG, "Hot tank remains load broken after retry; forcing heater off");
+                    }
+                    break;
+
+                case HOT_LOAD_LOCKED_OFF:
+                    if (hot_enabled)
+                    {
+                        (void)WaterControllerSetFeatureHot(0U, hot_temperature);
+                    }
+                    break;
+                }
+            }
+            else
+            {
+                // A recovered status permits a future, separate retry cycle.
+                load_retry_state = HOT_LOAD_RETRY_IDLE;
+                hot_tank_fault_handling_ready = D_TRUE;
+            }
+
+            // Cold-tank faults use the same one-time power-cycle recovery policy.
+            if (cold_status == COLD_TANK_STATUS_COMPRESSOR_RUNNING_TOO_LONG ||
+                cold_status == COLD_TANK_STATUS_TEMPERATURE_SENSOR_ERROR)
+            {
+                if (cold_enabled && (cold_tank_fault_handling_ready == D_TRUE))
+                {
+                    ESP_LOGE(TAG, "Cold tank fault %u: forcing compressor off", cold_status);
+                    (void)WaterControllerSetFeatureCold(0U, cold_temperature);
+                    cold_tank_fault_handling_ready = D_FALSE;
+                }
+                cold_load_retry_state = COLD_LOAD_RETRY_IDLE;
+            }
+            else if (cold_status == COLD_TANK_STATUS_LOAD_BROKEN)
+            {
+                switch (cold_load_retry_state)
+                {
+                case COLD_LOAD_RETRY_IDLE:
+                    ESP_LOGW(TAG, "Cold tank load broken: switching compressor off before one retry");
+                    if (WaterControllerSetFeatureCold(0U, cold_temperature) == D_TRUE)
+                    {
+                        cold_load_retry_state = COLD_LOAD_WAITING_OFF;
+                        cold_load_retry_deadline_ms = now_ms + command_timeout_ms;
+                    }
+                    break;
+
+                case COLD_LOAD_WAITING_OFF:
+                    if (!cold_enabled)
+                    {
+                        if (WaterControllerSetFeatureCold(1U, cold_temperature) == D_TRUE)
+                        {
+                            cold_load_retry_state = COLD_LOAD_WAITING_RECHECK;
+                            cold_load_retry_deadline_ms = now_ms + command_timeout_ms;
+                            ESP_LOGW(TAG, "Cold tank off confirmed; retrying compressor once");
+                        }
+                    }
+                    else if (now_ms >= cold_load_retry_deadline_ms)
+                    {
+                        (void)WaterControllerSetFeatureCold(0U, cold_temperature);
+                        cold_load_retry_state = COLD_LOAD_LOCKED_OFF;
+                        ESP_LOGE(TAG, "Cold tank did not turn off; forcing compressor off");
+                    }
+                    break;
+
+                case COLD_LOAD_WAITING_RECHECK:
+                    if (now_ms >= cold_load_retry_deadline_ms)
+                    {
+                        (void)WaterControllerSetFeatureCold(0U, cold_temperature);
+                        cold_load_retry_state = COLD_LOAD_LOCKED_OFF;
+                        ESP_LOGE(TAG, "Cold tank remains load broken after retry; forcing compressor off");
+                    }
+                    break;
+
+                case COLD_LOAD_LOCKED_OFF:
+                    if (cold_enabled)
+                    {
+                        (void)WaterControllerSetFeatureCold(0U, cold_temperature);
+                    }
+                    break;
+                }
+            }
+            else
+            {
+                cold_load_retry_state = COLD_LOAD_RETRY_IDLE;
+                cold_tank_fault_handling_ready = D_TRUE;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1500));
     }
 }
 
@@ -1010,6 +1195,7 @@ static void CloudUpdateHandler(UI16 elemId, UI16 attrId, UI8 *attrValue, UI8 len
             FlushCycleStateSetPostFilterFlushTime(30*60); // [flush] 30 minutes
             FlushCycleStateSetTotalDrainWater(filter_idx);
             (void)DeviceElementSetAttributeValueOffset(elemId, ATTR_INFOMATION_PRODUCT_USAGE_TIME, 0, Pid, FILTER_PID_SIZE);
+            (void)DeviceElementSetAttributeValueOffset(elemId, ATTR_INFOMATION_PRODUCT_USAGE_TIME, FILTER_PID_SIZE, &attrValue[2], 4);
             
             FilterUpdateSetPending(D_TRUE);
             if (IOT_TimerInsertCb(FilterUpdatePendingCallback, (void *)(uintptr_t)filter_idx, 5U * 1000U) == IOT_TIMER_HANDLE_INVALID)
@@ -1215,26 +1401,27 @@ static void AppCheckVersionFirmwareMainboard(void)
 {
     static _bool is_check_done = D_FALSE;
     static UI8 time_out = 0;
+    static _bool is_timeout = D_TRUE;
 
     if(is_check_done) return;
 
-    if(++time_out >= 30)
+    if(++time_out >= 30 && is_timeout == D_TRUE)
     {
         ESP_LOGW(TAG, "Check version firmware mainboard timeout");
-        is_check_done = D_TRUE;
+        is_timeout = D_FALSE;
         UI16 firm_version = 0xFFFF;
         AppPushFirmwareVersion(firm_version);
-        // WaterControllerResetSystem();
+        WaterControllerResetSystem();
     }
 
 
     if(HasMessageTypeA())
     {
         is_check_done = D_TRUE;
+        is_timeout = D_FALSE;
         UI16 firm_version = WaterProfileGetVersionFirmware();
         // post to cloud
         AppPushFirmwareVersion(firm_version);
-        // WeaterControllerResetSystem();
         return;
     }
 }
@@ -1330,37 +1517,44 @@ static void AppCheckEnergyChanges(void)
     }
 }
 
-UI8* AppCheckModel(void)
+void AppCheckModel(void)
 {
-    static ProductModel p_model = {0};
-    // p_model.type = (UI8)WATER_PURIFIER_TYPE_STANDARD;
-    // UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x34};
-    // memcpy(p_model.pid, pid_temp, PID_MAX_LENGTH);
 
+#if TEST_PRODUCT
+    // s_pModel.type = (UI8)WATER_PURIFIER_TYPE_STANDARD;
+    // UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x34};
+    s_pModel.type = (UI8)WATER_PURIFIER_TYPE_HOT_COLD;
+    UI8 pid_temp[] = {0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x30, 0x31, 0x43, 0x30, 0x30, 0x34, 0x30, 0x30, 0x30, 0x33};
+    memcpy(s_pModel.pid, pid_temp, PID_MAX_LENGTH);
+    memcpy(s_pModel.serial, "RO12345678", SERIAL_MAX_LENGTH);
+#endif
+
+    // ModelConfigStore(WATER_PURIFIER_TYPE_STANDARD, "00000101C0040004", "RO87654321");
     ESP_LOGI(TAG, " ^-^ Waiting for check product model ... ^-^");
 
-    // const char *MODEL_ID = "00000101C0040003";
-    // if(ModelConfigStore(WATER_PURIFIER_TYPE_HOT_COLD, MODEL_ID) != D_TRUE)
-    // {
-    //     ESP_LOGE(TAG, "Failed to set model");
-    // }
-
-    if(ModelConfigGet(&p_model) != D_TRUE)
+    if(ModelConfigGet(&s_pModel) != D_TRUE)
     {
-        ESP_LOGE(TAG, "Failed to get model, use model default: WATER_PURIFIER_TYPE_STANDARD");
+        ESP_LOGE(TAG, "Failed to get product model");
     }
 
-    WaterPurifierType model = (WaterPurifierType)p_model.type;
+    WaterPurifierType model = (WaterPurifierType)s_pModel.type;
     if(WATER_PURIFIER_TYPE_HOT_COLD == model)
     {
         WaterProfileInit(); // init UART
-        WaterControllerResetSystem();
     }
     AppSetModel(model);
 
     ESP_LOGW(TAG, "[MODEL]: %s", s_model == WATER_PURIFIER_TYPE_HOT_COLD ? \
                  "WATER_PURIFIER_TYPE_HOT_COLD" : "WATER_PURIFIER_TYPE_STANDARD");
-    return (UI8 *)p_model.pid;
+}
+
+void AppGetModelId(UI8 modelID[PID_MAX_LENGTH])
+{
+    memcpy(modelID, s_pModel.pid, PID_MAX_LENGTH);
+}
+void AppGetSerial(UI8 serial[SERIAL_MAX_LENGTH])
+{
+    memcpy(serial, s_pModel.serial, SERIAL_MAX_LENGTH);
 }
 
 esp_err_t AppCommonInit(void)
@@ -1424,7 +1618,17 @@ esp_err_t AppInit(WaterPurifierType model)
         }
         StatusManagerInit();
         WaterRuntimeInit();
-        // WaterControllerTest();
+        BaseType_t hot_cold_task_ret = xTaskCreate(HotColdHandleTask,
+                                                   "HotColdHandleTask",
+                                                   3072,
+                                                   NULL,
+                                                   4,
+                                                   NULL);
+        if (hot_cold_task_ret != pdPASS)
+        {
+            ESP_LOGE(TAG, "Failed to create HotColdHandleTask");
+            return ESP_FAIL;
+        }
     }
 
     AppInitAttributeValue();
@@ -1480,12 +1684,12 @@ void FilterManagerReportToCloud(const UI8 *percent_values, FilterManagerReportMo
         if(value_length != 24) return;
 
         value[22] = 0;
-        value[23] = percent_values[(UI8)filter_index];
+        value[23] = *percent_values;
 
         if (DeviceElementSetAttributeValue(element_ids[(UI8)filter_index], ATTR_INFOMATION_PRODUCT_USAGE_TIME,
                                         value, sizeof(value)) == D_TRUE)
         {
-            ESP_LOGI(TAG, "=== App report one filter [index] %d", filter_index);
+            ESP_LOGI(TAG, "=== App report one filter [index] %d, value: %d", filter_index, *percent_values);
             AppRspToCloud((UI8)element_ids[(UI8)filter_index], ATTR_INFOMATION_PRODUCT_USAGE_TIME);
         }
     }
@@ -1547,13 +1751,23 @@ void AppPushTdsReportToCloud(UI16 inlet_ppm, UI16 ro_ppm)
 // Override
 void TdsInputUpdateRecord(UI16 inlet_ppm)
 {
-    app_update_tds_in(inlet_ppm);
+    static UI16 inlet_old = 0;
+    if(IsTdsInletChanged(inlet_old, inlet_ppm))
+    {
+        inlet_old = inlet_ppm;
+        app_update_tds_in(inlet_ppm);
+    }
 }
 
 // Override
 void TdsOutputUpdateRecord(UI16 outlet_ppm)
 {
-    app_update_tds_out(outlet_ppm);
+    static UI16 out_old = 0;
+    if(IsTdsOutChanged(out_old, outlet_ppm))
+    {
+        out_old = outlet_ppm;
+        app_update_tds_out(outlet_ppm);
+    }
 }
 
 
@@ -1886,13 +2100,17 @@ void AppInitAttributeValue(void)
             DeviceElementSetAttributeValueOffset(element_ids[idx], ATTR_INFOMATION_PRODUCT_USAGE_TIME, 0, filter_id, FILTER_PID_SIZE);
         }
         UI32 lifetime = 0;
-        if(FilterManagerGetLifetimeSeconds((FilterTimeIndex)idx, &lifetime)) 
+        UI64 replacement = 0;
+        if(FilterManagerGetLifetimeSeconds((FilterTimeIndex)idx, &lifetime) && FilterManagerGetReplacementSeconds((FilterTimeIndex)idx, &replacement)) 
         {
+            UI32 lifeTimeHour = lifetime / (3600U);
+            UI64 replacementTimeMonth = replacement / (30U * 24U * 3600U); 
+
             UI8 expire_time_s[4];
-            expire_time_s[0] = (lifetime>>24) & 0xff;
-            expire_time_s[1] = (lifetime>>16) & 0xff;
-            expire_time_s[2] = (lifetime>>8) & 0xff;
-            expire_time_s[3] = lifetime & 0xff;
+            expire_time_s[0] = (lifeTimeHour>>8) & 0xff;
+            expire_time_s[1] = lifeTimeHour & 0xff;
+            expire_time_s[2] = (replacementTimeMonth>>8) & 0xff;
+            expire_time_s[3] = replacementTimeMonth & 0xff;
             DeviceElementSetAttributeValueOffset(element_ids[idx], ATTR_INFOMATION_PRODUCT_USAGE_TIME, 16, expire_time_s, 4);
         }
     }

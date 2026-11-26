@@ -414,22 +414,26 @@ maps the headers by role.
 
 ## IOT_CoreBleAdv.h
 
-`IOT_CoreBleAdv.h` — your own fields and name in core's BLE adverts. Walkthrough:
+`IOT_CoreBleAdv.h` — your own name, fields and vendor data in core's setup advert. Walkthrough:
 [how-to/ble-advertising.md](how-to/ble-advertising.md).
 
 | Function | What it does |
 |---|---|
-| `IOT_CoreBleAdvAddField()` | Add one AD field to the advert being built; only from the customizer. Refuses fields core owns |
-| `IOT_CoreBleAdvOmitName()` | Drop core's local name from the scan response to free its space |
-| `IOT_CoreBleAdvRefresh()` | Re-run the customizer now and restart the advert that is on air |
-| `IOT_CoreBleAdvSetCustomizer()` | Register (or, with NULL, remove) the callback that adds your fields at every advert start |
+| `IOT_CoreBleAdvSetVendorData()` | Set up to 10 bytes carried in core's manufacturer data, after the model ID; length 0 removes them |
+| `IOT_CoreBleAdvSetName()` | Replace core's name in the setup advert's scan response; length 0 puts core's name back |
+| `IOT_CoreBleAdvOmitName()` | Send the setup advert without a name, freeing the scan response |
+| `IOT_CoreBleAdvAddField()` | Add one AD field to the advertising packet or the scan response; the same type replaces. Refuses fields core owns |
+| `IOT_CoreBleAdvRemoveField()` | Remove a field you added |
+| `IOT_CoreBleAdvClear()` | Back to core's own setup advert |
 
 | Type | What it is |
 |---|---|
-| `IOT_CoreBleAdvPurpose_t` | Which advert is starting: set-up or change-WiFi |
 | `IOT_CoreBleAdvWhere_t` | Which payload a field goes in: the packet or the scan response |
-| `IOT_CoreBleAdvContext_t` | What the callback is told: purpose, free space in each payload, whether the name is required |
-| `IOT_CoreBleAdvFields_t` | The fields being collected for one advert; opaque, valid only inside the callback |
+
+| Constant | Value |
+|---|---|
+| `IOT_CORE_BLE_ADV_VENDOR_MAX` | 10: longest vendor data, in bytes |
+| `IOT_CORE_BLE_ADV_NAME_MAX` | 29: longest name, in bytes |
 | `IOT_CoreBleAdvCustomizeCb_t` | The callback type that adds your fields |
 
 ## IOT_CoreTimeRequest.h
