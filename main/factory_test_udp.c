@@ -24,6 +24,7 @@
 #include "pin_config.h"
 #include "pump.h"
 #include "tds.h"
+#include "tds_task.h"
 #include "water_controller.h"
 #include "water_profile.h"
 #include "network/wifi.h"
@@ -39,6 +40,15 @@
 
 // #define FACTORY_WIFI_SSID "TTS"
 // #define FACTORY_WIFI_PASSWORD "TTS123456"
+
+#define ADC_SENSOR_1  DRV_ADC_CHANNEL_3 // lựa chọn chanel
+#define ADC_SENSOR_2  DRV_ADC_CHANNEL_2 // lựa chọn chanel
+
+#define TDS1_PULSE1_PIN        10
+#define TDS1_PULSE2_PIN        0
+
+#define TDS2_PULSE1_PIN        5
+#define TDS2_PULSE2_PIN        4
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
@@ -160,11 +170,34 @@ static void SendResponse(int socket_fd, const struct sockaddr_in *peer, socklen_
 
 static void TestAdc(cJSON *data)
 {
+    TdsTaskStop();
+
+    gpio_config_t gpio_conf_output = {
+        .pin_bit_mask = (1ULL << TDS1_PULSE1_PIN) | (1ULL << TDS1_PULSE2_PIN) | (1ULL << TDS2_PULSE1_PIN) | (1ULL << TDS2_PULSE2_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&gpio_conf_output);
+
+    AdcOneshotInit(ADC_SENSOR_1, DRV_ADC_ATTEN_DB_12, DRV_ADC_BITWIDTH_12);
+    AdcOneshotInit(ADC_SENSOR_2, DRV_ADC_ATTEN_DB_12, DRV_ADC_BITWIDTH_12);
+
+    gpio_set_level(TDS1_PULSE1_PIN, 1);
+    gpio_set_level(TDS1_PULSE2_PIN, 0);
+    gpio_set_level(TDS2_PULSE1_PIN, 1);
+    gpio_set_level(TDS2_PULSE2_PIN, 0);
+
+    UI16 raw_sensor1 = 0;
+    UI16 raw_sensor2 = 0;
+    AdcOneshotRead(ADC_SENSOR_1, &raw_sensor1);
+    AdcOneshotRead(ADC_SENSOR_2, &raw_sensor2);
+
     /* Keep the TDS task running; these are its latest calculated ppm values. */
-    cJSON_AddNumberToObject(data, "raw1", TdsGetValue(TDS_SENSOR_0));
-    cJSON_AddNumberToObject(data, "raw2", TdsGetValue(TDS_SENSOR_1));
+    cJSON_AddNumberToObject(data, "raw1", raw_sensor1);
+    cJSON_AddNumberToObject(data, "raw2", raw_sensor2);
     cJSON_AddStringToObject(data, "source", "tds_sensor");
-    cJSON_AddStringToObject(data, "unit", "ppm");
     SetResult(data, 1U, NULL);
 }
 
