@@ -34,11 +34,11 @@
 #define TEST_UDP_PORT 8181
 #define TEST_UDP_MAX_REQUEST 1024
 
-// #define FACTORY_WIFI_SSID "Kangaroo2026"
-// #define FACTORY_WIFI_PASSWORD "Kangaroo2026"
+#define FACTORY_WIFI_SSID "Kangaroo2026"
+#define FACTORY_WIFI_PASSWORD "Kangaroo2026"
 
-#define FACTORY_WIFI_SSID "TTS"
-#define FACTORY_WIFI_PASSWORD "TTS123456"
+// #define FACTORY_WIFI_SSID "TTS"
+// #define FACTORY_WIFI_PASSWORD "TTS123456"
 
 static const char *s_tag = "FACTORY_TEST_UDP";
 static TaskHandle_t s_task;
@@ -307,7 +307,7 @@ static void HandlePcbaCommand(const char *method, const cJSON *params, cJSON *da
         ESP_LOGI(s_tag, "Factory test: set model type=%u, pid=%s, serial=%s", (unsigned)type,
                  jPid->valuestring, jSerial->valuestring);
 
-        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring, "xxx\0");
+        UI8 stored = D_TRUE == ModelConfigStore((WaterPurifierType)type, (const char *)jPid->valuestring, (const char *)jSerial->valuestring);
         if (stored)
             cJSON_AddBoolToObject(data, "restartRequired", true);
         SetResult(data, stored, "set_model_failed");
