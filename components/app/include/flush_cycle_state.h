@@ -12,6 +12,7 @@ typedef struct
     UI16 total_drain_water_filter3;
     UI16 total_drain_water_ro;
     UI16 total_drain_water_post;
+    UI32 water_consumption_floor_l;
     UI8 drain_done;
     UI8 post_filter_flush_done;
 } FlushCycleState_t;
@@ -23,5 +24,6 @@ _bool FlushCycleStateSetPostFilterFlushTime(UI32 time_s);
 _bool FlushCycleStateSetDrainDone(_bool done);
 _bool FlushCycleStateSetPostFilterFlushDone(_bool done);
 _bool FlushCycleStateSetTotalDrainWater(UI8 filter_idx);
+_bool FlushCycleStateSetWaterConsumptionFloor(UI32 consumption_l);
 
 #endif

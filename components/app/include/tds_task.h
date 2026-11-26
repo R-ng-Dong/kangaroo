@@ -10,4 +10,7 @@ void TdsTaskContinue(void);
 UI16 TdsInletGet(void);
 UI16 TdsRoGet(void);
 
+UI16 TdsInletGetValue(void);
+UI16 TdsRoGetValue(void);
+
 #endif

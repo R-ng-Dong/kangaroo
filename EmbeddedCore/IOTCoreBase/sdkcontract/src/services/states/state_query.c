@@ -11,6 +11,7 @@
 #include "IOT_Record.h" /* ServeGet, GetCurrentBlocks */
 #include "IOT_TimerMgmt.h"
 #include "dao/IOT_DaoDeviceMgmt.h"
+#include "services/IOT_ContractStateUnknown.h"
 
 static const char *TAG = "ContractStateQuery";
 
@@ -28,6 +29,15 @@ iot_err_t IOT_ContractStateRespondGet(IOT_EventStateGetRequest_t *getData)
     if (err != IOT_OK)
     {
         IOT_LOGE(TAG, "Failed to get device elements state from DAO for EID %04x", getData->eid);
+        return err;
+    }
+
+    /* A reading not reported since boot answers with its default, as right after a join. */
+    err = IOT_ContractStateFillUnknown(&elemsStateInfo);
+    if (err != IOT_OK)
+    {
+        IOT_LOGE(TAG, "GET_STATE: EID %04x: no memory for unknown values", getData->eid);
+        IOT_DaoDeviceFreeElemsInfo(&elemsStateInfo);
         return err;
     }
 

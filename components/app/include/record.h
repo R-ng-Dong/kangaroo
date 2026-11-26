@@ -8,6 +8,7 @@
 _bool AppRecordInit(const char *modelId);
 _bool app_update_water_consumption(uint32_t water_consumption);
 _bool app_update_energy_consumption(uint32_t energy_consumption);
+_bool app_update_warning(uint32_t warning);
 _bool app_update_tds_in(uint16_t inlet_ppm);
 _bool app_update_tds_out(uint16_t outlet_ppm);
 

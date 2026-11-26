@@ -31,6 +31,9 @@ static void TdsUpdateFlushTimes(UI32 decrement_s);
 static UI16 s_inlet_average_ppm = 0;
 static UI16 s_ro_average_ppm = 0;
 
+static UI16 s_inlet_clean_ppm = 0;
+static UI16 s_ro_clean_ppm = 0;
+
 UI16 TdsInletGet(void)
 {
     return s_inlet_average_ppm;
@@ -39,6 +42,16 @@ UI16 TdsInletGet(void)
 UI16 TdsRoGet(void)
 {
     return s_ro_average_ppm;
+}
+
+UI16 TdsInletGetValue(void)
+{
+    return s_inlet_clean_ppm;
+}
+
+UI16 TdsRoGetValue(void)
+{
+    return s_ro_clean_ppm;
 }
 
 static void TdsPollingTask(void *arg)
@@ -99,7 +112,10 @@ static void TdsPollingTask(void *arg)
             }
             s_inlet_average_ppm = (UI16)(inlet_sum / (TDS_AVERAGE_SAMPLE_COUNT - 2 * TDS_TRIM_EDGES));
             inlet_count = 0;
-
+            if(!TdsIgnoreValue())
+            {
+                s_inlet_clean_ppm = s_inlet_average_ppm;
+            }
             average_updated = D_TRUE;
         }
 
@@ -113,7 +129,10 @@ static void TdsPollingTask(void *arg)
             }
             s_ro_average_ppm = (UI16)(ro_sum / (TDS_AVERAGE_SAMPLE_COUNT - 2 * TDS_TRIM_EDGES));
             ro_count = 0;
-
+            if(!TdsIgnoreValue())
+            {
+                s_ro_clean_ppm = s_ro_average_ppm;
+            }
             average_updated = D_TRUE;
         }
 
@@ -169,16 +188,16 @@ static _bool TdsIgnoreValue(void)
         }
     }
 
-    FlushCycleState_t state_out;
-    _bool ret = FlushCycleStateGet(&state_out);
-    if(ret == D_TRUE)
-    {
-        if(!state_out.drain_done || !state_out.post_filter_flush_done)
-        {
-            printf("[state] drain_done/post_filter_flush_done: %d/%d \n", state_out.drain_done, state_out.post_filter_flush_done);
-            return D_TRUE;
-        }
-    }
+    // FlushCycleState_t state_out;
+    // _bool ret = FlushCycleStateGet(&state_out);
+    // if(ret == D_TRUE)
+    // {
+    //     if(!state_out.drain_done || !state_out.post_filter_flush_done)
+    //     {
+    //         printf("[state] drain_done/post_filter_flush_done: %d/%d \n", state_out.drain_done, state_out.post_filter_flush_done);
+    //         return D_TRUE;
+    //     }
+    // }
     return D_FALSE;
 }
 

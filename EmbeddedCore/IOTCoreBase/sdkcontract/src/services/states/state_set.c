@@ -18,6 +18,7 @@
 #include "dao/IOT_DaoDeviceMgmt.h"
 #include "dao/IOT_DaoGroupMgmt.h"
 #include "IOT_ContractAttrsInternal.h"
+#include "services/IOT_ContractStateUnknown.h"
 
 static const char *TAG = "ContractStateSet";
 
@@ -224,6 +225,10 @@ static iot_err_t handleSingleDeviceSet(uint16_t eid, uint16_t rootEid, bool root
         IOT_LOGE(TAG, "Failed to get full device state for EID %04x", eid);
         return err;
     }
+    /* A value nobody has measured yet goes out as its default, as in every state report. Out of
+     * memory still reports the change: the hardware moved, and core only leaves the unknown out. */
+    if (IOT_ContractStateFillUnknown(outFullState) != IOT_OK)
+        IOT_LOGW(TAG, "EID %04x: no memory for unknown values' defaults; reporting without them", eid);
     err = IOT_DaoDeviceGetIdentityInfo(eid, outIdentity);
     if (err != IOT_OK)
     {

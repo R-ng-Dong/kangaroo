@@ -7,6 +7,10 @@
 #include "dao/IOT_DaoStorage.h"
 #include "dao/IOT_Cached.h"
 #include "IOT_Memory.h"
+#include "IOT_Osal.h"
+#include "IOT_ContractAttrsInternal.h"
+#include "IOT_Core.h"
+#include "IOT_TimerMgmt.h"
 
 // ============================================================================
 // Defines
@@ -166,9 +170,416 @@ void IOT_DaoDeviceFreeElemsInfo(IOT_DaoDeviceElemsAttrsInfo_t *elemsInfo)
 // Initialization
 // ============================================================================
 
+// ============================================================================
+// RAM overlay: values that are not kept across a power cut
+// ============================================================================
+
+/* A measured attribute (IOT_AttrIsPersisted() false) changes often and is measured again after a
+ * power cut, so its value lives here and never in the flash blob: writing it there wore the flash
+ * out once a second for nothing. Reads merge it into the blob's attributes; one with no value here
+ * reads as size 0 ("unknown") until the product reports it. */
+typedef struct device_ovl_s
+{
+    struct device_ovl_s *next;
+    uint16_t eid;
+    uint16_t elemId;
+    uint16_t attrId;
+    uint16_t size;
+    uint8_t *value;
+} device_ovl_t;
+
+static device_ovl_t *s_ovl = NULL;
+static IOT_OsalMutexHandle_t s_ovlLock = NULL;
+
+static void ovlLock(void)
+{
+    if (s_ovlLock == NULL)
+        s_ovlLock = IOT_OsalMutexCreate();
+    if (s_ovlLock != NULL)
+        (void) IOT_OsalMutexLock(s_ovlLock, UINT32_MAX);
+}
+
+static void ovlUnlock(void)
+{
+    if (s_ovlLock != NULL)
+        (void) IOT_OsalMutexUnlock(s_ovlLock);
+}
+
+static device_ovl_t *ovlFindLocked(uint16_t eid, uint16_t elemId, uint16_t attrId)
+{
+    for (device_ovl_t *n = s_ovl; n != NULL; n = n->next)
+    {
+        if (n->eid == eid && n->elemId == elemId && n->attrId == attrId)
+            return n;
+    }
+    return NULL;
+}
+
+static iot_err_t ovlSet(uint16_t eid, uint16_t elemId, uint16_t attrId, const uint8_t *value, uint16_t size)
+{
+    uint8_t *copy = Mem_SafeMalloc(size, TAG, "ovl value");
+    if (copy == NULL)
+        return IOT_ERR_NO_MEM;
+    memcpy(copy, value, size);
+
+    ovlLock();
+    device_ovl_t *n = ovlFindLocked(eid, elemId, attrId);
+    if (n == NULL)
+    {
+        n = Mem_SafeCalloc(1, sizeof(*n), TAG, "ovl node");
+        if (n == NULL)
+        {
+            ovlUnlock();
+            SAFE_FREE(copy);
+            return IOT_ERR_NO_MEM;
+        }
+        n->eid = eid;
+        n->elemId = elemId;
+        n->attrId = attrId;
+        n->next = s_ovl;
+        s_ovl = n;
+    }
+    SAFE_FREE(n->value);
+    n->value = copy;
+    n->size = size;
+    ovlUnlock();
+    return IOT_OK;
+}
+
+/* eid 0xFFFF: every device. */
+static void ovlDrop(uint16_t eid)
+{
+    ovlLock();
+    device_ovl_t **pp = &s_ovl;
+    while (*pp != NULL)
+    {
+        device_ovl_t *n = *pp;
+        if (eid == 0xFFFF || n->eid == eid)
+        {
+            *pp = n->next;
+            SAFE_FREE(n->value);
+            SAFE_FREE(n);
+        }
+        else
+        {
+            pp = &n->next;
+        }
+    }
+    ovlUnlock();
+}
+
+// ============================================================================
+// Write budget: a device's persisted state is written at most ~60 times an hour
+// ============================================================================
+
+/* A control changed by a person writes flash a few dozen times a day. A product or an automation
+ * that changes a persisted attribute every few seconds would write once a second, forever. Past
+ * DEVICE_PERSIST_BUDGET_PER_HOUR writes in a window, the new blob is held here (readers see it)
+ * and committed once per DEVICE_PERSIST_HOLD_MS. A write is counted at most once per flush
+ * interval, because the cache coalesces everything inside one flush into one NVS write.
+ *
+ * The bound is approximate. The cache flushes on its own periodic tick, not one interval after
+ * the write, so two changes under a second apart can straddle a tick and cost two writes for one
+ * count, and a change just after the last counted write still goes straight to the cache. Worst
+ * case is about 1.5x the counted writes (~150 an hour with the hold), still bounded. Counting
+ * every change instead would hold a person's quick double tap. */
+#define DEVICE_PERSIST_BUDGET_PER_HOUR 60u
+#define DEVICE_PERSIST_WINDOW_MS 3600000u
+#define DEVICE_PERSIST_HOLD_MS 60000u
+#define DEVICE_PERSIST_RETRY_MS 1000u
+#define DEVICE_PERSIST_FLUSH_MS 1000u
+
+typedef struct device_budget_s
+{
+    struct device_budget_s *next;
+    uint16_t eid;
+    uint16_t count;
+    uint32_t windowStartMs;
+    uint32_t lastCountedMs;
+    bool warned;
+    uint8_t *pending; /* held blob, or NULL */
+    uint16_t pendingLen;
+} device_budget_t;
+
+static device_budget_t *s_budget = NULL;
+static volatile IOT_TimerHandle_t s_holdTimer = IOT_TIMER_HANDLE_INVALID;
+
+static device_budget_t *budgetFindLocked(uint16_t eid)
+{
+    for (device_budget_t *b = s_budget; b != NULL; b = b->next)
+    {
+        if (b->eid == eid)
+            return b;
+    }
+    return NULL;
+}
+
+/* eid 0xFFFF: every device. Held values are dropped, not written. */
+static void budgetDrop(uint16_t eid)
+{
+    ovlLock();
+    device_budget_t **pp = &s_budget;
+    while (*pp != NULL)
+    {
+        device_budget_t *b = *pp;
+        if (eid == 0xFFFF || b->eid == eid)
+        {
+            *pp = b->next;
+            SAFE_FREE(b->pending);
+            SAFE_FREE(b);
+        }
+        else
+        {
+            pp = &b->next;
+        }
+    }
+    bool anyPending = false;
+    for (device_budget_t *b = s_budget; b != NULL; b = b->next)
+        anyPending = anyPending || (b->pending != NULL);
+    IOT_TimerHandle_t t = anyPending ? IOT_TIMER_HANDLE_INVALID : s_holdTimer;
+    if (!anyPending)
+        s_holdTimer = IOT_TIMER_HANDLE_INVALID;
+    ovlUnlock();
+    if (t != IOT_TIMER_HANDLE_INVALID)
+        (void) IOT_TimerCancel(t);
+}
+
+static void budgetDropPending(uint16_t eid)
+{
+    ovlLock();
+    device_budget_t *b = budgetFindLocked(eid);
+    if (b != NULL)
+    {
+        SAFE_FREE(b->pending);
+        b->pendingLen = 0;
+    }
+    ovlUnlock();
+}
+
+/* The element-state blob as readers must see it: a held one first, else the cache's. */
+static iot_err_t readStateBlob(uint16_t eid, const char *key, uint8_t **out, uint16_t *outLen)
+{
+    ovlLock();
+    device_budget_t *b = budgetFindLocked(eid);
+    if (b != NULL && b->pending != NULL)
+    {
+        uint8_t *copy = Mem_SafeMalloc(b->pendingLen, TAG, "held state copy");
+        if (copy == NULL)
+        {
+            ovlUnlock();
+            return IOT_ERR_NO_MEM;
+        }
+        memcpy(copy, b->pending, b->pendingLen);
+        *out = copy;
+        *outLen = b->pendingLen;
+        ovlUnlock();
+        return IOT_OK;
+    }
+    ovlUnlock();
+    return IOT_CacheGet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, (void **) out, outLen);
+}
+
+static void holdTimerCb(void *userData);
+
+static void armHoldTimerLocked(uint32_t ms)
+{
+    if (s_holdTimer == IOT_TIMER_HANDLE_INVALID)
+        s_holdTimer = IOT_TimerInsertCb(holdTimerCb, NULL, ms);
+}
+
+iot_err_t IOT_DaoDeviceCommitPending(void)
+{
+    iot_err_t result = IOT_OK;
+    ovlLock();
+    for (device_budget_t *b = s_budget; b != NULL; b = b->next)
+    {
+        if (b->pending == NULL)
+            continue;
+        char key[8];
+        eid_to_key(b->eid, key, sizeof(key));
+        iot_err_t err = IOT_CacheSet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, b->pending, b->pendingLen);
+        if (err == IOT_OK)
+        {
+            SAFE_FREE(b->pending);
+            b->pendingLen = 0;
+        }
+        else
+        {
+            IOT_LOGW(TAG, "EID %04x: held element state not written (%d), retrying", b->eid, (int) err);
+            result = err;
+        }
+    }
+    bool anyPending = false;
+    for (device_budget_t *b = s_budget; b != NULL; b = b->next)
+        anyPending = anyPending || (b->pending != NULL);
+    if (anyPending)
+        armHoldTimerLocked(DEVICE_PERSIST_HOLD_MS);
+    ovlUnlock();
+    return result;
+}
+
+static void holdWork(void *arg)
+{
+    (void) arg;
+    (void) IOT_DaoDeviceCommitPending();
+}
+
+/* Timer task: only hands the commit to core's task, or re-arms a short retry. No lock here (the
+ * timer task's stack is small and shared): the handle is only cleared or set, and a race at worst
+ * arms the commit twice, which writes the same blob twice. */
+static void holdTimerCb(void *userData)
+{
+    (void) userData;
+    s_holdTimer = IOT_TIMER_HANDLE_INVALID;
+    if (IOT_CoreDeferWork(holdWork, NULL) != IOT_OK)
+        s_holdTimer = IOT_TimerInsertCb(holdTimerCb, NULL, DEVICE_PERSIST_RETRY_MS);
+}
+
+/* Persist a changed blob, or hold it when this device is over its write budget. */
+static iot_err_t persistStateBlob(uint16_t eid, const char *key, uint8_t *blob, uint16_t len, uint16_t attrId)
+{
+    uint32_t now = IOT_TimerGetCurrentTimeMs();
+    ovlLock();
+    device_budget_t *b = budgetFindLocked(eid);
+    if (b == NULL)
+    {
+        b = Mem_SafeCalloc(1, sizeof(*b), TAG, "write budget");
+        if (b == NULL)
+        {
+            ovlUnlock();
+            return IOT_CacheSet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, blob, len);
+        }
+        b->eid = eid;
+        b->windowStartMs = now;
+        b->lastCountedMs = now - DEVICE_PERSIST_FLUSH_MS;
+        b->next = s_budget;
+        s_budget = b;
+    }
+    if ((uint32_t) (now - b->windowStartMs) >= DEVICE_PERSIST_WINDOW_MS)
+    {
+        b->windowStartMs = now;
+        b->count = 0;
+        b->warned = false;
+    }
+
+    /* A change inside the same flush interval as the last counted one joins that NVS write. */
+    bool newWrite = (uint32_t) (now - b->lastCountedMs) >= DEVICE_PERSIST_FLUSH_MS;
+    bool hold;
+    if (b->count >= DEVICE_PERSIST_BUDGET_PER_HOUR && (newWrite || b->pending != NULL))
+    {
+        hold = true; /* over budget: keep it until the hold timer commits it */
+    }
+    else
+    {
+        hold = false; /* under budget (or the window rolled over while holding: the new blob carries
+                         the held one) */
+        if (newWrite || b->pending != NULL)
+        {
+            b->count++;
+            b->lastCountedMs = now;
+        }
+    }
+
+    if (!hold)
+    {
+        SAFE_FREE(b->pending);
+        b->pendingLen = 0;
+        ovlUnlock();
+        return IOT_CacheSet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, blob, len);
+    }
+
+    uint8_t *copy = Mem_SafeMalloc(len, TAG, "held state");
+    if (copy == NULL)
+    {
+        ovlUnlock();
+        return IOT_ERR_NO_MEM;
+    }
+    memcpy(copy, blob, len);
+    SAFE_FREE(b->pending);
+    b->pending = copy;
+    b->pendingLen = len;
+    if (!b->warned)
+    {
+        b->warned = true;
+        IOT_LOGW(TAG, "EID %04x: over %u flash writes this hour (attr %04x), holding element state %us at a time",
+                 eid, (unsigned) DEVICE_PERSIST_BUDGET_PER_HOUR, attrId, (unsigned) (DEVICE_PERSIST_HOLD_MS / 1000u));
+    }
+    armHoldTimerLocked(DEVICE_PERSIST_HOLD_MS);
+    ovlUnlock();
+    return IOT_OK;
+}
+
+/* Replace every non-persisted attribute of @p out with its RAM value (or size 0), then append the
+ * RAM values that have no slot in the blob. On failure @p out stays freeable. */
+static iot_err_t ovlMerge(uint16_t eid, IOT_DaoDeviceElemsAttrsInfo_t *out)
+{
+    iot_err_t err = IOT_OK;
+    ovlLock();
+    for (uint16_t e = 0; e < out->numOfElem && err == IOT_OK; e++)
+    {
+        IOT_DaoDeviceStateElemState_t *el = &out->elemList[e];
+        for (uint8_t a = 0; a < el->numOfAttr; a++)
+        {
+            IOT_DaoDeviceStateAttr_t *at = &el->attrList[a];
+            if (IOT_AttrIsPersisted(at->attrId))
+                continue;
+            SAFE_FREE(at->attrValue);
+            at->attrSize = 0;
+            device_ovl_t *n = ovlFindLocked(eid, el->elemId, at->attrId);
+            if (n == NULL)
+                continue;
+            at->attrValue = Mem_SafeMalloc(n->size, TAG, "ovl merge value");
+            if (at->attrValue == NULL)
+            {
+                err = IOT_ERR_NO_MEM;
+                break;
+            }
+            memcpy(at->attrValue, n->value, n->size);
+            at->attrSize = n->size;
+        }
+        for (device_ovl_t *n = s_ovl; n != NULL && err == IOT_OK; n = n->next)
+        {
+            if (n->eid != eid || n->elemId != el->elemId)
+                continue;
+            bool inBlob = false;
+            for (uint8_t a = 0; a < el->numOfAttr && !inBlob; a++)
+                inBlob = (el->attrList[a].attrId == n->attrId);
+            if (inBlob || el->numOfAttr == UINT8_MAX)
+                continue;
+            uint8_t *value = Mem_SafeMalloc(n->size, TAG, "ovl append value");
+            if (value == NULL)
+            {
+                err = IOT_ERR_NO_MEM;
+                break;
+            }
+            IOT_DaoDeviceStateAttr_t *grown = Mem_SafeRealloc(
+                el->attrList, (size_t) (el->numOfAttr + 1) * sizeof(IOT_DaoDeviceStateAttr_t), TAG, "ovl append");
+            if (grown == NULL)
+            {
+                SAFE_FREE(value);
+                err = IOT_ERR_NO_MEM;
+                break;
+            }
+            el->attrList = grown;
+            memcpy(value, n->value, n->size);
+            el->attrList[el->numOfAttr].attrId = n->attrId;
+            el->attrList[el->numOfAttr].attrSize = n->size;
+            el->attrList[el->numOfAttr].attrValue = value;
+            el->numOfAttr++;
+        }
+    }
+    ovlUnlock();
+    return err;
+}
+
 iot_err_t IOT_DaoDeviceInit(void)
 {
     IOT_LOGI(TAG, "Initializing device management");
+
+    /* Here, before any other task can read state: created on first use, two tasks arriving
+     * together would each create one. ovlLock() still creates it if init never ran (host tools). */
+    if (s_ovlLock == NULL)
+        s_ovlLock = IOT_OsalMutexCreate();
 
     /* Write-back, flushed once a second.
      *
@@ -453,8 +864,7 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     // Read old value from cache
     uint8_t *currentState = NULL;
     uint16_t currentStateLen = 0;
-    iot_err =
-        IOT_CacheGet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, (void **) &currentState, &currentStateLen);
+    iot_err = readStateBlob(DevEid, key, &currentState, &currentStateLen);
     if (iot_err == IOT_ERR_NOT_FOUND)
     {
         currentState = NULL;
@@ -547,6 +957,10 @@ iot_err_t IOT_DaoDeviceAddElementInfo(uint16_t DevEid, IOT_DaoDeviceStateElemSta
     if (iot_err != IOT_OK)
     {
         IOT_LOGE(TAG, "Failed to persist updated element state for DevEid %04x", DevEid);
+    }
+    else
+    {
+        budgetDropPending(DevEid); /* the joined blob was built on the held one */
     }
     SAFE_FREE(newState);
 
@@ -733,8 +1147,7 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
     // Read current state from cache
     uint8_t *currentState = NULL;
     uint16_t currentStateLen = 0;
-    iot_err =
-        IOT_CacheGet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, (void **) &currentState, &currentStateLen);
+    iot_err = readStateBlob(eid, key, &currentState, &currentStateLen);
     if (iot_err == IOT_ERR_NOT_FOUND)
     {
         IOT_LOGW(TAG, "No existing device state for EID %04x", eid);
@@ -757,6 +1170,7 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
     SAFE_FREE(currentState);
     currentState = NULL;
 
+    uint16_t changedAttrId = 0; // first persisted attribute that changed, for the budget warning
     bool anyUpdated = false;  // an attribute MATCHED (or was added) — drives NOT_FOUND
     bool anyChanged = false;  // the blob would actually differ — drives the NVS write
 
@@ -797,6 +1211,19 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
             if (srcAttr->attrValue == NULL || srcAttr->attrSize == 0)
             {
                 IOT_LOGD(TAG, "Skipping empty update for attr %04x", srcAttr->attrId);
+                continue;
+            }
+
+            /* A measured value goes to RAM only: no blob change, no flash write. */
+            if (!IOT_AttrIsPersisted(srcAttr->attrId))
+            {
+                iot_err_t oe = ovlSet(eid, srcElem->elemId, srcAttr->attrId, srcAttr->attrValue, srcAttr->attrSize);
+                if (oe != IOT_OK)
+                {
+                    IOT_DaoDeviceFreeElemsInfo(&currentElemsInfo);
+                    return oe;
+                }
+                anyUpdated = true;
                 continue;
             }
 
@@ -848,6 +1275,8 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
                     memcpy(dstElem->attrList[j].attrValue, srcAttr->attrValue, srcAttr->attrSize);
                     anyUpdated = true;
                     anyChanged = true;
+                    if (changedAttrId == 0)
+                        changedAttrId = srcAttr->attrId;
                     IOT_LOGD(TAG, "Updated device %04x elem %04x attr %04x (size %d)", 
                              eid, dstElem->elemId, srcAttr->attrId, srcAttr->attrSize);
                     break;
@@ -918,8 +1347,8 @@ iot_err_t IOT_DaoDeviceUpdateElementState(uint16_t eid, IOT_DaoDeviceElemsAttrsI
         return iot_err;
     }
 
-    // Persist
-    iot_err = IOT_CacheSet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, newState, newStateLen);
+    // Persist, or hold when this device is over its write budget
+    iot_err = persistStateBlob(eid, key, newState, newStateLen, changedAttrId);
     SAFE_FREE(newState);
 
     return iot_err;
@@ -966,8 +1395,7 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
     // Read from cache (not direct DAO)
     uint8_t *currentState = NULL;
     uint16_t currentStateLen = 0;
-    iot_err =
-        IOT_CacheGet(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key, IOT_DAO_BLOB, (void **) &currentState, &currentStateLen);
+    iot_err = readStateBlob(DevEid, key, &currentState, &currentStateLen);
     if (iot_err == IOT_ERR_NOT_FOUND)
     {
         IOT_LOGW(TAG, "No existing device state for EID %04x", DevEid);
@@ -1044,12 +1472,17 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
         elemInfoOut->numOfAttr = featureCount;
         elemInfoOut->attrList = NULL;
 
+        /* Counted now, so a failure below frees this element too (its attrList is calloc'd,
+         * so unfilled entries are NULL and free cleanly). */
+        outElemsInfo->numOfElem++;
+
         // Allocate attrList
         if (featureCount > 0)
         {
             elemInfoOut->attrList = Mem_SafeCalloc(featureCount, sizeof(IOT_DaoDeviceStateAttr_t), TAG, "get attr list");
             if (elemInfoOut->attrList == NULL)
             {
+                elemInfoOut->numOfAttr = 0;
                 IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
                 SAFE_FREE(currentState);
                 return IOT_ERR_NO_MEM;
@@ -1098,12 +1531,14 @@ iot_err_t IOT_DaoDeviceGetDeviceElemsState(uint16_t DevEid, IOT_DaoDeviceElemsAt
             attrOffset += 2 + 1 + attrSize;
         }
 
-        outElemsInfo->numOfElem++;
         offset = attrOffset;
     }
 
     SAFE_FREE(currentState);
-    return IOT_OK;
+    iot_err = ovlMerge(DevEid, outElemsInfo);
+    if (iot_err != IOT_OK)
+        IOT_DaoDeviceFreeElemsInfo(outElemsInfo);
+    return iot_err;
 }
 
 iot_err_t IOT_DaoDeviceGetElementType(uint16_t devEid, uint16_t elemId, uint16_t *outElemType)
@@ -1279,6 +1714,8 @@ iot_err_t IOT_DaoDeviceRemoveData(uint16_t eid, IOT_DaoDeviceDataType_t dataType
     {
         // Invalidate cache entry first
         IOT_CacheInvalidate(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key);
+        ovlDrop(eid);
+        budgetDrop(eid);
 
         res = IOT_DaoStorageRemoveByKey(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key);
         if (res != IOT_OK && res != IOT_ERR_NOT_FOUND)
@@ -1330,6 +1767,8 @@ iot_err_t IOT_DaoDeviceRemoveDataAsync(uint16_t eid, IOT_DaoDeviceDataType_t dat
     {
         // Invalidate cache entry
         IOT_CacheInvalidate(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key);
+        ovlDrop(eid);
+        budgetDrop(eid);
         IOT_DaoStorageRemoveByKeyAsync(DEVICE_ELEMS_STATE_INFO_NAMESPACE, key);
     }
 
@@ -1436,6 +1875,9 @@ iot_err_t IOT_DaoDeviceInvalidateCache(void)
 
 iot_err_t IOT_DaoDeviceFactoryReset(void){
     iot_err_t iot_err = IOT_OK;
+
+    ovlDrop(0xFFFF);
+    budgetDrop(0xFFFF);
 
     // Remove all namespaces related to device data
     iot_err_t res = IOT_DaoStorageRemoveNamespace(DEVICE_IDENTITY_INFO_NAMESPACE);

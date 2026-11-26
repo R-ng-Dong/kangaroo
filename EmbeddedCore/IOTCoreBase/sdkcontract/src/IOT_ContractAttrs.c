@@ -407,6 +407,101 @@ bool IOT_AttrIsRestorable(uint16_t attrId)
     return own != NULL && own->restore;
 }
 
+/* The continuous readings: every sample is a change and the hardware measures them again after
+ * a power cut, so the Device store keeps them in RAM only. A running total
+ * (IOT_ATTR_POWER_CONSUMED) is not one of them: it cannot be measured again. */
+static bool standardMeasured(uint16_t attrId)
+{
+    switch (attrId)
+    {
+    case IOT_ATTR_TEMP_EVT:
+    case IOT_ATTR_HUMID_EVT:
+    case IOT_ATTR_TEMP_HUMID_EVT:
+    case IOT_ATTR_POWER_VOLTAGE:
+    case IOT_ATTR_POWER_CONSUMED_INSTANCE:
+    case IOT_ATTR_POWER_CURRENT_INSTANCE:
+    case IOT_ATTR_LUX_EVT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* A product's choices, IOT_ContractAttrPersist(). DEFAULT removes an entry. */
+#define PERSIST_OVERRIDES_MAX 16
+typedef struct
+{
+    uint16_t id;
+    uint8_t mode; /* IOT_CONTRACT_PERSIST_ALWAYS or _NEVER */
+} persist_override_t;
+static persist_override_t s_persist[PERSIST_OVERRIDES_MAX];
+static uint8_t s_persistCount = 0;
+
+static int findPersist(uint16_t attrId)
+{
+    for (uint8_t i = 0; i < s_persistCount; i++)
+    {
+        if (s_persist[i].id == attrId)
+            return i;
+    }
+    return -1;
+}
+
+static void dropPersist(int idx)
+{
+    s_persist[idx] = s_persist[s_persistCount - 1];
+    s_persistCount--;
+}
+
+bool IOT_AttrIsPersisted(uint16_t attrId)
+{
+    int idx = findPersist(attrId);
+    if (idx >= 0)
+        return s_persist[idx].mode == IOT_CONTRACT_PERSIST_ALWAYS;
+    return !standardMeasured(attrId);
+}
+
+iot_err_t IOT_ContractAttrPersist(uint16_t attrId, IOT_ContractPersist_t mode)
+{
+    if (s_frozen)
+    {
+        IOT_LOGE(TAG, "attribute 0x%04x: persistence must be chosen before IOT_ContractStart()", attrId);
+        return IOT_ERR_INVALID_STATE;
+    }
+    if (mode != IOT_CONTRACT_PERSIST_DEFAULT && mode != IOT_CONTRACT_PERSIST_ALWAYS &&
+        mode != IOT_CONTRACT_PERSIST_NEVER)
+    {
+        IOT_LOGE(TAG, "attribute 0x%04x: unknown persistence mode %u", attrId, (unsigned) mode);
+        return IOT_ERR_INVALID_ARG;
+    }
+    if (mode == IOT_CONTRACT_PERSIST_NEVER && IOT_AttrIsRestorable(attrId))
+    {
+        IOT_LOGE(TAG, "attribute 0x%04x is restored at boot, so it is always kept: NEVER refused", attrId);
+        return IOT_ERR_INVALID_ARG;
+    }
+
+    int idx = findPersist(attrId);
+    if (mode == IOT_CONTRACT_PERSIST_DEFAULT)
+    {
+        if (idx >= 0)
+            dropPersist(idx);
+        return IOT_OK;
+    }
+    if (idx < 0)
+    {
+        if (s_persistCount >= PERSIST_OVERRIDES_MAX)
+        {
+            IOT_LOGE(TAG, "attribute 0x%04x: at most %u persistence choices", attrId,
+                     (unsigned) PERSIST_OVERRIDES_MAX);
+            return IOT_ERR_NO_MEM;
+        }
+        idx = s_persistCount++;
+        s_persist[idx].id = attrId;
+    }
+    s_persist[idx].mode = (uint8_t) mode;
+    return IOT_OK;
+}
+
 void IOT_ContractAttrsFreeze(void)
 {
     s_frozen = true;
@@ -479,6 +574,12 @@ iot_err_t IOT_ContractRegisterAttrs(const IOT_ContractAttrDef_t *defs, uint16_t 
         r->restore = defs[i].restore;
         if (defs[i].defaultValue != NULL)
             memcpy(r->defaultValue, defs[i].defaultValue, (size_t) defs[i].fieldCount * 2);
+        int p = findPersist(r->id);
+        if (r->restore && p >= 0 && s_persist[p].mode == IOT_CONTRACT_PERSIST_NEVER)
+        {
+            IOT_LOGW(TAG, "attribute 0x%04x is restored at boot, so it is always kept: NEVER dropped", r->id);
+            dropPersist(p);
+        }
     }
     s_registeredCount = (uint16_t) (s_registeredCount + count);
     IOT_LOGI(TAG, "%u attribute(s) of the product registered", (unsigned) count);

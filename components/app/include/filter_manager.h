@@ -40,6 +40,8 @@ UI32 FilterManagerGetWaterConsumption(WaterPurifierType model);
 void FilterManagerSetRuntime(FilterTimeIndex filter_index, UI32 seconds);
 _bool FilterManagerSetLifetimeSeconds(FilterTimeIndex filter_index, UI32 seconds);
 _bool FilterManagerGetLifetimeSeconds(FilterTimeIndex filter_index, UI32 *seconds_out);
+_bool FilterManagerGetReplacementSeconds(FilterTimeIndex filter_index, UI64 *seconds_out);
+
 _bool FilterManagerSetPid(FilterTimeIndex filter_index, const UI8 pid[FILTER_PID_SIZE]);
 _bool FilterManagerGetPid(FilterTimeIndex filter_index, UI8 pid_out[FILTER_PID_SIZE]);
 _bool FilterManagerCheckFirstChanged(FilterTimeIndex filter_index, UI8 pid[FILTER_PID_SIZE]);

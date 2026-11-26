@@ -886,6 +886,7 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
          * reachable: the next sync attempt or a reboot retries the cloud. */
         IOT_LOGW(TAG, "DEVICE event: PROVISION_CANCELLED");
         TdsTaskStart();
+        LedManagerSetNormal();
         LedManagerSetNetworkWaiting();
         break;
     }
@@ -1078,6 +1079,13 @@ static iot_err_t IOT_ExCoreEventHandleDevice(IOT_CoreDeviceEvent_t *deviceEvent)
         IOT_LOGW(TAG, "DEVICE event: DEV_EVENT_PROVISION_STARTED");
         TdsTaskStop();
         break;
+    }
+    case DEV_EVENT_FACTORY_RESET:
+    {
+        if (IOT_ApplicationRestartChip() != IOT_OK)
+        {
+            IOT_LOGE(TAG, "Failed to restart chip");
+        }
     }
     default:
         IOT_LOGW(TAG, "Unknown DEVICE event type: %d", deviceEvent->type);

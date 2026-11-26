@@ -137,9 +137,12 @@ void IOT_ContractOnCloudConnected(void)
 
 iot_err_t IOT_ContractPrepareRestart(void)
 {
-    /* Record first, then the Device store's element-state write-back cache. Both always run;
-     * the first error is the one reported. */
+    /* Record first, then the Device store: element state the write budget is holding goes to the
+     * cache, and the cache is flushed. All run; the first error is the one reported. */
     iot_err_t err = IOT_RecordFlushAllSync();
+    iot_err_t heldErr = IOT_DaoDeviceCommitPending();
     iot_err_t devErr = IOT_DaoDeviceFlushCache();
+    if (devErr == IOT_OK)
+        devErr = heldErr;
     return err != IOT_OK ? err : devErr;
 }

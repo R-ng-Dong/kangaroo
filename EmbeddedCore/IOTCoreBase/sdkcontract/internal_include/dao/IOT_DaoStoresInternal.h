@@ -170,6 +170,13 @@ iot_err_t IOT_DaoDeviceRemoveDataAsync(uint16_t eid, IOT_DaoDeviceDataType_t dat
 iot_err_t IOT_DaoDeviceFlushCache(void);
 
 /**
+ * Commit every element state held back by the write budget (a device whose persisted state changed
+ * more than 60 times this hour) to the cache, which writes it at its next flush. Called before a
+ * controlled restart, ahead of IOT_DaoDeviceFlushCache().
+ */
+iot_err_t IOT_DaoDeviceCommitPending(void);
+
+/**
  * @brief Invalidate device element state cache (BLOCKING)
  * @return IOT_OK on success
  */

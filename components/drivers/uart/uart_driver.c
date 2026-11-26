@@ -115,6 +115,9 @@ static void UartTask(void *param)
                     rx_count += len_buf;
                 }
 
+                // ESP_LOGI(TAG, "----------->>> raw data:");
+                // ESP_LOG_BUFFER_HEX(TAG, my_uart->data_buffer, len_buf);
+
                 if (my_uart->process_data)
                 {
                     my_uart->process_data(my_uart->data_buffer, len_buf);

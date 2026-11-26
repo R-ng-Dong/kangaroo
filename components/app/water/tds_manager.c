@@ -5,6 +5,9 @@
 #include "warning_manager.h"
 #include "system_config.h"
 
+extern UI16 TdsInletGetValue(void);
+extern UI16 TdsRoGetValue(void);
+
 static void TdsManagerUpdateWarning(WarningId warning_id, bool should_be_active)
 {
     WarningManagerUpdate(warning_id, should_be_active);
@@ -32,7 +35,7 @@ __attribute__((weak)) void TdsOutputUpdateRecord(UI16 outlet_ppm)
     printf("[Dummy] TdsOutputUpdateRecord\n");
 }
 
-static _bool IsTdsInletChanged(UI16 old_value, UI16 new_value)
+_bool IsTdsInletChanged(UI16 old_value, UI16 new_value)
 {
     const UI16 TDS_REPORT_INLET_DELTA_PPM = (UI16)SystemConfigGetStateTdsInletDelta();
     if (old_value == 0)
@@ -48,12 +51,12 @@ static _bool IsTdsInletChanged(UI16 old_value, UI16 new_value)
     else{
         delta_ppm = new_value - old_value;
     }
-    printf("TDS input report triggered by delta: inlet=%u ppm\n", delta_ppm);
+    // printf("TDS input report triggered by delta: inlet=%u ppm\n", delta_ppm);
 
     return (delta_ppm >= TDS_REPORT_INLET_DELTA_PPM) ? D_TRUE : D_FALSE;
 }
 
-static _bool IsTdsOutChanged(UI16 old_value, UI16 new_value)
+_bool IsTdsOutChanged(UI16 old_value, UI16 new_value)
 {
     const UI16 TDS_REPORT_OUT_DELTA_PPM = (UI16)SystemConfigGetStateTdsOutDelta();
     if (old_value == 0)
@@ -69,7 +72,7 @@ static _bool IsTdsOutChanged(UI16 old_value, UI16 new_value)
     else{
         delta_ppm = new_value - old_value;
     }
-    printf("TDS output report triggered by delta: ro=%u ppm\n", delta_ppm);
+    // printf("TDS output report triggered by delta: ro=%u ppm\n", delta_ppm);
     return (delta_ppm >= TDS_REPORT_OUT_DELTA_PPM) ? D_TRUE : D_FALSE;
 }
 
@@ -107,13 +110,13 @@ bool TdsManagerShouldReport(UI16 inlet_ppm, UI16 ro_ppm, UI32 now_ms)
             {
                 AppContextMarkTdsReported(inlet_ppm, TDS_INVALID_VALUE, now_ms);
                 AppPushTdsReportToCloud(inlet_ppm, TDS_INVALID_VALUE); // post inlet only
-                TdsInputUpdateRecord(inlet_ppm);
+                TdsInputUpdateRecord(TdsInletGetValue());
             }
             if (out_changed)
             { 
                 AppContextMarkTdsReported(TDS_INVALID_VALUE, ro_ppm, now_ms);
                 AppPushTdsReportToCloud(TDS_INVALID_VALUE, ro_ppm); // post ro only
-                TdsOutputUpdateRecord(ro_ppm);
+                TdsOutputUpdateRecord(TdsRoGetValue());
             }   
             return true;    
         }

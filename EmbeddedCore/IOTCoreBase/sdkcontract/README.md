@@ -12,7 +12,7 @@ you may write your own SDK on the public `iotcore` API instead ([concepts.md](do
 
 **It is for** SDK writers building a product on `iotcore`. It builds on the public core API
 (`iotcore`), the platform interfaces (`iotplatform`) and the common utilities (`iotcommon`), ships
-as source, and is built as-is: do not edit it. Version `2.2.0` (`IOT_CONTRACT_VERSION_STRING`).
+as source, and is built as-is: do not edit it. Version `2.3.0` (`IOT_CONTRACT_VERSION_STRING`).
 
 ## Quick start
 
